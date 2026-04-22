@@ -160,10 +160,15 @@ export default function InfiniteCanvas() {
 
 // Crée une nouvelle shape terminal au centre du viewport caméra.
 // Exporté pour être invocable depuis le Header (bouton "+ Nouveau terminal").
+// Le shell par défaut est celui choisi en dernier par l'utilisateur
+// (persisté dans `useUIStore.lastShell`) — évite de rebasculer vers pwsh
+// à chaque spawn si l'utilisateur travaille par préférence dans un autre
+// shell. `getState()` car la fonction est appelée hors React.
 export function spawnTerminalShape(editor: Editor): void {
   const bounds = editor.getViewportPageBounds()
   const cx = bounds.midX
   const cy = bounds.midY
+  const shell = useUIStore.getState().lastShell
   editor.createShape<TerminalShape>({
     id: createShapeId(),
     type: 'terminal',
@@ -172,7 +177,7 @@ export function spawnTerminalShape(editor: Editor): void {
     props: {
       w: 640,
       h: 380,
-      shell: 'powershell',
+      shell,
       cwd: getDefaultCwd(),
       projectId: null,
       spawned: false

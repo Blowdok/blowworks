@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import type { ShellKindT } from '@shared/ipc-contract.js'
 
 // État UI persisté dans les settings SQLite (via IPC `window.blow.settings`).
 // Hydrate() est appelée une fois au mount de l'App ; tout changement
@@ -14,12 +15,21 @@ interface UIState {
   toggleStylePanel: () => void
   toolbarVisible: boolean
   toggleToolbar: () => void
+  // Dernier shell utilisé par l'utilisateur — nouveau terminal hérite
+  // de ce choix. Mis à jour à chaque switch de shell dans un terminal
+  // existant. Évite de refaire manuellement `powershell → pwsh` à
+  // chaque spawn.
+  lastShell: ShellKindT
+  setLastShell: (shell: ShellKindT) => void
   hydrate: () => Promise<void>
 }
 
 const KEY_SIDEBAR = 'ui.sidebar.collapsed'
 const KEY_STYLE_PANEL = 'ui.stylePanel.visible'
 const KEY_TOOLBAR = 'ui.toolbar.visible'
+const KEY_LAST_SHELL = 'ui.terminal.lastShell'
+
+const VALID_SHELLS: readonly ShellKindT[] = ['powershell', 'pwsh', 'cmd', 'bash']
 
 async function readBool(key: string, fallback: boolean): Promise<boolean> {
   try {
@@ -32,8 +42,26 @@ async function readBool(key: string, fallback: boolean): Promise<boolean> {
   }
 }
 
+async function readShell(key: string, fallback: ShellKindT): Promise<ShellKindT> {
+  try {
+    const raw = await window.blow.settings.get(key)
+    if (raw && (VALID_SHELLS as readonly string[]).includes(raw)) {
+      return raw as ShellKindT
+    }
+    return fallback
+  } catch {
+    return fallback
+  }
+}
+
 function writeBool(key: string, value: boolean): void {
   void window.blow.settings.set(key, value ? '1' : '0').catch(() => {
+    /* best-effort, ne bloque pas l'UI */
+  })
+}
+
+function writeString(key: string, value: string): void {
+  void window.blow.settings.set(key, value).catch(() => {
     /* best-effort, ne bloque pas l'UI */
   })
 }
@@ -43,6 +71,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   sidebarCollapsed: false,
   stylePanelVisible: true,
   toolbarVisible: true,
+  lastShell: 'powershell',
 
   toggleSidebar: () => {
     const next = !get().sidebarCollapsed
@@ -63,17 +92,24 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({ toolbarVisible: next })
     if (get().hydrated) writeBool(KEY_TOOLBAR, next)
   },
+  setLastShell: (lastShell) => {
+    if (get().lastShell === lastShell) return
+    set({ lastShell })
+    if (get().hydrated) writeString(KEY_LAST_SHELL, lastShell)
+  },
 
   hydrate: async () => {
-    const [sidebar, stylePanel, toolbar] = await Promise.all([
+    const [sidebar, stylePanel, toolbar, lastShell] = await Promise.all([
       readBool(KEY_SIDEBAR, false),
       readBool(KEY_STYLE_PANEL, true),
-      readBool(KEY_TOOLBAR, true)
+      readBool(KEY_TOOLBAR, true),
+      readShell(KEY_LAST_SHELL, 'powershell')
     ])
     set({
       sidebarCollapsed: sidebar,
       stylePanelVisible: stylePanel,
       toolbarVisible: toolbar,
+      lastShell,
       hydrated: true
     })
   }

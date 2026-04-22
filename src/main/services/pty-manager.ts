@@ -1,5 +1,7 @@
 import * as pty from '@lydell/node-pty'
 import { BrowserWindow } from 'electron'
+import { accessSync, constants as fsConstants } from 'node:fs'
+import { join } from 'node:path'
 import type { ShellKindT } from '@shared/ipc-contract.js'
 import { IPC_CHANNELS } from '@shared/ipc-contract.js'
 
@@ -47,6 +49,16 @@ class PtyManager {
 
     const shellBinary = resolveShellBinary(input.shell)
     const args = resolveShellArgs(input.shell)
+
+    // Vérif d'existence AVANT spawn : node-pty / ConPTY échoue avec un
+    // message obscur `File not found: ` (chemin vidé) quand le binaire
+    // cible n'est pas résoluble via PATH — typiquement `pwsh.exe` qui
+    // n'est pas installé par défaut sur Windows (PowerShell 7 = install
+    // séparée depuis le Microsoft Store ou https://aka.ms/powershell).
+    // On remonte ici une erreur humaine avec pointeur d'installation.
+    if (!isBinaryResolvable(shellBinary)) {
+      throw new Error(buildShellNotFoundMessage(input.shell, shellBinary))
+    }
 
     const proc = pty.spawn(shellBinary, args, {
       name: 'xterm-color',
@@ -145,22 +157,57 @@ class PtyManager {
 export const ptyManager = new PtyManager()
 
 // Résolution de la binaire de shell par plateforme.
+//
+// Sur Windows, on essaye d'abord PATH (comportement standard), puis on
+// retombe sur les emplacements canoniques d'installation. C'est crucial
+// pour les cas suivants :
+//   - pwsh.exe installé pendant que BlowWorks tourne → le PATH de notre
+//     process Electron est figé au démarrage et ne voit pas la nouvelle
+//     entrée système. Un redémarrage de l'app ne suffit pas toujours
+//     (héritage du PATH du process parent qui peut lui aussi être stale).
+//   - Machines où PATH a été customisé et omet les emplacements standards.
+// En retournant un chemin absolu quand le fallback trouve le binaire, on
+// passe directement à `CreateProcess` sans aucune résolution PATH.
 function resolveShellBinary(shell: ShellKindT): string {
   if (process.platform === 'win32') {
+    const systemRoot = process.env.SystemRoot ?? 'C:\\Windows'
+    const programFiles = process.env.ProgramFiles ?? 'C:\\Program Files'
+    const programFilesX86 = process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)'
     switch (shell) {
       case 'powershell':
-        return 'powershell.exe'
+        return pickFirstResolvable('powershell.exe', [
+          join(systemRoot, 'System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+        ])
       case 'pwsh':
-        return 'pwsh.exe'
+        return pickFirstResolvable('pwsh.exe', [
+          join(programFiles, 'PowerShell\\7\\pwsh.exe'),
+          join(programFilesX86, 'PowerShell\\7\\pwsh.exe'),
+          join(programFiles, 'PowerShell\\7-preview\\pwsh.exe')
+        ])
       case 'cmd':
-        return 'cmd.exe'
+        return pickFirstResolvable('cmd.exe', [join(systemRoot, 'System32\\cmd.exe')])
       case 'bash':
-        // Nécessite Git Bash ou WSL dans le PATH.
-        return 'bash.exe'
+        // Git for Windows (bash.exe) ou WSL (System32\bash.exe).
+        return pickFirstResolvable('bash.exe', [
+          join(programFiles, 'Git\\bin\\bash.exe'),
+          join(programFilesX86, 'Git\\bin\\bash.exe'),
+          join(systemRoot, 'System32\\bash.exe')
+        ])
     }
   }
   // Autres plateformes (v2 macOS/Linux).
   return shell === 'bash' ? '/bin/bash' : '/bin/sh'
+}
+
+// Essaie PATH en premier (nom court), puis les chemins absolus candidats.
+// Retourne le premier qui résout. Si RIEN ne résout, retourne le nom court
+// — `isBinaryResolvable` déclenchera l'erreur humanisée en aval.
+function pickFirstResolvable(pathName: string, absoluteFallbacks: string[]): string {
+  if (isBinaryResolvable(pathName)) return pathName
+  for (const abs of absoluteFallbacks) {
+    if (isBinaryResolvable(abs)) return abs
+  }
+  return pathName
 }
 
 function resolveShellArgs(shell: ShellKindT): string[] {
@@ -168,4 +215,73 @@ function resolveShellArgs(shell: ShellKindT): string[] {
     return ['-NoLogo']
   }
   return []
+}
+
+// Teste si un binaire est résoluble via PATH + PATHEXT (Windows) ou
+// directement accessible (POSIX). Sur Windows on split `process.env.PATH`
+// et on itère les extensions de `PATHEXT` car `pty.spawn` appelle
+// `CreateProcess` qui ne fait PAS toujours de résolution propre en
+// environnement Electron — mieux vaut sortir une erreur claire ici.
+function isBinaryResolvable(binary: string): boolean {
+  // Chemin absolu → test direct.
+  if (binary.includes('/') || binary.includes('\\')) {
+    try {
+      accessSync(binary, fsConstants.X_OK)
+      return true
+    } catch {
+      return false
+    }
+  }
+  const paths = (process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':')
+  if (process.platform === 'win32') {
+    const pathExt = (process.env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';').map((e) => e.toLowerCase())
+    const hasExt = pathExt.some((ext) => binary.toLowerCase().endsWith(ext))
+    const candidates = hasExt ? [binary] : pathExt.map((ext) => binary + ext)
+    for (const dir of paths) {
+      if (!dir) continue
+      for (const candidate of candidates) {
+        try {
+          accessSync(join(dir, candidate), fsConstants.F_OK)
+          return true
+        } catch {
+          /* essayer suivant */
+        }
+      }
+    }
+    return false
+  }
+  for (const dir of paths) {
+    if (!dir) continue
+    try {
+      accessSync(join(dir, binary), fsConstants.X_OK)
+      return true
+    } catch {
+      /* essayer suivant */
+    }
+  }
+  return false
+}
+
+// Message d'erreur contextuel par shell manquant. Priorité à l'action
+// utilisateur (« comment installer ») plutôt qu'au diagnostic technique.
+function buildShellNotFoundMessage(shell: ShellKindT, binary: string): string {
+  switch (shell) {
+    case 'pwsh':
+      return (
+        `PowerShell 7 (pwsh) n'est pas installé sur ce système. ` +
+        `Installer depuis https://aka.ms/powershell ou via « winget install Microsoft.PowerShell ». ` +
+        `En attendant, vous pouvez utiliser « powershell » (Windows PowerShell 5.1, pré-installé).`
+      )
+    case 'bash':
+      return (
+        `bash n'est pas trouvé dans le PATH. Installer Git for Windows ` +
+        `(https://git-scm.com/download/win) ou activer WSL.`
+      )
+    case 'powershell':
+      return `Windows PowerShell (${binary}) introuvable dans le PATH — très inhabituel sur Windows 10/11.`
+    case 'cmd':
+      return `cmd.exe introuvable dans le PATH — très inhabituel sur Windows.`
+    default:
+      return `Shell « ${shell} » introuvable (${binary}).`
+  }
 }

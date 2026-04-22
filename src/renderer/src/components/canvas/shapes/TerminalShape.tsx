@@ -15,6 +15,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useProjectStore } from '../../../stores/project-store.js'
 import { useEditorStore } from '../../../stores/editor-store.js'
+import { useUIStore } from '../../../stores/ui-store.js'
 import { spawnBrowserShape } from '../InfiniteCanvas.js'
 import {
   useShapeBorderState,
@@ -149,6 +150,8 @@ function TerminalShapeView({ shape }: { shape: TerminalShape }) {
       type: 'terminal',
       props: { shell }
     })
+    // Mémorise comme défaut pour les futurs terminaux spawnés.
+    useUIStore.getState().setLastShell(shell)
   }
 
   // Stoppe la propagation pointer/touch uniquement sur les éléments interactifs :
@@ -197,12 +200,13 @@ function TerminalShapeView({ shape }: { shape: TerminalShape }) {
             onClick={() => setShellDropdownOpen((v) => !v)}
             className="rounded px-1.5 py-0.5 text-[11px] hover:bg-[var(--bg-tertiary)]"
             style={{ color: 'var(--fg-secondary, #00ffff)', pointerEvents: 'auto' }}
-            title="Changer le shell"
+            // Le cwd est retiré du header (redondant avec le prompt du shell).
+            // On le garde en tooltip pour info au survol du bouton shell.
+            title={`Changer le shell · ${shape.props.cwd}`}
             {...stopInteractive}
           >
             {shape.props.shell} ▾
           </button>
-          <span className="truncate text-[var(--fg-primary)]">· {shape.props.cwd}</span>
 
           {shellDropdownOpen && (
             <div
@@ -308,17 +312,23 @@ function TerminalBody({ shape }: { shape: TerminalShape }) {
   useEffect(() => {
     if (!containerRef.current) return
 
+    // Thème "Matrix immersion" : fond #101011 = couleur canvas tldraw
+    // (var `--bg-primary`) → fusion visuelle parfaite avec le reste de
+    // l'app, aucune couture entre le terminal et le canvas. Texte en
+    // vert phosphore Matrix (#00ff41) pour une lisibilité ambiance
+    // « terminal CRT ». Curseur même teinte, accent sombre pour voir
+    // le caractère sous le bloc. Sélection verte semi-transparente.
     const term = new Terminal({
       fontFamily: 'JetBrains Mono, Cascadia Code, Consolas, monospace',
-      fontSize: 13,
+      fontSize: 14,
       cursorBlink: true,
       allowProposedApi: true,
       theme: {
-        background: '#000000',
-        foreground: '#ffffff',
-        cursor: '#00ffff',
-        cursorAccent: '#000000',
-        selectionBackground: '#00ffff44'
+        background: '#101011',
+        foreground: '#00ff41',
+        cursor: '#00ff41',
+        cursorAccent: '#101011',
+        selectionBackground: '#00ff4144'
       },
       scrollback: 10_000
     })
@@ -485,7 +495,14 @@ function TerminalBody({ shape }: { shape: TerminalShape }) {
     <div
       ref={containerRef}
       className="flex-1"
-      style={{ minHeight: 0, padding: 4, background: '#000', pointerEvents: 'auto' }}
+      style={{
+        minHeight: 0,
+        padding: 4,
+        // Aligné sur `theme.background` de xterm et sur `--bg-primary`
+        // du canvas pour l'immersion Matrix (zéro couture visible).
+        background: '#101011',
+        pointerEvents: 'auto'
+      }}
       onPointerDown={(e) => {
         // Ramène le focus clavier vers xterm à chaque clic sur la zone
         // terminal. Indispensable car tldraw peut déplacer le focus sur
