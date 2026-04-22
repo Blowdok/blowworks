@@ -226,7 +226,7 @@ Au premier usage, BlowWorks spawne le serveur sur `127.0.0.1:27338` (port **fixe
 
 ## 🤝 Convention de commits
 
-Commits en français, messages clairs. Le nom de l'outil d'assistance IA ne doit **jamais** apparaître dans les repos Blowdok sur GitHub.
+Commits en français, messages clairs pour la communauté francophone
 
 ---
 
