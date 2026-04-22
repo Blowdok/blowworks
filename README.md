@@ -26,7 +26,7 @@
     - Option « Delete » du **menu contextuel natif tldraw** (clic droit sur la shape).
     - Bouton **poubelle de la barre d'actions** tldraw flottante dans le canvas.
     - Appels programmatiques à `editor.deleteShapes(...)` depuis n'importe quel code.
-    Les shapes natives tldraw (geo, arrow, note, draw, etc.) ne sont **pas** interceptées — leur suppression reste instantanée. Message de la modale adapté au contenu du lot : si au moins un terminal, rappel PTY tué + scrollback perdu + nuance `tmux`/`screen` ; si au moins une fenêtre VSCode, rappel que `openvscode-server` reste vivant. Toutes les suppressions sont annulables via <kbd>Ctrl+Z</kbd>.
+      Les shapes natives tldraw (geo, arrow, note, draw, etc.) ne sont **pas** interceptées — leur suppression reste instantanée. Message de la modale adapté au contenu du lot : si au moins un terminal, rappel PTY tué + scrollback perdu + nuance `tmux`/`screen` ; si au moins une fenêtre VSCode, rappel que `openvscode-server` reste vivant. Toutes les suppressions sont annulables via <kbd>Ctrl+Z</kbd>.
 - **Gestion fenêtrée des shapes portail (Terminal / VSCode)** : la shape cliquée ou sélectionnée passe automatiquement au premier plan (bring-to-front), comme une fenêtre Windows classique. Déclencheurs couverts : clic dans l'iframe, clic sur le header, clic sur la bordure tldraw, drag-select rectangulaire, changement de focus clavier. Optimisation "déjà au top" pour éviter les writes redondants au store.
   - **Aucun rechargement d'iframe lors d'un bring-to-front** : l'ordre DOM des slots portails est **stable** (trié par `shape.id` immuable) — le stacking visuel passe exclusivement par `z-index` CSS calculé depuis `shape.index` tldraw. Sans cette dissociation, Chromium détache/réattache les iframes dès qu'un nœud parent change de position dans le DOM (React reconciliation), ce qui forçait VSCode web à réinitialiser entièrement son workbench (reconnection token, extension host, grammars…) à chaque clic. Désormais, les instances VSCode et xterm survivent à tous les `bringToFront` et à tous les switch de pages tldraw.
   - **Bordure de sélection par-dessus les iframes qui chevauchent** : la bordure bleue est re-rendue **dans le stacking context** de chaque slot portail (au lieu de dépendre du SVG overlay de tldraw, qui vit sous toutes les iframes). Elle partage donc le `z-index` CSS de la shape sélectionnée et passe systématiquement au-dessus des iframes qui la traversent.
@@ -42,6 +42,7 @@
   - L'env var `GITHUB_TOKEN`/`GH_TOKEN` dans le sidecar, lue par `VSCODE_GIT_ASKPASS` pour les opérations git CLI (clone/push/pull sans prompt).
 
   Reconnexion rapide : la déconnexion est "soft" par défaut (garde le token chiffré). Un bouton "Oublier le token" est disponible pour un hard reset.
+
 - **Persistance automatique** : layout du canvas, scrollback des terminaux, projets, paramètres — tout est sauvegardé dans une base SQLite locale et restauré au redémarrage.
 - **Palette noir / gris / blanc / cyan** sobre et cohérente (pas de violet/mauve). Contraste WCAG AA sur tous les libellés (`--fg-muted: #9ca3af`).
 - **Header centralisé** : la barre de pages native tldraw (Main Menu + Pages) est **déplacée via `appendChild`** dans le header pour libérer le canvas, sans casser le positionnement Radix des dropdowns. Le fond des popovers est aligné sur la sidebar (`--bg-secondary`).
@@ -50,7 +51,7 @@
   - `Ctrl+T` : nouveau terminal au centre du viewport
   - `Ctrl+K` : nouvelle conversation IA (ChatShape) au centre du viewport
   - `Ctrl+Shift+C` / `Ctrl+Shift+V` : copier / coller dans le terminal
-  - *(à venir)* `Ctrl+Shift+P` : palette de commandes
+  - _(à venir)_ `Ctrl+Shift+P` : palette de commandes
 - **Chat IA sur le canvas (OpenRouter + Tavily)** : chaque conversation est une **ChatShape tldraw** à part entière, draggable, resizable, assignable à un projet, supprimable via la modale de confirmation — exactement le même paradigme que Terminal et VSCode.
   - **Fournisseur de modèles : OpenRouter.** Une seule clé API pour 300+ modèles (Claude, GPT, Gemini, Llama, Mistral, DeepSeek…). Sélecteur dans l'en-tête de chaque ChatShape avec **recherche fuzzy** et **métadonnées par modèle** : prix input/output par 1M tokens, fenêtre de contexte, id technique.
   - **Streaming en direct.** Le texte arrive token par token via un parseur SSE côté main qui diffuse des events IPC `ai.chunk` au renderer (même pattern que `terminal.dataEvent`). Rendu **markdown live** via `react-markdown` + `remark-gfm` (tables, task lists) + `rehype-highlight` / `highlight.js` (code blocks thème `github-dark`). Curseur clignotant en fin de ligne, auto-scroll uniquement si l'utilisateur est déjà en bas (respect de l'intention de lecture).
@@ -60,24 +61,23 @@
   - **Persistance SQLite.** Deux nouvelles tables : `ai_conversations(id=shape.id, title, model, system, temperature, project_id, created_at, updated_at)` et `ai_messages(id, conversation_id, role, content, model, tokens_in, tokens_out, created_at)` avec `ON DELETE CASCADE` sur `conversation_id` et FK souple vers `projects` (SET NULL). L'id de la conversation est 1:1 avec `shape.id` → pas de mapping à maintenir. **Titre auto-généré** à partir du 1er message user (tronqué à 60 car sur mot entier, ellipsis si besoin).
   - **Paradigme "1 shape = 1 conversation"** : déplacer une ChatShape garde le contexte (drag accidentel ≠ perte de fil), créer une nouvelle conversation se fait via **bouton `+ new`** dans l'en-tête ou raccourci global **`Ctrl+K`**. L'ancienne conversation reste sur le canvas, éditable, supprimable. Cohérent avec le mental model Terminal/VSCode.
   - **Paramètres dédiés** (icône ⚙ dans le Header) : modale plein-écran avec sidebar d'onglets, rendue via `createPortal(document.body)` (même pattern que `ConfirmDialog`) pour échapper aux clip containers. Onglets actuels : **OpenRouter** (clé API + validation live du statut), **Recherche web · Tavily** (clé API), **Modèle par défaut** (sélecteur modèle + slider température + max tokens — utilisés par `spawnChatShape`). Onglets placeholder pour v2 : Agents, Presets, MCP.
-  - **Barre d'actions complète** dans chaque ChatShape : 🌐 web, 🧠 raisonnement (toggle, actif sur modèles compatibles), 📎 upload fichier *(v2)*, ⚡ optimisation de prompt *(v2)*, sélecteur de projet (bordure colorée dès assignation).
+  - **Barre d'actions complète** dans chaque ChatShape : 🌐 web, 🧠 raisonnement (toggle, actif sur modèles compatibles), 📎 upload fichier _(v2)_, ⚡ optimisation de prompt _(v2)_, sélecteur de projet (bordure colorée dès assignation).
   - **Chrome immersif & zone de saisie flottante.** Le Chat partage désormais la teinte `#101011` du canvas tldraw — plus aucune couture visible entre la ChatShape et le canvas (header, zone de messages et zone de saisie fondus dans la même surface, bordures internes invisibles, bordure externe colorée conservée uniquement quand un projet est assigné). La zone de saisie devient une **capsule flottante unifiée** : textarea en haut + barre d'actions en bas (icônes `lucide-react` : `Globe`, `Brain`, `Paperclip`, `Zap`) + bouton envoyer circulaire à droite (`ArrowUp` blanc → `Square` rouge pendant un stream), le tout dans un conteneur `#1a1a1b` arrondi 16 px avec bordure `rgba(255,255,255,0.08)` et ombre douce projetée vers le bas. La **scrollbar des messages est masquée** via la classe utilitaire `.hide-scrollbar` (scroll natif conservé : roulette, touchpad, clavier), ce qui élimine la dernière ligne visuelle entre le Chat et le canvas. Nouveau jeton CSS `--shape-surface` introduit pour matérialiser cette fusion immersive sans impacter les autres tokens (`--bg-secondary`, `--bg-tertiary`, `--border` inchangés).
   - **Immersion étendue aux shapes Terminal & VSCode.** Le même jeton `--shape-surface` pilote désormais la bordure externe des **TerminalShape** et **VSCodePortalContent** : fondue au canvas tant qu'aucun projet n'est assigné, colorée dès qu'un projet l'est. Conséquence : sur un canvas vierge ou sur des shapes « libres », les fenêtres portail paraissent flotter sans cadre, et dès qu'on assigne un projet la bordure colorée apparaît comme un marqueur d'appartenance. La bordure bleue de **sélection tldraw** n'est PAS affectée (elle continue à signaler la shape active au-dessus des iframes).
   - **Chrome de sélection contextuel — hover custom + immersion par désélection tldraw.** Hook partagé `useShapeBorderState(shapeId)` mutualisé entre **ChatShape**, **TerminalShape** et **VSCodeShape**, alimenté par un store Zustand dédié `portal-hover-store` qui tracke hover + active work DOM-side. **Raison d'être du store** : `editor.getHoveredShapeId()` tldraw ne se met PAS à jour quand la souris est au-dessus d'une iframe (l'iframe capture les pointer events avant que tldraw les voie), donc on délègue la détection à `onMouseEnter/Leave` sur le slot portail qui reçoivent les events via bubbling depuis les enfants `pointer-events: auto`.
 
     **La bordure de sélection + les handles de resize sont gérés 100 % par tldraw natif** (bordure bleue + handles aux coins/bords sur les shapes sélectionnées). Pas de bordure custom qui viendrait doubler l'indicateur — on laisse tldraw faire son travail et on se concentre sur les 2 signaux qu'il ne fournit pas :
-
     - **Hover** : `1 px rgba(255,255,255,0.10)` — fine bordure blanche signalant la présence de la shape quand la souris la survole sans l'avoir cliquée. Active sur TOUTE la surface (iframe comprise) grâce au tracking DOM.
     - **Active work — immersion par désélection** : quand l'utilisateur clique dans une zone interactive (iframe VSCode, wrapper xterm, messages/capsule Chat, boutons header), on **désélectionne tldraw** (`editor.setSelectedShapes([])`) → la bordure bleue native ET les handles de resize DISPARAISSENT. L'utilisateur travaille dans l'iframe sans aucun chrome parasite. Notre bordure de hover est également masquée (on survole forcément une shape en active work). Le retour à l'état « sélection / resize » se fait au clic sur le header de la shape.
     - **Projet assigné** : bordure colorée du projet + halo `0 0 0 2 px ${color}22`, toujours visible (signal d'appartenance projet qui reste prioritaire même en immersion).
 
     **3 voies de détection selon où l'utilisateur clique** :
-
     1. **Clic dans le header** (top 28 px — `pointer-events: none` pour laisser tldraw capturer le drag) : un listener global `window.pointerdown` (capture phase) bounds-check chaque slot portail → si zone header, `setActiveWorkShapeId(null)`. tldraw reçoit ensuite le pointerdown via le hit-testing et sélectionne la shape → bordure bleue + handles visibles.
     2. **Clic dans xterm / Chat content / boutons header** (DOM normal, `pointer-events: auto`) : même listener global → zone body → `setActiveWorkShapeId(shapeId)` + `editor.setSelectedShapes([])` → immersion activée.
     3. **Clic dans iframe VSCode** : les events ne bubble pas au parent window (frontière iframe), donc le listener global ne fire jamais. On utilise à la place le listener `window.blur` existant (qui détecte le focus de l'iframe via `document.activeElement`) → même logique : set active work + `setSelectedShapes([])`.
 
     **Clear automatique** sur `onMouseLeave` du slot (l'utilisateur quitte la shape → fin d'immersion) et sur clic canvas vide (aucun slot hit → clear actif). Transitions CSS 240 ms ease-out sur `border-color` + `box-shadow`.
+
   - **Tests unitaires** : 6 tests Tavily (format du prompt système), 4 tests `generateTitleFromFirstMessage`, 15 tests des schémas Zod IA (`AISendMessageInput`, `AIChunkEventSchema`, `AIModelSchema`, `AICreateConversationInput`, `AISetApiKeyInput`, `AIDefaultsSchema`). Total projet : **68/68 tests verts**.
 
 ## 🚧 Prévu en v2
@@ -93,23 +93,23 @@
 
 ## 🛠️ Stack technique
 
-| Couche | Technologie |
-|---|---|
-| Runtime desktop | Electron 41 |
-| Build & HMR | electron-vite 5 + Vite 8 |
-| UI | React 19 + TypeScript 6 |
-| Canvas infini | tldraw 4 + `@tldraw/assets` (bundle Vite local, CSP-safe) |
-| Terminal | @lydell/node-pty 1.2 + xterm.js 6 + addons fit/webgl/serialize |
-| IDE embarqué | openvscode-server 1.96 |
-| Chat IA (modèles) | OpenRouter (API OpenAI-compatible, 300+ modèles) — streaming SSE natif |
-| Chat IA (recherche web) | Tavily API (`search_depth: basic`, réponse orientée LLM) |
-| Chat IA (rendu) | react-markdown 10 + remark-gfm 4 + rehype-highlight 7 + highlight.js 11 |
-| State | Zustand 5 |
-| Persistance | better-sqlite3 12 |
-| Styling | Tailwind CSS 4 |
-| Validation IPC | Zod 4 (main/renderer uniquement, preload exclu pour sandbox) |
-| Tests | Vitest + Playwright |
-| Packaging | electron-builder 26 (NSIS) |
+| Couche                  | Technologie                                                             |
+| ----------------------- | ----------------------------------------------------------------------- |
+| Runtime desktop         | Electron 41                                                             |
+| Build & HMR             | electron-vite 5 + Vite 8                                                |
+| UI                      | React 19 + TypeScript 6                                                 |
+| Canvas infini           | tldraw 4 + `@tldraw/assets` (bundle Vite local, CSP-safe)               |
+| Terminal                | @lydell/node-pty 1.2 + xterm.js 6 + addons fit/webgl/serialize          |
+| IDE embarqué            | openvscode-server 1.96                                                  |
+| Chat IA (modèles)       | OpenRouter (API OpenAI-compatible, 300+ modèles) — streaming SSE natif  |
+| Chat IA (recherche web) | Tavily API (`search_depth: basic`, réponse orientée LLM)                |
+| Chat IA (rendu)         | react-markdown 10 + remark-gfm 4 + rehype-highlight 7 + highlight.js 11 |
+| State                   | Zustand 5                                                               |
+| Persistance             | better-sqlite3 12                                                       |
+| Styling                 | Tailwind CSS 4                                                          |
+| Validation IPC          | Zod 4 (main/renderer uniquement, preload exclu pour sandbox)            |
+| Tests                   | Vitest + Playwright                                                     |
+| Packaging               | electron-builder 26 (NSIS)                                              |
 
 ---
 
@@ -126,8 +126,8 @@
 ### Cloner & installer
 
 ```bash
-git clone https://github.com/Blowdok/blow-works.git BlowWorks
-cd BlowWorks
+git clone https://github.com/Blowdok/blow-works.git
+cd blow-works
 npm install
 ```
 
@@ -147,14 +147,14 @@ BlowWorks s'ouvre en mode HMR (main + renderer). Modifier un fichier React recha
 
 ### Scripts utiles
 
-| Commande | Effet |
-|---|---|
-| `npm run dev` | Lancer l'app en mode développement |
-| `npm run build` | Vérifier les types + builder main/preload/renderer |
-| `npm run typecheck` | Vérification TypeScript stricte (node + web) |
-| `npm run test` | Tests unitaires (Vitest) |
-| `npm run test:e2e` | Tests end-to-end (Playwright + Electron) |
-| `npm run dist:win` | Générer l'installeur NSIS `.exe` dans `dist/` |
+| Commande                 | Effet                                                     |
+| ------------------------ | --------------------------------------------------------- |
+| `npm run dev`            | Lancer l'app en mode développement                        |
+| `npm run build`          | Vérifier les types + builder main/preload/renderer        |
+| `npm run typecheck`      | Vérification TypeScript stricte (node + web)              |
+| `npm run test`           | Tests unitaires (Vitest)                                  |
+| `npm run test:e2e`       | Tests end-to-end (Playwright + Electron)                  |
+| `npm run dist:win`       | Générer l'installeur NSIS `.exe` dans `dist/`             |
 | `npm run rebuild:native` | Recompiler `better-sqlite3` et `node-pty` contre Electron |
 
 ---
