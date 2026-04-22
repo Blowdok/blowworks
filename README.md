@@ -1,6 +1,8 @@
 # BlowWorks
 
-![Aperçu de BlowWorks](public/blow-works2.png)
+![Aperçu de BlowWorks](public/blow-works.png)
+
+![Aperçu de BlowWorks — interface détaillée](public/blow-works2.png)
 
 **Espace de travail infini** pour développeurs : un canvas illimité dans lequel rassembler, grouper et piloter en parallèle vos terminaux, VSCode et applications web. Adieu le jongle entre fenêtres Windows — tout votre contexte sur un plan 2D zoomable, persistant d'une session à l'autre.
 
