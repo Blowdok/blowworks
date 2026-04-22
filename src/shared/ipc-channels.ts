@@ -1,0 +1,61 @@
+// Noms canoniques des canaux IPC (main ⇄ preload ⇄ renderer).
+// Ce fichier est volontairement SANS dépendance externe (pas de zod) pour
+// pouvoir être importé par le preload sandboxé d'Electron, qui refuse tout
+// `require()` de package npm.
+export const IPC_CHANNELS = {
+  project: {
+    list: 'project.list',
+    create: 'project.create',
+    update: 'project.update',
+    delete: 'project.delete'
+  },
+  terminal: {
+    spawn: 'terminal.spawn',
+    write: 'terminal.write',
+    resize: 'terminal.resize',
+    kill: 'terminal.kill',
+    persist: 'terminal.persist',
+    restore: 'terminal.restore',
+    dataEvent: 'terminal.data',
+    exitEvent: 'terminal.exit'
+  },
+  vscode: {
+    status: 'vscode.status',
+    openFolder: 'vscode.openFolder'
+  },
+  canvas: {
+    saveSnapshot: 'canvas.saveSnapshot',
+    loadSnapshot: 'canvas.loadSnapshot'
+  },
+  settings: {
+    get: 'settings.get',
+    set: 'settings.set'
+  },
+  dialog: {
+    pickFolder: 'dialog.pickFolder'
+  },
+  github: {
+    setToken: 'github.setToken',
+    getStatus: 'github.getStatus',
+    disconnect: 'github.disconnect',
+    reconnect: 'github.reconnect',
+    forgetToken: 'github.forgetToken',
+    startDeviceFlow: 'github.startDeviceFlow',
+    completeDeviceFlow: 'github.completeDeviceFlow'
+  },
+  ai: {
+    sendMessage: 'ai.sendMessage',
+    cancelStream: 'ai.cancelStream',
+    listModels: 'ai.listModels',
+    chunkEvent: 'ai.chunk',
+    setApiKey: 'ai.setApiKey',
+    getApiKeyStatus: 'ai.getApiKeyStatus',
+    getDefaults: 'ai.getDefaults',
+    setDefaults: 'ai.setDefaults',
+    getConversation: 'ai.getConversation',
+    createConversation: 'ai.createConversation',
+    updateConversation: 'ai.updateConversation',
+    listConversations: 'ai.listConversations',
+    deleteConversation: 'ai.deleteConversation'
+  }
+} as const

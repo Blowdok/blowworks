@@ -1,0 +1,50 @@
+appId: com.blowdok.blowworks
+productName: BlowWorks
+copyright: Copyright © 2026 Blowdok
+directories:
+  buildResources: build
+  output: dist
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc,.editorconfig,tsconfig.*.json,tsconfig.json,eslint.config.*}'
+  - '!{.env,.env.*,.npmrc,README.md,mes-skills.md,CLAUDE.md}'
+  - '!{dev-app-update.yml,CHANGELOG.md}'
+asarUnpack:
+  # Modules natifs : doivent rester hors de l'archive ASAR pour être chargés par Node.
+  - '**/*.{node,dll}'
+  - 'node_modules/better-sqlite3/**/*'
+  - 'node_modules/node-pty/**/*'
+  - 'resources/openvscode-server/**/*'
+extraResources:
+  - from: resources/openvscode-server
+    to: openvscode-server
+    filter:
+      - '**/*'
+  - from: resources/blowworks-auth-extension
+    to: blowworks-auth-extension
+    filter:
+      - '**/*'
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: build/icon.ico
+  artifactName: '${productName}-Setup-${version}.${ext}'
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: BlowWorks
+  installerLanguages:
+    - fr_FR
+    - en_US
+  language: '1036' # Français par défaut
+publish:
+  provider: generic
+  url: https://updates.blowworks.local/

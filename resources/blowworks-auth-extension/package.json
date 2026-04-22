@@ -1,0 +1,25 @@
+{
+  "name": "blowworks-auth",
+  "displayName": "BlowWorks GitHub Auth",
+  "description": "Fournisseur d'authentification GitHub branché sur le PAT stocké par BlowWorks. Remplace vscode.github-authentication dans le sidecar serve-web afin d'éviter le Device Flow OAuth à chaque iframe workbench.",
+  "version": "1.0.0",
+  "publisher": "blowworks",
+  "engines": {
+    "vscode": "^1.70.0"
+  },
+  "main": "./extension.js",
+  "activationEvents": [
+    "*"
+  ],
+  "contributes": {
+    "authentication": [
+      {
+        "id": "github",
+        "label": "GitHub (BlowWorks)"
+      }
+    ]
+  },
+  "extensionKind": [
+    "workspace"
+  ]
+}

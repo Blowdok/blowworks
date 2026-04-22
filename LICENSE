@@ -1,0 +1,18 @@
+BlowWorks — Licence propriétaire
+Copyright (c) 2026 Blowdok. Tous droits réservés.
+
+Ce logiciel et son code source sont la propriété exclusive de Blowdok.
+Aucun droit de copie, modification, distribution, exécution publique,
+ou d'utilisation commerciale n'est accordé sans autorisation écrite
+préalable du détenteur du copyright.
+
+Ce dépôt est privé. Toute fuite, diffusion ou réutilisation non
+autorisée du code est interdite.
+
+Les dépendances tierces embarquées dans ce projet (notamment tldraw,
+xterm.js, Electron, React, etc.) sont distribuées sous leurs propres
+licences respectives. Voir le fichier NOTICES.md pour le détail et
+les textes de licence verbatim requis.
+
+Pour toute demande relative à l'utilisation de BlowWorks ou à
+l'obtention d'une licence spécifique, contacter : contact@blowvizion.re
