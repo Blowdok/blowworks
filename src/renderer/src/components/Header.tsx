@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useUIStore } from '../stores/ui-store.js'
 import { useEditorStore } from '../stores/editor-store.js'
-import { spawnTerminalShape, spawnVSCodeShape, spawnChatShape } from './canvas/InfiniteCanvas.js'
+import {
+  spawnTerminalShape,
+  spawnVSCodeShape,
+  spawnChatShape,
+  spawnBrowserShape
+} from './canvas/InfiniteCanvas.js'
 
 // Barre supérieure : drag region native + actions rapides + branding.
 // Regroupe toutes les actions globales (nouveau terminal, toggle styles, pages)
@@ -26,7 +31,8 @@ export default function Header() {
   const [shapeCounts, setShapeCounts] = useState({
     terminal: 0,
     vscode: 0,
-    chat: 0
+    chat: 0,
+    browser: 0
   })
 
   useEffect(() => {
@@ -44,6 +50,7 @@ export default function Header() {
       let terminal = 0
       let vscode = 0
       let chat = 0
+      let browser = 0
       for (const record of editor.store.allRecords()) {
         if (record.typeName !== 'shape') continue
         const shape = record as { type: string; parentId: string }
@@ -51,11 +58,15 @@ export default function Header() {
         if (shape.type === 'terminal') terminal++
         else if (shape.type === 'vscode') vscode++
         else if (shape.type === 'chat') chat++
+        else if (shape.type === 'browser') browser++
       }
       setShapeCounts((prev) =>
-        prev.terminal === terminal && prev.vscode === vscode && prev.chat === chat
+        prev.terminal === terminal &&
+        prev.vscode === vscode &&
+        prev.chat === chat &&
+        prev.browser === browser
           ? prev
-          : { terminal, vscode, chat }
+          : { terminal, vscode, chat, browser }
       )
     }
     recompute()
@@ -87,6 +98,10 @@ export default function Header() {
   async function handleNewChat(): Promise<void> {
     if (!editor) return
     await spawnChatShape(editor)
+  }
+
+  function handleNewBrowser(): void {
+    if (editor) spawnBrowserShape(editor)
   }
 
   return (
@@ -166,6 +181,26 @@ export default function Header() {
               style={{ background: 'var(--bg-tertiary)' }}
             >
               {shapeCounts.chat}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={handleNewBrowser}
+          disabled={!editor}
+          className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border-[0.5px] border-[var(--border)] px-2.5 py-1 font-medium transition-colors hover:border-[var(--fg-secondary)] hover:bg-[var(--bg-tertiary)] disabled:cursor-not-allowed disabled:opacity-40"
+          style={{ color: shapeCounts.browser > 0 ? activeColor : inactiveColor }}
+          title="Nouveau navigateur web (Ctrl+B)"
+        >
+          <GlobeIcon />
+          <span>Navigateur</span>
+          {shapeCounts.browser > 0 && (
+            <span
+              className="rounded px-1 text-[10px] text-[var(--fg-muted)]"
+              style={{ background: 'var(--bg-tertiary)' }}
+            >
+              {shapeCounts.browser}
             </span>
           )}
         </button>
@@ -379,6 +414,26 @@ function ChatIcon() {
       aria-hidden="true"
     >
       <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+    </svg>
+  )
+}
+
+function GlobeIcon() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
     </svg>
   )
 }

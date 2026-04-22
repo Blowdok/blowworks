@@ -52,8 +52,13 @@
 - **Raccourcis clavier implémentés** :
   - `Ctrl+T` : nouveau terminal au centre du viewport
   - `Ctrl+K` : nouvelle conversation IA (ChatShape) au centre du viewport
+  - `Ctrl+B` : nouveau navigateur web (BrowserShape) au centre du viewport
   - `Ctrl+Shift+C` / `Ctrl+Shift+V` : copier / coller dans le terminal
   - _(à venir)_ `Ctrl+Shift+P` : palette de commandes
+- **Navigateur web intégré (BrowserShape)** : mini-navigateur embarqué sur le canvas comme n'importe quelle autre shape (draggable, resizable, assignable à un projet, supprimable via la modale). Basé sur le tag **`<webview>` Electron** (et non une `<iframe>`), il n'est pas soumis aux blocages `X-Frame-Options` / CSP `frame-ancestors` — tous les sites web fonctionnent, y compris Google, GitHub, YouTube. Chaque shape possède sa propre barre de navigation (retour / avancer / recharger / URL) et toutes les BrowserShapes partagent la même session (`partition="persist:browser"`) pour conserver cookies et logins d'une shape à l'autre, isolés de l'origine du renderer principal.
+  - **Recherche web via DuckDuckGo** : saisie intelligente dans la barre d'URL — un texte avec espaces ou sans point est envoyé à `duckduckgo.com/?q=…`, une URL nue (ex. `github.com/foo`) est préfixée `https://`, une URL complète est chargée telle quelle. URL persistée dans les props de la shape → chaque navigateur restaure sa dernière page au redémarrage de l'app.
+  - **Liens IA routés vers le navigateur interne** : tout lien http(s) cliqué dans le **Chat** (réponses markdown), dans le **Terminal** (via `@xterm/addon-web-links`) ou dans l'**iframe VSCode** (via `setWindowOpenHandler` + `will-navigate` côté main) ouvre une nouvelle BrowserShape sur le canvas au lieu d'ouvrir le navigateur système ou d'écraser la SPA. Comportement prévisible, contexte préservé, tout reste dans BlowWorks.
+  - **Bouton `Navigateur` dans le header** à côté de `Chat`, avec compteur d'instances et icône globe. Même UX que les autres boutons (Terminal / VSCode / Chat).
 - **Chat IA sur le canvas (OpenRouter + Tavily)** : chaque conversation est une **ChatShape tldraw** à part entière, draggable, resizable, assignable à un projet, supprimable via la modale de confirmation — exactement le même paradigme que Terminal et VSCode.
   - **Fournisseur de modèles : OpenRouter.** Une seule clé API pour 300+ modèles (Claude, GPT, Gemini, Llama, Mistral, DeepSeek…). Sélecteur dans l'en-tête de chaque ChatShape avec **recherche fuzzy** et **métadonnées par modèle** : prix input/output par 1M tokens, fenêtre de contexte, id technique.
   - **Streaming en direct.** Le texte arrive token par token via un parseur SSE côté main qui diffuse des events IPC `ai.chunk` au renderer (même pattern que `terminal.dataEvent`). Rendu **markdown live** via `react-markdown` + `remark-gfm` (tables, task lists) + `rehype-highlight` / `highlight.js` (code blocks thème `github-dark`). Curseur clignotant en fin de ligne, auto-scroll uniquement si l'utilisateur est déjà en bas (respect de l'intention de lecture).
@@ -85,7 +90,6 @@
 ## 🚧 Prévu en v2
 
 - Intégration **CLI-Anything** pour piloter les apps natives (GIMP, Blender, Photoshop, OBS…) via leur CLI auto-générée.
-- Shape iframe arbitraire (mini-navigateur pour apps web).
 - Support macOS et Linux.
 - Auto-update via `electron-updater`.
 - **Chat IA — v2 :** upload d'images/fichiers (multimodal vision), optimisation automatique de prompt via modèle cheap (Haiku/Gemini Flash), mode thinking (`reasoning.effort`), Exa en alternative/complément de Tavily.
@@ -101,7 +105,7 @@
 | Build & HMR             | electron-vite 5 + Vite 8                                                |
 | UI                      | React 19 + TypeScript 6                                                 |
 | Canvas infini           | tldraw 4 + `@tldraw/assets` (bundle Vite local, CSP-safe)               |
-| Terminal                | @lydell/node-pty 1.2 + xterm.js 6 + addons fit/webgl/serialize          |
+| Terminal                | @lydell/node-pty 1.2 + xterm.js 6 + addons fit/webgl/serialize/web-links |
 | IDE embarqué            | openvscode-server 1.96                                                  |
 | Chat IA (modèles)       | OpenRouter (API OpenAI-compatible, 300+ modèles) — streaming SSE natif  |
 | Chat IA (recherche web) | Tavily API (`search_depth: basic`, réponse orientée LLM)                |
@@ -219,7 +223,8 @@ Au premier usage, BlowWorks spawne le serveur sur `127.0.0.1:27338` (port **fixe
 
 - `contextIsolation: true`, `nodeIntegration: false`, `sandbox: true` sur le renderer.
 - **Preload sandbox-safe** : compilé en CommonJS (`out/preload/index.js`), zod inliné exclu (les sandboxés ne peuvent `require()` que les modules natifs d'Electron). Les constantes IPC vivent dans `src/shared/ipc-channels.ts` sans dépendance externe.
-- CSP stricte (voir `src/renderer/index.html`) : `default-src 'self'`, `frame-src` autorise uniquement `http://127.0.0.1:*` pour openvscode-server.
+- CSP stricte (voir `src/renderer/index.html`) : `default-src 'self'`, `frame-src` autorise `http://127.0.0.1:*` (openvscode-server) et `https:` / `http:` pour la BrowserShape (tag `<webview>` rendu en interne comme une iframe shadow DOM, soumis à la directive `frame-src` Chromium). Le reste de la CSP reste strict.
+- Le tag `<webview>` Electron est activé (`webPreferences.webviewTag: true`) uniquement pour la BrowserShape ; chaque instance tourne dans un process isolé avec une partition dédiée `persist:browser`, sans accès au preload principal ni aux IPC du renderer.
 - Tous les messages IPC sont **validés par Zod** côté main (`src/shared/ipc-contract.ts`).
 - Le token de connexion openvscode-server est généré par `crypto.randomBytes(24)` à chaque démarrage.
 - Assets tldraw servis en local via `@tldraw/assets/imports.vite` (pas de fetch CDN bloqué par la CSP).

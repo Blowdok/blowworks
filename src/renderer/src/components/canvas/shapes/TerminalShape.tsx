@@ -11,8 +11,11 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { SerializeAddon } from '@xterm/addon-serialize'
+import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useProjectStore } from '../../../stores/project-store.js'
+import { useEditorStore } from '../../../stores/editor-store.js'
+import { spawnBrowserShape } from '../InfiniteCanvas.js'
 import {
   useShapeBorderState,
   getShapeBorderStyle
@@ -321,8 +324,18 @@ function TerminalBody({ shape }: { shape: TerminalShape }) {
     })
     const fit = new FitAddon()
     const serialize = new SerializeAddon()
+    // WebLinksAddon : détecte les URLs http(s) dans le scrollback et les
+    // rend cliquables. Handler custom : au lieu d'ouvrir le navigateur
+    // système (comportement par défaut de l'addon via window.open →
+    // setWindowOpenHandler), on spawne directement une BrowserShape sur
+    // le canvas courant. Cohérent avec l'UX « tout reste dans BlowWorks ».
+    const webLinks = new WebLinksAddon((_event, uri) => {
+      const editor = useEditorStore.getState().editor
+      if (editor) spawnBrowserShape(editor, uri)
+    })
     term.loadAddon(fit)
     term.loadAddon(serialize)
+    term.loadAddon(webLinks)
 
     term.open(containerRef.current)
     termRef.current = term

@@ -57,5 +57,11 @@ export const IPC_CHANNELS = {
     updateConversation: 'ai.updateConversation',
     listConversations: 'ai.listConversations',
     deleteConversation: 'ai.deleteConversation'
+  },
+  browser: {
+    // Push main → renderer : demander l'ouverture d'une URL dans une
+    // nouvelle BrowserShape. Émis depuis `setWindowOpenHandler` et
+    // `will-navigate` (voir `src/main/window.ts`).
+    openUrlEvent: 'browser.openUrl'
   }
 } as const

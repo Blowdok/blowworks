@@ -4,9 +4,16 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="./src/assets/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      frame-src inclut https: et http: pour la BrowserShape : le tag
+      <webview> Electron est rendu en interne comme une iframe shadow DOM,
+      donc soumis à la directive frame-src. Sans ces schémas, toute page
+      externe serait bloquée par Chromium avant même d'atteindre le
+      process webview. Le reste de la CSP reste strict pour le renderer.
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://avatars.githubusercontent.com; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https://api.github.com; frame-src 'self' http://127.0.0.1:*"
+      content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://avatars.githubusercontent.com; font-src 'self' data:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https://api.github.com; frame-src 'self' http://127.0.0.1:* https: http:"
     />
     <title>BlowWorks</title>
   </head>

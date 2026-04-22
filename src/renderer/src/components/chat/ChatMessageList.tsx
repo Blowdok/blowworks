@@ -4,6 +4,8 @@ import { markdownRemarkPlugins, markdownRehypePlugins } from '../../lib/markdown
 import type { AIMessageT } from '@shared/ipc-contract.js'
 import CitationsList from './CitationsList.js'
 import CodeBlock from './CodeBlock.js'
+import { useEditorStore } from '../../stores/editor-store.js'
+import { spawnBrowserShape } from '../canvas/InfiniteCanvas.js'
 
 interface ChatMessageListProps {
   messages: AIMessageT[]
@@ -149,14 +151,13 @@ export default function ChatMessageList({
 
 // Override react-markdown :
 //   - `<pre>` → `<CodeBlock>` (header langage + copier + aperçu HTML).
-//   - `<a>` → force `target="_blank"` + `rel="noopener noreferrer"` pour
-//     que le clic emprunte le chemin `window.open` → `setWindowOpenHandler`
-//     → `shell.openExternal` (ouverture navigateur système). SANS cet
-//     override, un clic sur un `<a href>` nu provoque une navigation TOP-
-//     frame qui EFFACE toute la SPA BlowWorks. Un garde `will-navigate`
-//     côté main (`src/main/window.ts`) couvre aussi ce cas en défense en
-//     profondeur, mais on préfère le comportement "nouveau navigateur"
-//     dès le renderer pour éviter un aller-retour IPC inutile.
+//   - `<a>` → intercepte le clic pour ouvrir l'URL dans une nouvelle
+//     BrowserShape (navigateur interne) au lieu d'ouvrir le navigateur
+//     système ou de naviguer la frame TOP (qui écraserait la SPA). Les
+//     liens non-http(s) (ancres, mailto:) gardent le comportement natif.
+//     Un garde `will-navigate` côté main couvre aussi ce cas en défense
+//     en profondeur, mais on préfère faire le routage dès le renderer
+//     pour éviter un aller-retour IPC inutile.
 // Défini HORS des composants React → référence stable, pas de re-render
 // inutile de ReactMarkdown à chaque frame du streaming.
 const markdownComponents: Components = {
@@ -167,6 +168,15 @@ const markdownComponents: Components = {
       href={href}
       target="_blank"
       rel="noopener noreferrer"
+      onClick={(e) => {
+        if (!href) return
+        // Ancres internes (#...), mailto:, tel:, etc. → laisser passer.
+        if (!/^https?:\/\//i.test(href)) return
+        e.preventDefault()
+        e.stopPropagation()
+        const editor = useEditorStore.getState().editor
+        if (editor) spawnBrowserShape(editor, href)
+      }}
       // Stop pointerdown pour préserver la sélection du texte dans la
       // bulle — sans ça, le pointerdown sur un lien peut annuler une
       // range de sélection en cours.

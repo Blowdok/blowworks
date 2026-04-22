@@ -71,7 +71,8 @@ export default function Sidebar() {
         if (
           shape.type !== 'vscode' &&
           shape.type !== 'terminal' &&
-          shape.type !== 'chat'
+          shape.type !== 'chat' &&
+          shape.type !== 'browser'
         ) {
           continue
         }

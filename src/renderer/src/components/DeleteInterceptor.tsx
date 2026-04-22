@@ -3,9 +3,9 @@ import type { TLShape, TLShapeId } from 'tldraw'
 import { useEditorStore } from '../stores/editor-store.js'
 import ConfirmDialog from './ConfirmDialog.js'
 
-// Intercepte TOUTE suppression de shape portail (`vscode` / `terminal`)
-// pour afficher une modale de confirmation centralisée. Un seul point
-// d'écoute couvre simultanément tous les déclencheurs tldraw existants :
+// Intercepte TOUTE suppression de shape portail (`vscode` / `terminal` /
+// `chat` / `browser`) pour afficher une modale de confirmation centralisée.
+// Un seul point d'écoute couvre simultanément tous les déclencheurs tldraw :
 //
 // - Touche Delete / Backspace.
 // - Option « Delete » du menu contextuel natif tldraw (clic droit).
@@ -26,6 +26,7 @@ export default function DeleteInterceptor(): React.ReactElement | null {
     hasVSCode: boolean
     hasTerminal: boolean
     hasChat: boolean
+    hasBrowser: boolean
   } | null>(null)
   // Drapeau qui permet à la 2ᵉ passe (après confirmation) de laisser
   // tldraw réellement supprimer. Sans ce bypass, le handler re-bloquerait
@@ -50,7 +51,8 @@ export default function DeleteInterceptor(): React.ReactElement | null {
         ids: collected.map((s) => s.id),
         hasVSCode: collected.some((s) => s.type === 'vscode'),
         hasTerminal: collected.some((s) => s.type === 'terminal'),
-        hasChat: collected.some((s) => s.type === 'chat')
+        hasChat: collected.some((s) => s.type === 'chat'),
+        hasBrowser: collected.some((s) => s.type === 'browser')
       })
     }
 
@@ -58,7 +60,12 @@ export default function DeleteInterceptor(): React.ReactElement | null {
       'shape',
       (shape) => {
         if (bypassRef.current) return
-        if (shape.type !== 'vscode' && shape.type !== 'terminal' && shape.type !== 'chat') return
+        if (
+          shape.type !== 'vscode' &&
+          shape.type !== 'terminal' &&
+          shape.type !== 'chat' &&
+          shape.type !== 'browser'
+        ) return
         batch.push(shape)
         if (!scheduled) {
           scheduled = true
@@ -138,6 +145,13 @@ export default function DeleteInterceptor(): React.ReactElement | null {
             <>
               Les conversations IA seront <strong>définitivement supprimées</strong>{' '}
               avec tous leurs messages. Un stream en cours est interrompu.{' '}
+            </>
+          )}
+          {pending.hasBrowser && (
+            <>
+              Les onglets du navigateur web seront fermés. La session partagée
+              (cookies, logins) reste intacte pour les prochains navigateurs
+              que vous ouvrirez.{' '}
             </>
           )}
           Cette action est annulable via <code>Ctrl+Z</code>{' '}

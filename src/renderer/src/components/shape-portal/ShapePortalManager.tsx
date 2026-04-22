@@ -3,7 +3,13 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { VSCodePortalContent, type VSCodeShape } from '../canvas/shapes/VSCodeShape.js'
 import { TerminalPortalContent, type TerminalShape } from '../canvas/shapes/TerminalShape.js'
 import { ChatPortalContent, type ChatShape } from '../canvas/shapes/ChatShape.js'
+import { BrowserPortalContent, type BrowserShape } from '../canvas/shapes/BrowserShape.js'
 import { usePortalHoverStore } from '../../stores/portal-hover-store.js'
+
+// Types de shapes rendus en portail (hors tldraw) pour que leur contenu
+// survive aux switch de pages. Centralisé ici pour garder cohérence entre
+// tous les filtres (portalShapes, isShapeAlreadyTop, sélection, etc.).
+const PORTAL_SHAPE_TYPES = new Set<string>(['vscode', 'terminal', 'chat', 'browser'])
 
 // Manager global qui maintient en DOM un portail par shape "lourde" (VSCode,
 // Terminal). Les portails survivent aux switch de pages tldraw car ce
@@ -39,7 +45,7 @@ export default function ShapePortalManager(): React.ReactElement {
       for (const record of editor.store.allRecords()) {
         if (record.typeName !== 'shape') continue
         const shape = record as TLShape
-        if (shape.type === 'vscode' || shape.type === 'terminal' || shape.type === 'chat') {
+        if (PORTAL_SHAPE_TYPES.has(shape.type)) {
           shapes.push(shape)
         }
       }
@@ -81,7 +87,7 @@ export default function ShapePortalManager(): React.ReactElement {
       if (record.typeName !== 'shape') continue
       const s = record as TLShape & { parentId: string }
       if (s.parentId !== pageId) continue
-      if (s.type !== 'vscode' && s.type !== 'terminal' && s.type !== 'chat') continue
+      if (!PORTAL_SHAPE_TYPES.has(s.type)) continue
       if (!top || s.index > top.index) {
         top = { id: s.id, index: s.index as string }
       }
@@ -105,7 +111,17 @@ export default function ShapePortalManager(): React.ReactElement {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           const active = document.activeElement
-          if (!(active instanceof HTMLIFrameElement)) return
+          if (!active) return
+          // Éléments "embedded" qui volent le focus window sans bubble
+          // leurs clics au parent : iframe (VSCode) + webview Electron
+          // (BrowserShape). Sans `<webview>` inclus, la BrowserShape ne
+          // déclenchait jamais l'immersion (tagName === 'WEBVIEW', pas
+          // HTMLIFrameElement) → bordure bleue tldraw restait visible
+          // en permanence même quand l'utilisateur travaillait dedans.
+          const isEmbedded =
+            active instanceof HTMLIFrameElement ||
+            active.tagName === 'WEBVIEW'
+          if (!isEmbedded) return
           const slot = active.closest<HTMLElement>('[data-shape-portal]')
           const shapeId = slot?.getAttribute('data-shape-portal')
           if (!shapeId) return
@@ -157,7 +173,7 @@ export default function ShapePortalManager(): React.ReactElement {
     const shapeId = selectedIds[0]
     const shape = editor.getShape(shapeId)
     if (!shape) return
-    if (shape.type !== 'vscode' && shape.type !== 'terminal' && shape.type !== 'chat') return
+    if (!PORTAL_SHAPE_TYPES.has(shape.type)) return
     if (isShapeAlreadyTop(shapeId)) return
     editor.bringToFront([shapeId])
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -584,6 +600,7 @@ function ShapePortalSlot({
       {shape.type === 'vscode' && <VSCodePortalContent shape={shape as VSCodeShape} />}
       {shape.type === 'terminal' && <TerminalPortalContent shape={shape as TerminalShape} />}
       {shape.type === 'chat' && <ChatPortalContent shape={shape as ChatShape} />}
+      {shape.type === 'browser' && <BrowserPortalContent shape={shape as BrowserShape} />}
       {!isTop && visible && shieldRects.length > 0 && (
         <div
           aria-hidden

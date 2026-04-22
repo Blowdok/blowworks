@@ -6,8 +6,10 @@ import {
   customShapeUtils,
   type TerminalShape,
   type VSCodeShape,
-  type ChatShape
+  type ChatShape,
+  type BrowserShape
 } from './shapes/index.js'
+import { DUCKDUCKGO_HOMEPAGE, resolveQuery } from './shapes/BrowserShape.js'
 import { useChatStore } from '../../stores/chat-store.js'
 import { useCanvasPersistence } from '../../hooks/use-canvas-persistence.js'
 import { useEditorStore } from '../../stores/editor-store.js'
@@ -84,6 +86,7 @@ export default function InfiniteCanvas() {
       // Raccourcis globaux :
       //   Ctrl+T  → nouveau terminal
       //   Ctrl+K  → nouvelle conversation IA
+      //   Ctrl+B  → nouveau navigateur (DDG)
       //   Alt+T   → toggle toolbar tldraw (outils select/hand/draw/…)
       const onKeyDown = (e: KeyboardEvent) => {
         if (e.ctrlKey && e.key.toLowerCase() === 't' && !e.altKey && !e.shiftKey) {
@@ -94,6 +97,10 @@ export default function InfiniteCanvas() {
           e.preventDefault()
           void spawnChatShape(editor)
         }
+        if (e.ctrlKey && e.key.toLowerCase() === 'b' && !e.altKey && !e.shiftKey) {
+          e.preventDefault()
+          spawnBrowserShape(editor)
+        }
         if (e.altKey && e.key.toLowerCase() === 't' && !e.ctrlKey && !e.shiftKey) {
           e.preventDefault()
           toggleToolbar()
@@ -101,9 +108,18 @@ export default function InfiniteCanvas() {
       }
       window.addEventListener('keydown', onKeyDown)
 
+      // IPC `browser.openUrl` : déclenché par le main process quand un lien
+      // est intercepté (setWindowOpenHandler, will-navigate) — typiquement
+      // depuis une iframe VSCode ou un clic `<a target="_blank">`. On spawne
+      // une BrowserShape pré-remplie avec l'URL.
+      const detachOpenUrl = window.blow.browser.onOpenUrl(({ url }) => {
+        spawnBrowserShape(editor, url)
+      })
+
       return () => {
         dispose()
         window.removeEventListener('keydown', onKeyDown)
+        detachOpenUrl()
         setEditorGlobal(null)
       }
     },
@@ -212,6 +228,31 @@ export async function spawnChatShape(editor: Editor): Promise<void> {
       model: defaults.model,
       webSearchEnabled: false,
       thinkingEnabled: false
+    }
+  })
+  editor.setSelectedShapes([id])
+}
+
+// Crée une nouvelle BrowserShape au centre du viewport. URL par défaut =
+// DuckDuckGo homepage. Si `rawUrl` est fourni (lien intercepté, bouton
+// header avec pré-saisie, etc.), on le résout via `resolveQuery` : URL
+// nue / avec schéma / texte de recherche sont tous acceptés.
+export function spawnBrowserShape(editor: Editor, rawUrl?: string): void {
+  const bounds = editor.getViewportPageBounds()
+  const cx = bounds.midX
+  const cy = bounds.midY
+  const url = rawUrl ? resolveQuery(rawUrl) : DUCKDUCKGO_HOMEPAGE
+  const id = createShapeId()
+  editor.createShape<BrowserShape>({
+    id,
+    type: 'browser',
+    x: cx - 450,
+    y: cy - 300,
+    props: {
+      w: 900,
+      h: 600,
+      url,
+      projectId: null
     }
   })
   editor.setSelectedShapes([id])
