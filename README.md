@@ -126,7 +126,7 @@
 ### Cloner & installer
 
 ```bash
-git clone <url-du-dépôt> BlowWorks
+git clone https://github.com/Blowdok/blow-works.git BlowWorks
 cd BlowWorks
 npm install
 ```
