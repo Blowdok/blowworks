@@ -58,6 +58,12 @@ export default function Sidebar() {
     () => new Map()
   )
 
+  // Projet actif dans la sidebar (highlight visuel). Deux sources de mise
+  // à jour : clic explicite sur un projet (via handleSlideToProject) OU
+  // sélection d'une shape tldraw rattachée à un projet → on synchronise
+  // automatiquement pour que l'utilisateur voie toujours "où il est".
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null)
+
   useEffect(() => {
     if (!editor) return
     const recompute = (): void => {
@@ -96,6 +102,19 @@ export default function Sidebar() {
         }
         return prev
       })
+
+      // Synchronise activeProjectId avec la 1re shape sélectionnée qui
+      // porte un projectId. Si aucune shape n'est sélectionnée OU si la
+      // sélection n'a aucun projet, on ne touche PAS à activeProjectId —
+      // l'utilisateur garde la trace de son dernier clic sidebar.
+      const selected = editor.getSelectedShapes()
+      for (const s of selected) {
+        const pid = (s.props as { projectId?: string | null }).projectId
+        if (pid) {
+          setActiveProjectId((prev) => (prev === pid ? prev : pid))
+          break
+        }
+      }
     }
     recompute()
     const dispose = editor.store.listen(recompute)
@@ -119,6 +138,7 @@ export default function Sidebar() {
   // Cohérent avec l'effet "corridor horizontal de projets".
   function handleSlideToProject(projectId: string): void {
     if (!editor) return
+    setActiveProjectId(projectId)
     const matching = filterProjectShapes(editor, projectId)
     editor.setSelectedShapes(matching.map((s) => s.id))
     slideToProject(editor, projects, projectId)
@@ -185,21 +205,28 @@ export default function Sidebar() {
         )}
         {projects.map((p) => {
           const count = projectCounts.get(p.id) ?? 0
+          const isActive = p.id === activeProjectId
           return (
             <li
               key={p.id}
               className="group relative flex cursor-pointer items-center gap-2 py-1.5 pl-4 pr-3 text-sm hover:bg-[var(--bg-tertiary)]"
               onClick={() => handleSlideToProject(p.id)}
               title={collapsed ? p.name : 'Glisser la caméra vers la zone de ce projet'}
+              style={{
+                // Projet actif : fond teinté (bg-tertiary) + pseudo-état
+                // persistant même sans hover. Le liseré passe aussi en
+                // 4 px (vs 3 px au repos) pour renforcer la lecture.
+                background: isActive ? 'var(--bg-tertiary)' : undefined
+              }}
+              aria-current={isActive ? 'true' : undefined}
             >
-              {/* Liseré vertical coloré (3 px) : identifie le projet d'un
-                  coup d'œil même quand la pastille est cachée par le hover
-                  ou une icône. Complémentaire à la bordure iframe colorée
-                  déjà appliquée sur chaque shape affectée. */}
+              {/* Liseré vertical coloré : 3 px au repos, 4 px si actif.
+                  Identifie le projet même quand la pastille est cachée
+                  par un hover ou une icône. */}
               <span
                 aria-hidden
-                className="absolute bottom-0 left-0 top-0 w-[3px]"
-                style={{ backgroundColor: p.color }}
+                className="absolute bottom-0 left-0 top-0"
+                style={{ backgroundColor: p.color, width: isActive ? 4 : 3 }}
               />
               <span
                 aria-hidden
@@ -208,7 +235,12 @@ export default function Sidebar() {
               />
               {!collapsed && (
                 <>
-                  <span className="flex-1 truncate text-[var(--fg-primary)]">{p.name}</span>
+                  <span
+                    className="flex-1 truncate text-[var(--fg-primary)]"
+                    style={{ fontWeight: isActive ? 600 : 400 }}
+                  >
+                    {p.name}
+                  </span>
                   <span className="text-[10px] text-[var(--fg-muted)]">{count}</span>
                   <button
                     type="button"

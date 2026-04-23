@@ -7,6 +7,7 @@ import DeleteInterceptor from './components/DeleteInterceptor.js'
 import { useProjectStore } from './stores/project-store.js'
 import { useUIStore } from './stores/ui-store.js'
 import { useChatStore } from './stores/chat-store.js'
+import { useWikiStore } from './stores/wiki-store.js'
 
 // Layout BlowWorks :
 // ┌──────────────────────── Header (48px) ────────────────────────┐
@@ -19,6 +20,7 @@ export default function App() {
   const loadProjects = useProjectStore((s) => s.load)
   const hydrateUI = useUIStore((s) => s.hydrate)
   const hydrateChat = useChatStore((s) => s.hydrate)
+  const refreshWiki = useWikiStore((s) => s.refresh)
 
   useEffect(() => {
     loadProjects()
@@ -27,7 +29,11 @@ export default function App() {
     // OpenRouter présente) + installation du listener global `ai.onChunk`
     // pour router les deltas de streaming vers `activeStreams[convId]`.
     void hydrateChat()
-  }, [loadProjects, hydrateUI, hydrateChat])
+    // Charge le statut du dossier wiki : gouverne les boutons ✦ (chat),
+    // 📚 (chat) et la section Mémoire de la sidebar. Réagit aux mutations
+    // via `useWikiStore.setStatus` côté chooseFolder/reconstruire.
+    void refreshWiki()
+  }, [loadProjects, hydrateUI, hydrateChat, refreshWiki])
 
   return (
     <div className="grid h-full w-full grid-rows-[48px_1fr] bg-[var(--bg-primary)]">

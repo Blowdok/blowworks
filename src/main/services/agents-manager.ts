@@ -147,6 +147,18 @@ function buildRawFilename(conversationId: string): string {
   return `conv-${tail}-${iso}.md`
 }
 
+// Normalise un chemin relatif en retirant les prefix `wiki/`, `./wiki/`,
+// `/wiki/` que le modèle colle parfois malgré le prompt. `writeWiki`
+// ajoute déjà le prefix côté FS, donc laisser le modèle le mettre causait
+// l'arborescence `<folder>/wiki/wiki/concepts/xxx.md`.
+function stripWikiPrefix(filename: string): string {
+  let s = filename.replace(/\\/g, '/').trim()
+  if (s.startsWith('./')) s = s.slice(2)
+  if (s.startsWith('/')) s = s.slice(1)
+  if (s.startsWith('wiki/')) s = s.slice(5)
+  return s
+}
+
 export async function runSynthesizer(
   conversationId: string
 ): Promise<AgentSynthesizerResultT> {
@@ -266,7 +278,10 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
     wikiEntries.map(async (e) => {
       try {
         const content = await wiki.readWiki(e.name)
-        return `### wiki/${e.name}\n\n${content}`
+        // Headers sans prefix `wiki/` pour ne pas inciter le modèle à
+        // recopier ce prefix dans ses `filename` d'operations. Le nom
+        // brut `concepts/pagemark.md` est DÉJÀ relatif au dossier wiki.
+        return `### ${e.name}\n\n${content}`
       } catch {
         return null
       }
@@ -277,13 +292,15 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
   const userPrompt = [
     '## Contexte du compilateur',
     '',
+    '**IMPORTANT** : tous les `filename` que tu produis dans `operations[]` sont relatifs au dossier `wiki/`. Écris `concepts/pagemark.md`, PAS `wiki/concepts/pagemark.md`. Le runner ajoute le prefix automatiquement — si tu le mets aussi, tu créeras une arborescence `wiki/wiki/...`.',
+    '',
     '### SCHEMA.md (spec)',
     schema ?? '(SCHEMA.md absent — utilise les conventions standard de BlowWorks)',
     '',
-    '### wiki/index.md (état maître)',
+    '### index.md (état maître, vit dans wiki/index.md)',
     indexContent ?? '(index.md absent — à créer)',
     '',
-    '### Articles wiki existants',
+    '### Articles existants (chemins relatifs à wiki/)',
     existingArticlesBlock,
     '',
     '## Raw sources à compiler',
@@ -291,7 +308,7 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
     rawBlocks.join('\n\n---\n\n'),
     '',
     '## Tâche',
-    "Produis le JSON d'opérations selon la spec SCHEMA. N'inline pas de markdown fence autour du JSON."
+    "Produis le JSON d'opérations selon la spec SCHEMA. N'inline pas de markdown fence autour du JSON. Rappel : `filename` sans prefix `wiki/`."
   ].join('\n\n')
 
   const result = await oneShotChat({
@@ -311,19 +328,25 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
 
   for (const op of parsed.operations) {
     try {
+      // Les modèles ajoutent parfois un prefix `wiki/` au filename malgré
+      // le prompt qui dit que c'est relatif au dossier wiki/. Strip pour
+      // éviter l'arborescence `wiki/wiki/concepts/xxx.md`. Robuste aux
+      // variantes `./wiki/`, `/wiki/` et `wiki\\` (backslash Windows).
+      const cleanFilename = stripWikiPrefix(op.filename)
+
       if (op.op === 'create' || op.op === 'update') {
-        await wiki.writeWiki(op.filename, op.content)
+        await wiki.writeWiki(cleanFilename, op.content)
       } else if (op.op === 'rename') {
-        // Pour un rename, `filename` est la destination et on attend un
-        // champ optionnel `renameFrom` dans l'objet. Si absent, on skip
-        // silencieusement (le prompt le documente).
         if (op.renameFrom) {
-          await wiki.renameWiki(op.renameFrom, op.filename)
+          await wiki.renameWiki(
+            stripWikiPrefix(op.renameFrom),
+            cleanFilename
+          )
         } else {
           continue
         }
       }
-      applied.push({ op: op.op, filename: op.filename, bytes: op.content.length })
+      applied.push({ op: op.op, filename: cleanFilename, bytes: op.content.length })
     } catch (e) {
       console.warn(`[wiki-builder] op ${op.op} ${op.filename} échouée :`, e)
     }

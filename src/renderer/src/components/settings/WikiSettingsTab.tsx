@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import type {
   WikiFolderStatusT,
   AgentWikiBuilderResultT
 } from '@shared/ipc-contract.js'
+import { useWikiStore } from '../../stores/wiki-store.js'
 
 // Onglet Paramètres > Wiki.
 // Deux états :
@@ -15,31 +16,24 @@ import type {
 // et toute opération wiki se comportent en no-op.
 
 export default function WikiSettingsTab(): React.ReactElement {
-  const [status, setStatus] = useState<WikiFolderStatusT | null>(null)
+  const status = useWikiStore((s) => s.status)
+  const setStoreStatus = useWikiStore((s) => s.setStatus)
+  const refreshStore = useWikiStore((s) => s.refresh)
+
   const [busy, setBusy] = useState(false)
   const [building, setBuilding] = useState(false)
   const [buildResult, setBuildResult] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    void refresh()
-  }, [])
-
-  async function refresh(): Promise<void> {
-    try {
-      const s = (await window.blow.wiki.getFolder()) as WikiFolderStatusT
-      setStatus(s)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
 
   async function handleChoose(): Promise<void> {
     setBusy(true)
     setError(null)
     try {
       const next = (await window.blow.wiki.chooseFolder()) as WikiFolderStatusT | null
-      if (next) setStatus(next)
+      // chooseFolder retourne le statut à jour → on push dans le store
+      // directement, évite un refetch inutile. Si l'utilisateur annule
+      // (next = null), on laisse le store tel quel.
+      if (next) setStoreStatus(next)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -67,7 +61,7 @@ export default function WikiSettingsTab(): React.ReactElement {
       setBuildResult(
         `${r.operations.length} page${r.operations.length > 1 ? 's' : ''} mise${r.operations.length > 1 ? 's' : ''} à jour`
       )
-      await refresh()
+      void refreshStore()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -75,7 +69,7 @@ export default function WikiSettingsTab(): React.ReactElement {
     }
   }
 
-  const isConfigured = status?.folderPath != null && status.initialized
+  const isConfigured = status.folderPath != null && status.initialized
 
   return (
     <div className="flex flex-col gap-4">
@@ -118,7 +112,7 @@ export default function WikiSettingsTab(): React.ReactElement {
         </div>
       )}
 
-      {isConfigured && status && (
+      {isConfigured && (
         <>
           <div
             className="rounded-[var(--radius-sm)] border px-3 py-2 text-[12px]"
@@ -162,7 +156,7 @@ export default function WikiSettingsTab(): React.ReactElement {
             </button>
             <button
               type="button"
-              onClick={() => void refresh()}
+              onClick={() => void refreshStore()}
               className="rounded-[var(--radius-sm)] border border-[var(--border)] px-3 py-1.5 text-[11px] hover:bg-[var(--bg-tertiary)]"
               title="Rafraîchir les stats"
             >

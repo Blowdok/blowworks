@@ -129,7 +129,7 @@ function runMigrations(db: Database.Database): void {
 // constante, on force la mise à jour des prompts des agents système. Ça
 // écrase les customisations utilisateur — acceptable en early dev, à
 // revoir quand on ajoutera un champ `customized` côté table.
-const SYSTEM_PROMPTS_VERSION = 2
+const SYSTEM_PROMPTS_VERSION = 3
 
 // Prompts v2 (Sprint 1) — alignés sur l'analogie compiler + sentinel
 // FLUSH_OK + JSON schema-driven (pattern claude-memory-compiler adapté).
@@ -190,7 +190,7 @@ Tu reçois dans ton prompt :
 
 ## Règles
 
-1. Nom de fichier : **kebab-case.md**, accents supprimés. Placé dans \`wiki/concepts/\`, \`wiki/connections/\` ou \`wiki/qa/\` selon nature.
+1. Nom de fichier : **kebab-case.md**, accents supprimés. Place dans \`concepts/\`, \`connections/\` ou \`qa/\` selon nature. **Le chemin est relatif au dossier wiki/** — n'écris PAS de prefix \`wiki/\` dans \`filename\`, le runner l'ajoute automatiquement.
 2. Chaque article a un frontmatter YAML COMPLET conforme au SCHEMA.
 3. Structure d'article : \`# Titre\` / \`> [!info] Résumé\` (1-2 phrases) / \`## Contexte\` / \`## Détails\` / \`## Points clés\` (3-5 bullets) / \`## Concepts liés\` (2+ wikilinks) / \`## Sources\`.
 4. Longueur : 200-1500 mots. Minimum 3 wikilinks sortants \`[[nom-page]]\` quand la KB contient >5 pages.
@@ -208,15 +208,17 @@ Retourne UNIQUEMENT un JSON valide (pas de markdown fence, pas de préambule) :
   "operations": [
     {
       "op": "create" | "update" | "rename",
-      "filename": "wiki/concepts/...",
+      "filename": "concepts/pagemark.md",
       "content": "contenu markdown complet avec frontmatter YAML en tête",
       "reason": "pourquoi cette opération — audit trail court"
     }
   ],
-  "indexUpdate": "contenu complet du nouveau wiki/index.md",
+  "indexUpdate": "contenu complet du nouveau index.md (vit dans wiki/index.md)",
   "logEntry": "## [ISO8601] wiki-build | résumé une ligne"
 }
 \`\`\`
+
+Note bien : \`filename\` = **chemin relatif au dossier wiki/** (ex: \`concepts/xxx.md\`, \`connections/yyy.md\`). Pas de prefix \`wiki/\`.
 
 Si une source raw/ est ambiguë, crée une page \`statut: to-verify\` plutôt que d'inventer. Si aucune opération n'est nécessaire (tous les raw déjà compilés sans nouveauté), retourne \`{"operations":[],"indexUpdate":"<index inchangé>","logEntry":"## [ISO8601] wiki-build | no-op"}\`.`
 

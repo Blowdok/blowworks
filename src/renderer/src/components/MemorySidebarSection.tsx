@@ -1,8 +1,6 @@
-import { useEffect, useState } from 'react'
-import type {
-  WikiFolderStatusT,
-  AgentWikiBuilderResultT
-} from '@shared/ipc-contract.js'
+import { useState } from 'react'
+import type { AgentWikiBuilderResultT } from '@shared/ipc-contract.js'
+import { useWikiStore } from '../stores/wiki-store.js'
 
 // Section « Mémoire » de la Sidebar de l'app — permet de reconstruire le
 // wiki (agent Wiki Builder) sans quitter la page courante. Le bouton
@@ -22,37 +20,13 @@ export default function MemorySidebarSection({
   collapsed,
   onOpenWikiSettings
 }: MemorySidebarSectionProps): React.ReactElement {
-  const [status, setStatus] = useState<WikiFolderStatusT | null>(null)
+  const status = useWikiStore((s) => s.status)
+  const refreshStatus = useWikiStore((s) => s.refresh)
+
   const [building, setBuilding] = useState(false)
   const [feedback, setFeedback] = useState<
     { kind: 'ok'; message: string } | { kind: 'error'; message: string } | null
   >(null)
-
-  async function refresh(): Promise<void> {
-    try {
-      const s = (await window.blow.wiki.getFolder()) as WikiFolderStatusT
-      setStatus(s)
-    } catch {
-      setStatus(null)
-    }
-  }
-
-  // Charge le statut au mount. `cancelled` évite un setState sur un
-  // composant démonté si la Sidebar est re-rendue pendant la promesse.
-  useEffect(() => {
-    let cancelled = false
-    window.blow.wiki
-      .getFolder()
-      .then((s) => {
-        if (!cancelled) setStatus(s as WikiFolderStatusT)
-      })
-      .catch(() => {
-        if (!cancelled) setStatus(null)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
 
   async function handleBuild(): Promise<void> {
     setBuilding(true)
@@ -63,7 +37,7 @@ export default function MemorySidebarSection({
         kind: 'ok',
         message: `${r.operations.length} page${r.operations.length > 1 ? 's' : ''} mise${r.operations.length > 1 ? 's' : ''} à jour`
       })
-      await refresh()
+      void refreshStatus()
       setTimeout(() => setFeedback(null), 5000)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -74,7 +48,7 @@ export default function MemorySidebarSection({
     }
   }
 
-  const isConfigured = status?.folderPath != null && status.initialized
+  const isConfigured = status.folderPath != null && status.initialized
 
   // Version compacte : un seul icone ✦ (ou ∅ si non configuré). Clic
   // reconstruit le wiki, ou ouvre Settings.
@@ -84,14 +58,14 @@ export default function MemorySidebarSection({
         <button
           type="button"
           onClick={isConfigured ? () => void handleBuild() : onOpenWikiSettings}
-          disabled={building || (isConfigured && status!.rawCount === 0)}
+          disabled={building || (isConfigured && status.rawCount === 0)}
           className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[12px] text-[var(--fg-muted)] hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)] disabled:cursor-not-allowed disabled:opacity-40"
           title={
             !isConfigured
               ? 'Mémoire : configurer le wiki'
-              : status!.rawCount === 0
+              : status.rawCount === 0
                 ? 'Mémoire : aucune synthèse à traiter'
-                : `Reconstruire le wiki (${status!.rawCount} raw → ${status!.wikiCount} pages)`
+                : `Reconstruire le wiki (${status.rawCount} raw → ${status.wikiCount} pages)`
           }
         >
           {building ? '⏳' : isConfigured ? '✦' : '∅'}
@@ -134,7 +108,7 @@ export default function MemorySidebarSection({
         </div>
       )}
 
-      {isConfigured && status && (
+      {isConfigured && (
         <>
           <div className="flex items-center gap-2 text-[10px] text-[var(--fg-muted)]">
             <span title="synthèses brutes">{status.rawCount} raw</span>

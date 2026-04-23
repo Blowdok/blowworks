@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState, useEffect } from 'react'
 import { useEditor } from 'tldraw'
 import { nanoid } from 'nanoid'
 import type { ChatShape } from '../canvas/shapes/ChatShape.js'
-import type { WikiFolderStatusT } from '@shared/ipc-contract.js'
 import { useChatStore } from '../../stores/chat-store.js'
 import { useProjectStore } from '../../stores/project-store.js'
+import { useWikiStore } from '../../stores/wiki-store.js'
 import ChatMessageList from './ChatMessageList.js'
 import ChatInput from './ChatInput.js'
 import ModelSelector from './ModelSelector.js'
@@ -74,7 +74,14 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     | { kind: 'flush-ok' }
     | { kind: 'error'; message: string }
   >({ kind: 'idle' })
-  const [wikiConfigured, setWikiConfigured] = useState<boolean>(false)
+
+  // Statut wiki réactif : toute mutation (chooseFolder, reconstruire,
+  // synthétiser) refresh le store → tous les consommateurs rerender.
+  // Plus de state local chargé une fois au mount qui reste figé si
+  // l'utilisateur configure le wiki après avoir ouvert la ChatShape.
+  const wikiStatus = useWikiStore((s) => s.status)
+  const refreshWikiStatus = useWikiStore((s) => s.refresh)
+  const wikiConfigured = wikiStatus.initialized
 
   const assignedProject = projects.find((p) => p.id === shape.props.projectId) ?? null
   const hasKey = apiKeyStatus.openrouter
@@ -101,19 +108,10 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     }
   }, [hasKey, models.length, modelsLoading, refreshModels])
 
-  // Statut wiki : gouverne les boutons 📚 / Synthétiser (désactivés tant
-  // que le dossier n'est pas configuré). Refetché à chaque ouverture d'un
-  // nouveau ChatShape — le coût est négligeable (1 read SQLite + fs.access).
-  useEffect(() => {
-    void (async () => {
-      try {
-        const s = (await window.blow.wiki.getFolder()) as WikiFolderStatusT
-        setWikiConfigured(s.initialized)
-      } catch {
-        setWikiConfigured(false)
-      }
-    })()
-  }, [])
+  // Le statut wiki vient de useWikiStore — hydraté au boot App + refreshé
+  // après chaque mutation. Pas besoin de useEffect local. Juste une ligne
+  // consommatrice (useWikiStore ci-dessus) qui cause un rerender auto
+  // quand l'utilisateur configure le dossier depuis Settings ou la sidebar.
 
   function setProjectId(projectId: string | null): void {
     editor.updateShape<ChatShape>({
@@ -230,6 +228,10 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       } else {
         setSynthState({ kind: 'success', filename: r.filename })
       }
+      // Refresh du store : rawCount a changé, on veut que les autres
+      // consommateurs (section Mémoire sidebar, Settings > Wiki) voient
+      // le nouveau compteur immédiatement.
+      void refreshWikiStatus()
       setTimeout(() => setSynthState({ kind: 'idle' }), 4000)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
