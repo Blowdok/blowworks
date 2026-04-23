@@ -185,11 +185,19 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.wiki.readRaw, { name }),
     readWiki: (name: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.wiki.readWiki, { name }),
+    readSchema: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.readSchema),
+    readIndex: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.readIndex),
+    readLog: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.readLog),
+    // Alias deprecated — garde la signature le temps que le renderer migre.
     readMemoryTemplate: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.readMemoryTemplate),
     writeRaw: (name: string, content: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.wiki.writeRaw, { name, content }),
     writeWiki: (name: string, content: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.wiki.writeWiki, { name, content }),
+    writeIndex: (content: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.wiki.writeIndex, { content }),
+    appendLog: (entry: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.wiki.appendLog, { entry }),
     openFolderInExplorer: () =>
       ipcRenderer.invoke(IPC_CHANNELS.wiki.openFolderInExplorer)
   }

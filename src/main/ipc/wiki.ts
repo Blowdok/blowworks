@@ -1,4 +1,5 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron'
+import { z } from 'zod'
 import { IPC_CHANNELS, WikiReadInput, WikiWriteInput } from '@shared/ipc-contract.js'
 import * as wiki from '../services/wiki-fs.js'
 
@@ -33,7 +34,11 @@ export function registerWikiHandlers(): void {
     const { name } = WikiReadInput.parse(raw)
     return wiki.readWiki(name)
   })
-  ipcMain.handle(IPC_CHANNELS.wiki.readMemoryTemplate, () => wiki.readMemoryTemplate())
+  ipcMain.handle(IPC_CHANNELS.wiki.readSchema, () => wiki.readSchema())
+  ipcMain.handle(IPC_CHANNELS.wiki.readIndex, () => wiki.readIndex())
+  ipcMain.handle(IPC_CHANNELS.wiki.readLog, () => wiki.readLog())
+  // Alias deprecated (preload continue de l'exposer pour compat renderer).
+  ipcMain.handle(IPC_CHANNELS.wiki.readMemoryTemplate, () => wiki.readSchema())
 
   ipcMain.handle(IPC_CHANNELS.wiki.writeRaw, async (_evt, raw) => {
     const { name, content } = WikiWriteInput.parse(raw)
@@ -43,6 +48,16 @@ export function registerWikiHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.wiki.writeWiki, async (_evt, raw) => {
     const { name, content } = WikiWriteInput.parse(raw)
     await wiki.writeWiki(name, content)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC_CHANNELS.wiki.writeIndex, async (_evt, raw) => {
+    const { content } = z.object({ content: z.string().max(1_000_000) }).parse(raw)
+    await wiki.writeIndex(content)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC_CHANNELS.wiki.appendLog, async (_evt, raw) => {
+    const { entry } = z.object({ entry: z.string().min(1).max(10_000) }).parse(raw)
+    await wiki.appendLog(entry)
     return { ok: true }
   })
 

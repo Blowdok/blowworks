@@ -298,7 +298,7 @@ export type AgentSynthesizerResultT = z.infer<typeof AgentSynthesizerResultSchem
 
 // Résultat d'un run Wiki Builder : opérations appliquées.
 export const AgentWikiBuilderOperationSchema = z.object({
-  op: z.enum(['create', 'update']),
+  op: z.enum(['create', 'update', 'rename']),
   filename: z.string().min(1),
   bytes: z.number().int().nonnegative()
 })
@@ -331,17 +331,21 @@ export const WikiEntrySchema = z.object({
 })
 export type WikiEntryT = z.infer<typeof WikiEntrySchema>
 
-// Validation stricte du nom de fichier wiki : .md uniquement, pas de slash,
-// pas de `..`, caractère ASCII printable + accents + tiret + underscore.
-// Prévient toute tentative d'évasion hors du dossier configuré (path traversal).
+// Validation stricte du nom de fichier wiki : .md uniquement, sous-dossiers
+// autorisés (segments séparés par /), pas de `..`, caractère ASCII printable
+// + accents + tiret + underscore. `resolveSafePath` fait le double-check
+// côté FS pour refuser toute évasion hors du dossier configuré.
 export const WikiFilenameSchema = z
   .string()
   .min(1)
   .max(200)
   .regex(
-    /^[\w\-À-ſ][\w\-À-ſ. ]*\.md$/u,
-    'Nom de fichier invalide : lettres/chiffres/espace/tiret, extension .md'
+    /^[\w\-À-ſ][\w\-À-ſ. ]*(?:\/[\w\-À-ſ][\w\-À-ſ. ]*)*\.md$/u,
+    'Nom de fichier invalide : lettres/chiffres/espace/tiret, sous-dossiers OK, extension .md'
   )
+  .refine((s) => !s.includes('..') && !s.startsWith('/') && !s.includes('\\'), {
+    message: 'Chemin non sécurisé (traversal interdit)'
+  })
 
 export const WikiReadInput = z.object({
   name: WikiFilenameSchema

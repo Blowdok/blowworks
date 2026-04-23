@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useEditor } from 'tldraw'
 import { nanoid } from 'nanoid'
 import type { ChatShape } from '../canvas/shapes/ChatShape.js'
-import type { WikiFolderStatusT, WikiEntryT } from '@shared/ipc-contract.js'
+import type { WikiFolderStatusT } from '@shared/ipc-contract.js'
 import { useChatStore } from '../../stores/chat-store.js'
 import { useProjectStore } from '../../stores/project-store.js'
 import ChatMessageList from './ChatMessageList.js'
@@ -68,7 +68,11 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false)
   const [historyDropdownOpen, setHistoryDropdownOpen] = useState(false)
   const [synthState, setSynthState] = useState<
-    { kind: 'idle' } | { kind: 'running' } | { kind: 'success'; filename: string } | { kind: 'error'; message: string }
+    | { kind: 'idle' }
+    | { kind: 'running' }
+    | { kind: 'success'; filename: string }
+    | { kind: 'flush-ok' }
+    | { kind: 'error'; message: string }
   >({ kind: 'idle' })
   const [wikiConfigured, setWikiConfigured] = useState<boolean>(false)
 
@@ -154,63 +158,39 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     })
   }
 
-  // Construit le prompt mémoire injecté comme system message : MEMORY.md
-  // + contenu COMPLET de toutes les pages wiki/*.md, capé à 80 KB pour
-  // éviter de saturer la fenêtre de contexte du modèle. Si le wiki dépasse
-  // cette taille, on inline les pages les plus récentes et on signale à
-  // l'IA qu'il y a davantage de contenu accessible (pour qu'elle demande
-  // à l'utilisateur plutôt que d'inventer).
+  // Injection mémoire v2 (Sprint 1) : on passe au modèle UNIQUEMENT le
+  // SCHEMA.md (conventions + analogie compiler) et wiki/index.md
+  // (catalogue plat). Contenu total ~5-15 KB au lieu de 80 KB de dump.
+  //
+  // L'IA a une vue COMPLÈTE de la structure et des pages disponibles,
+  // mais PAS le contenu intégral. Si elle a besoin d'une page précise,
+  // elle demande dans sa réponse et l'utilisateur peut référencer la
+  // page. Les tools function-calling (Sprint 2) feront cette demande
+  // automatiquement via `read_wiki_page(name)`.
   async function buildWikiContext(): Promise<string | null> {
     if (!wikiConfigured) return null
     try {
-      const [memory, wikiEntries] = await Promise.all([
-        window.blow.wiki.readMemoryTemplate() as Promise<string | null>,
-        window.blow.wiki.listWiki() as Promise<WikiEntryT[]>
+      const [schema, indexContent] = await Promise.all([
+        window.blow.wiki.readSchema() as Promise<string | null>,
+        window.blow.wiki.readIndex() as Promise<string | null>
       ])
-      if (!memory && wikiEntries.length === 0) return null
+      if (!schema && !indexContent) return null
 
-      // Charge chaque page dans l'ordre (listWiki renvoie déjà trié par
-      // modifiedAt DESC) jusqu'au budget caractères. Au-delà on abandonne.
-      const MAX_CHARS = 80_000
-      const pageBlocks: string[] = []
-      const skipped: string[] = []
-      let used = 0
-      for (const entry of wikiEntries) {
-        try {
-          const content = (await window.blow.wiki.readWiki(entry.name)) as string
-          const block = `#### wiki/${entry.name}\n\n${content.trim()}`
-          if (used + block.length > MAX_CHARS) {
-            skipped.push(entry.name)
-            continue
-          }
-          pageBlocks.push(block)
-          used += block.length
-        } catch {
-          skipped.push(entry.name)
-        }
-      }
-
-      const lines: string[] = [
-        '### Mémoire long-terme partagée',
+      return [
+        '### Mémoire long-terme partagée (BlowWorks)',
         '',
-        'Tu as accès à une mémoire persistante extraite des conversations passées. Utilise-la comme source de vérité pour rester cohérent avec les décisions, contextes et références déjà établis. Cite les pages par leur nom de fichier (`wiki/xxx.md`) quand tu t\'en sers.',
+        "Tu as accès à une mémoire persistante extraite des conversations passées. Ci-dessous : les conventions du wiki (SCHEMA.md) et l'index de toutes les pages disponibles. Si une page t'est utile pour répondre, mentionne son nom et demande à l'utilisateur de la joindre au contexte — tant que les outils de lecture automatique ne sont pas branchés.",
         '',
-        '#### Conventions (MEMORY.md)',
+        '#### SCHEMA.md — spec du compilateur de mémoire',
         '',
-        memory && memory.trim().length > 0 ? memory : '(MEMORY.md vide)'
-      ]
-      if (pageBlocks.length > 0) {
-        lines.push('', '#### Pages wiki (contenu complet)', '', pageBlocks.join('\n\n---\n\n'))
-      } else {
-        lines.push('', '#### Pages wiki', '', '(aucune page wiki pour le moment)')
-      }
-      if (skipped.length > 0) {
-        lines.push(
-          '',
-          `_Pages non inlinées faute de budget : ${skipped.join(', ')}. Demande à l'utilisateur si tu as besoin de leur contenu._`
-        )
-      }
-      return lines.join('\n')
+        schema && schema.trim().length > 0 ? schema : '(SCHEMA.md absent)',
+        '',
+        '#### wiki/index.md — catalogue des pages',
+        '',
+        indexContent && indexContent.trim().length > 0
+          ? indexContent
+          : '(index.md vide — aucune page compilée pour le moment)'
+      ].join('\n')
     } catch (e) {
       console.warn('[chat] buildWikiContext failed', e)
       return null
@@ -241,7 +221,15 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
         filename: string
         summary: string
       }
-      setSynthState({ kind: 'success', filename: r.filename })
+      // Cas FLUSH_OK : l'agent a jugé qu'il n'y avait rien à sauver.
+      // Le runner retourne filename='' dans ce cas. On affiche un
+      // feedback différent pour que l'utilisateur sache que c'est
+      // intentionnel, pas une erreur silencieuse.
+      if (r.filename === '') {
+        setSynthState({ kind: 'flush-ok' })
+      } else {
+        setSynthState({ kind: 'success', filename: r.filename })
+      }
       setTimeout(() => setSynthState({ kind: 'idle' }), 4000)
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
@@ -278,14 +266,12 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     void refreshAllConversations()
   }
 
-  // Dropdown historique : switch la shape vers une conv existante. On charge
-  // ses messages si pas déjà cachés, puis on update les props — le hook
-  // hydratedMapRef évitera un double create côté ensureConversation.
-  async function handleSelectConversation(targetId: string): Promise<void> {
-    if (targetId === convId) {
-      setHistoryDropdownOpen(false)
-      return
-    }
+  // Switch de la shape vers une conversation existante — ne touche PAS à
+  // l'état d'ouverture du dropdown. `handleSelectConversation` (utilisateur
+  // clique sur un item) ferme le dropdown ; `handleDeleteConversation` le
+  // laisse ouvert pour enchaîner plusieurs suppressions.
+  async function switchToConversation(targetId: string): Promise<void> {
+    if (targetId === convId) return
     await loadConversation(targetId)
     hydratedMapRef.current.add(targetId)
     editor.updateShape<ChatShape>({
@@ -293,28 +279,34 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       type: 'chat',
       props: { conversationId: targetId }
     })
+  }
+
+  async function handleSelectConversation(targetId: string): Promise<void> {
+    await switchToConversation(targetId)
     setHistoryDropdownOpen(false)
   }
 
   // Suppression d'une conv depuis le dropdown. Si c'est la conv active, on
-  // fallback sur une conv voisine ou on recrée une conv vide pour que la
-  // shape n'ait jamais un pointeur cassé.
+  // fallback silencieusement sur la plus récente restante SANS fermer le
+  // dropdown — l'utilisateur peut enchaîner plusieurs suppressions. Si la
+  // KB est vide après suppression, on recrée une conv vierge pour que la
+  // shape ne pointe jamais dans le vide.
   async function handleDeleteConversation(targetId: string): Promise<void> {
     const wasActive = targetId === convId
     await deleteConversationById(targetId)
     if (!wasActive) return
 
-    // Cherche une autre conv à afficher (la plus récente restante).
     const remaining = Array.from(allConversations.values())
       .filter((c) => c.id !== targetId)
       .sort((a, b) => b.updatedAt - a.updatedAt)
 
     if (remaining.length > 0) {
-      await handleSelectConversation(remaining[0].id)
+      await switchToConversation(remaining[0].id)
       return
     }
 
-    // Plus rien en DB : on recrée une conv vierge pour cette shape.
+    // Plus rien en DB : conv vierge. `handleNewConversation` ne touche
+    // pas à l'état du dropdown — il reste ouvert sur la liste vide.
     await handleNewConversation()
   }
 
@@ -528,7 +520,9 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
                 ? '#ef4444'
                 : synthState.kind === 'success'
                   ? 'var(--fg-secondary)'
-                  : 'var(--border)',
+                  : synthState.kind === 'flush-ok'
+                    ? 'var(--fg-muted)'
+                    : 'var(--border)',
             color:
               synthState.kind === 'error'
                 ? '#ef4444'
@@ -540,6 +534,8 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
           {synthState.kind === 'running' && '⏳ Synthèse en cours…'}
           {synthState.kind === 'success' &&
             `✓ Synthèse sauvée dans raw/${synthState.filename}`}
+          {synthState.kind === 'flush-ok' &&
+            '∅ Rien à sauver — la conversation n\'a pas de substance mémorisable (FLUSH_OK).'}
           {synthState.kind === 'error' && `✗ ${synthState.message}`}
         </div>
       )}

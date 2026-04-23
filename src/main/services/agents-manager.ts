@@ -197,8 +197,29 @@ export async function runSynthesizer(
     throw new Error('Synthétiseur a retourné une réponse vide.')
   }
 
+  // Sentinel FLUSH_OK : l'agent a jugé qu'il n'y avait rien à sauver.
+  // On ne crée PAS de fichier raw/ et on retourne un nom spécial que la
+  // UI peut détecter pour afficher "rien à synthétiser" proprement.
+  const trimmed = result.content.trim()
+  if (trimmed === 'FLUSH_OK' || trimmed.startsWith('FLUSH_OK\n') || trimmed.startsWith('FLUSH_OK ')) {
+    await wiki.appendLog(
+      `## [${new Date().toISOString()}] synthesize | FLUSH_OK (rien à sauver pour conv "${conv.title || conversationId}")\n`
+    )
+    return {
+      filename: '',
+      summary: 'FLUSH_OK — la conversation ne contenait rien qui vaille la mémoire long-terme.'
+    }
+  }
+
   const filename = buildRawFilename(conversationId)
   await wiki.writeRaw(filename, result.content)
+
+  // Append log — permet à l'utilisateur de suivre l'activité mémoire
+  // depuis log.md sans avoir à ouvrir chaque raw.
+  const title = conv.title || 'sans titre'
+  await wiki.appendLog(
+    `## [${new Date().toISOString()}] synthesize | conv "${title}" → raw/${filename}\n`
+  )
 
   return { filename, summary: result.content }
 }
@@ -221,20 +242,57 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
     throw new Error('Aucune synthèse raw/ à traiter. Lancez le Synthétiseur d’abord.')
   }
 
-  // Charge le contenu complet des raw (source principale) + seulement les
-  // titres des wiki existants (contexte de l'état courant, pas de payload
-  // démesuré si le wiki devient gros).
-  const rawBlocks = await Promise.all(
-    rawEntries.map(async (e) => {
-      const content = await wiki.readRaw(e.name)
-      return `### raw/${e.name}\n\n${content}`
+  // Input complet du compilateur (pattern claude-memory-compiler) :
+  // SCHEMA.md (spec) + index.md (état maître) + TOUS les articles wiki
+  // existants + TOUS les raw à compiler. L'agent a tout en contexte pour
+  // éviter doublons et maintenir les wikilinks croisés.
+  const [schema, indexContent, wikiEntries, rawBlocks] = await Promise.all([
+    wiki.readSchema(),
+    wiki.readIndex(),
+    wiki.listWiki(),
+    Promise.all(
+      rawEntries.map(async (e) => {
+        const content = await wiki.readRaw(e.name)
+        return `### raw/${e.name}\n\n${content}`
+      })
+    )
+  ])
+
+  // Contenu INTÉGRAL de chaque article existant — oui, c'est coûteux en
+  // tokens quand le wiki grossit, mais c'est ce qui permet à l'agent de
+  // détecter les doublons et d'enrichir au lieu de dupliquer. À revoir
+  // au Sprint 2 (tools function-calling : read_wiki_page à la demande).
+  const existingArticles = await Promise.all(
+    wikiEntries.map(async (e) => {
+      try {
+        const content = await wiki.readWiki(e.name)
+        return `### wiki/${e.name}\n\n${content}`
+      } catch {
+        return null
+      }
     })
   )
+  const existingArticlesBlock = existingArticles.filter((x): x is string => x !== null).join('\n\n---\n\n') || '(aucun article existant)'
 
-  const wikiEntries = await wiki.listWiki()
-  const wikiList = wikiEntries.map((e) => `- ${e.name}`).join('\n') || '(vide)'
-
-  const userPrompt = `Voici les synthèses brutes à traiter :\n\n${rawBlocks.join('\n\n---\n\n')}\n\nPages wiki existantes :\n${wikiList}\n\nProduis le JSON d'opérations.`
+  const userPrompt = [
+    '## Contexte du compilateur',
+    '',
+    '### SCHEMA.md (spec)',
+    schema ?? '(SCHEMA.md absent — utilise les conventions standard de BlowWorks)',
+    '',
+    '### wiki/index.md (état maître)',
+    indexContent ?? '(index.md absent — à créer)',
+    '',
+    '### Articles wiki existants',
+    existingArticlesBlock,
+    '',
+    '## Raw sources à compiler',
+    '',
+    rawBlocks.join('\n\n---\n\n'),
+    '',
+    '## Tâche',
+    "Produis le JSON d'opérations selon la spec SCHEMA. N'inline pas de markdown fence autour du JSON."
+  ].join('\n\n')
 
   const result = await oneShotChat({
     model: agent.model,
@@ -248,25 +306,71 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
     throw new Error(`Échec Wiki Builder : ${result.error}`)
   }
 
-  const operations = parseWikiBuilderResponse(result.content)
+  const parsed = parseWikiBuilderResponse(result.content)
   const applied: AgentWikiBuilderOperationT[] = []
-  for (const op of operations) {
-    await wiki.writeWiki(op.filename, op.content)
-    applied.push({ op: op.op, filename: op.filename, bytes: op.content.length })
+
+  for (const op of parsed.operations) {
+    try {
+      if (op.op === 'create' || op.op === 'update') {
+        await wiki.writeWiki(op.filename, op.content)
+      } else if (op.op === 'rename') {
+        // Pour un rename, `filename` est la destination et on attend un
+        // champ optionnel `renameFrom` dans l'objet. Si absent, on skip
+        // silencieusement (le prompt le documente).
+        if (op.renameFrom) {
+          await wiki.renameWiki(op.renameFrom, op.filename)
+        } else {
+          continue
+        }
+      }
+      applied.push({ op: op.op, filename: op.filename, bytes: op.content.length })
+    } catch (e) {
+      console.warn(`[wiki-builder] op ${op.op} ${op.filename} échouée :`, e)
+    }
   }
+
+  // Met à jour index.md + log.md si fournis par l'agent. Ces 2 écritures
+  // ne peuvent pas être laissées à l'agent lui-même via operations[] car
+  // elles portent une sémantique différente (maintenance vs article).
+  if (parsed.indexUpdate && parsed.indexUpdate.trim().length > 0) {
+    try {
+      await wiki.writeIndex(parsed.indexUpdate)
+    } catch (e) {
+      console.warn('[wiki-builder] writeIndex échoué :', e)
+    }
+  }
+  if (parsed.logEntry && parsed.logEntry.trim().length > 0) {
+    // L'agent fournit la ligne préformattée. On ajoute un newline final
+    // si manquant pour garantir l'append propre.
+    const entry = parsed.logEntry.endsWith('\n') ? parsed.logEntry : parsed.logEntry + '\n'
+    try {
+      await wiki.appendLog(entry)
+    } catch (e) {
+      console.warn('[wiki-builder] appendLog échoué :', e)
+    }
+  }
+
   return { operations: applied }
 }
 
-// Parse la réponse JSON du Wiki Builder. Les modèles ont tendance à
-// encadrer leur JSON avec ```json ... ``` ou d'ajouter un commentaire —
-// on extrait le 1er objet JSON valide de la réponse.
+// Parse la réponse JSON du Wiki Builder v2. Structure attendue :
+//   { operations: [{op, filename, content, renameFrom?}], indexUpdate, logEntry }
+// Les modèles encadrent souvent le JSON avec ```json ... ``` ou ajoutent
+// un préambule — on extrait le 1er objet JSON valide.
 interface WikiBuilderOp {
-  op: 'create' | 'update'
+  op: 'create' | 'update' | 'rename'
   filename: string
   content: string
+  renameFrom?: string
 }
 
-function parseWikiBuilderResponse(raw: string): WikiBuilderOp[] {
+interface WikiBuilderParsedResponse {
+  operations: WikiBuilderOp[]
+  indexUpdate: string
+  logEntry: string
+}
+
+function parseWikiBuilderResponse(raw: string): WikiBuilderParsedResponse {
   const jsonText = extractJsonObject(raw)
   if (!jsonText) {
     throw new Error(
@@ -289,9 +393,13 @@ function parseWikiBuilderResponse(raw: string): WikiBuilderOp[] {
       "Réponse Wiki Builder invalide : champ `operations` manquant ou non-tableau."
     )
   }
-  const opsRaw = (parsed as { operations: unknown[] }).operations
+  const obj = parsed as {
+    operations: unknown[]
+    indexUpdate?: unknown
+    logEntry?: unknown
+  }
   const ops: WikiBuilderOp[] = []
-  for (const o of opsRaw) {
+  for (const o of obj.operations) {
     if (
       !o ||
       typeof o !== 'object' ||
@@ -302,14 +410,20 @@ function parseWikiBuilderResponse(raw: string): WikiBuilderOp[] {
       continue
     }
     const op = (o as { op: string }).op
-    if (op !== 'create' && op !== 'update') continue
+    if (op !== 'create' && op !== 'update' && op !== 'rename') continue
+    const renameFromRaw = (o as { renameFrom?: unknown }).renameFrom
     ops.push({
-      op,
+      op: op as WikiBuilderOp['op'],
       filename: (o as { filename: string }).filename,
-      content: (o as { content: string }).content
+      content: (o as { content: string }).content,
+      renameFrom: typeof renameFromRaw === 'string' ? renameFromRaw : undefined
     })
   }
-  return ops
+  return {
+    operations: ops,
+    indexUpdate: typeof obj.indexUpdate === 'string' ? obj.indexUpdate : '',
+    logEntry: typeof obj.logEntry === 'string' ? obj.logEntry : ''
+  }
 }
 
 // Extraction robuste d'un objet JSON depuis une chaîne : on cherche la 1ère

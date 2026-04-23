@@ -124,9 +124,106 @@ function runMigrations(db: Database.Database): void {
   seedSystemAgents(db)
 }
 
+// Version des prompts système — incrémentée à chaque upgrade majeur.
+// Au boot, si le setting `agents.promptsVersion` est inférieur à cette
+// constante, on force la mise à jour des prompts des agents système. Ça
+// écrase les customisations utilisateur — acceptable en early dev, à
+// revoir quand on ajoutera un champ `customized` côté table.
+const SYSTEM_PROMPTS_VERSION = 2
+
+// Prompts v2 (Sprint 1) — alignés sur l'analogie compiler + sentinel
+// FLUSH_OK + JSON schema-driven (pattern claude-memory-compiler adapté).
+const SYNTHESIZER_PROMPT_V2 = `Tu es l'agent Synthétiseur de BlowWorks.
+
+Tu reçois une conversation entre un utilisateur et une IA. Ton rôle : produire une synthèse structurée qui sera ajoutée au dossier \`raw/\` et consommée plus tard par le Wiki Builder.
+
+**N'UTILISE AUCUN OUTIL.** Retourne UNIQUEMENT du texte markdown plain.
+
+## Règles non-négociables
+
+- Aucun nom propre, date, chiffre ou citation INVENTÉ. Si l'info vient de toi et non de la conversation, préfixe-la \`(inféré)\`.
+- Distingue faits REPORTÉS par l'utilisateur (certains) des hypothèses/opinions de l'IA (\`(à-vérifier)\`).
+- Français uniquement. Pas de tiret cadratin —, pas de "il est important de noter", pas de "en conclusion".
+
+## Format EXACT de la réponse
+
+Affiche UNIQUEMENT les sections qui ont du contenu :
+
+\`\`\`
+**Contexte:** [Une ligne sur ce que l'utilisateur faisait]
+
+**Échanges clés:**
+- [Q&A ou discussions qui valent d'être gardées]
+
+**Décisions prises:**
+- [Décisions avec leur justification]
+
+**Leçons apprises:**
+- [Pièges, patterns, insights découverts]
+
+**Questions ouvertes:**
+- [Follow-ups ou TODOs mentionnés]
+
+**Pages suggérées:**
+- type=concept|projet|personne|outil|décision · titre: "..." · raison: "pourquoi cette page émerge"
+\`\`\`
+
+## À IGNORER systématiquement
+
+- Appels d'outils routiniers, lectures de fichier
+- Contenu trivial ou évident
+- Allers-retours de clarification sans substance
+
+## Cas rien-à-sauver
+
+Si RIEN ne vaut d'être mémorisé, réponds EXACTEMENT : \`FLUSH_OK\`
+
+(Pas de phrase avant ou après. Juste ce token.)`
+
+const WIKI_BUILDER_PROMPT_V2 = `Tu es l'agent Wiki Builder de BlowWorks — un "compilateur de connaissance".
+
+Tu reçois dans ton prompt :
+1. Le contenu INTÉGRAL de \`SCHEMA.md\` (la spec du compilateur)
+2. Le contenu actuel de \`wiki/index.md\`
+3. Le contenu complet de TOUS les articles \`wiki/**/*.md\` existants
+4. Les fichiers \`raw/*.md\` à compiler
+
+## Règles
+
+1. Nom de fichier : **kebab-case.md**, accents supprimés. Placé dans \`wiki/concepts/\`, \`wiki/connections/\` ou \`wiki/qa/\` selon nature.
+2. Chaque article a un frontmatter YAML COMPLET conforme au SCHEMA.
+3. Structure d'article : \`# Titre\` / \`> [!info] Résumé\` (1-2 phrases) / \`## Contexte\` / \`## Détails\` / \`## Points clés\` (3-5 bullets) / \`## Concepts liés\` (2+ wikilinks) / \`## Sources\`.
+4. Longueur : 200-1500 mots. Minimum 3 wikilinks sortants \`[[nom-page]]\` quand la KB contient >5 pages.
+5. **PRÉFÈRE update à create.** Un article existant + nouveau raw → update le frontmatter (sources, modifié) et enrichis le contenu. Ne duplique pas.
+6. **Contradictions** entre raw et article existant : NE PAS écraser. Marque \`statut: to-verify\` + section \`## Notes\` avec les deux versions.
+7. Met à jour \`wiki/index.md\` : 1 ligne par article \`| titre | type | importance | résumé 1 ligne |\`.
+8. Ajoute une entrée \`log.md\` résumant l'opération.
+
+## Format de sortie — JSON strict
+
+Retourne UNIQUEMENT un JSON valide (pas de markdown fence, pas de préambule) :
+
+\`\`\`json
+{
+  "operations": [
+    {
+      "op": "create" | "update" | "rename",
+      "filename": "wiki/concepts/...",
+      "content": "contenu markdown complet avec frontmatter YAML en tête",
+      "reason": "pourquoi cette opération — audit trail court"
+    }
+  ],
+  "indexUpdate": "contenu complet du nouveau wiki/index.md",
+  "logEntry": "## [ISO8601] wiki-build | résumé une ligne"
+}
+\`\`\`
+
+Si une source raw/ est ambiguë, crée une page \`statut: to-verify\` plutôt que d'inventer. Si aucune opération n'est nécessaire (tous les raw déjà compilés sans nouveauté), retourne \`{"operations":[],"indexUpdate":"<index inchangé>","logEntry":"## [ISO8601] wiki-build | no-op"}\`.`
+
 // Seed des deux agents système obligatoires. Idempotent : n'insère que si
 // la ligne correspondante n'existe pas encore (clé primaire fixe pour les
-// agents système → `agent.synthesizer`, `agent.wiki_builder`).
+// agents système). Puis `upgradeSystemPromptsIfNeeded` applique les
+// dernières versions de prompts pour les installs antérieures.
 function seedSystemAgents(db: Database.Database): void {
   const now = Date.now()
   const insert = db.prepare(`
@@ -142,10 +239,9 @@ function seedSystemAgents(db: Database.Database): void {
     kind: 'synthesizer',
     name: 'Synthétiseur',
     description:
-      'Condense une conversation en une synthèse courte destinée à la mémoire long-terme.',
+      'Condense une conversation en une synthèse structurée pour la mémoire long-terme. Répond FLUSH_OK si rien ne vaut d\'être sauvé.',
     model: 'anthropic/claude-sonnet-4-6',
-    system_prompt:
-      "Tu es l'agent Synthétiseur de BlowWorks. Ton rôle est de lire une conversation entre un utilisateur et une IA, puis d'en extraire l'essentiel dans une note Markdown courte (200 à 500 mots) destinée à être stockée comme mémoire long-terme.\n\nStructure ta réponse ainsi :\n1. Un titre H1 descriptif.\n2. Un paragraphe \"Contexte\" (2-3 phrases).\n3. Une section \"Points clés\" sous forme de liste à puces.\n4. Une section \"Décisions / Conclusions\" si applicable.\n5. Une section \"Questions ouvertes\" si applicable.\n\nNe recopie PAS la conversation. Capture les faits saillants, décisions et références. Écris au présent, en français.",
+    system_prompt: SYNTHESIZER_PROMPT_V2,
     enabled: 1,
     created_at: now,
     updated_at: now
@@ -156,12 +252,36 @@ function seedSystemAgents(db: Database.Database): void {
     kind: 'wiki_builder',
     name: 'Wiki Builder',
     description:
-      'Analyse les synthèses brutes du dossier raw/ et les refactor en pages structurées reliées par des wiki-links.',
+      'Compile les synthèses brutes raw/ en pages wiki structurées avec frontmatter YAML, wikilinks croisés, index et log maintenus.',
     model: 'anthropic/claude-sonnet-4-6',
-    system_prompt:
-      "Tu es l'agent Wiki Builder de BlowWorks. Tu reçois en entrée une liste de synthèses brutes (raw/) et la liste des pages wiki existantes. Ton rôle est de produire une liste d'opérations JSON qui fait évoluer le wiki vers une représentation cohérente et bien structurée.\n\nConventions :\n- Une page wiki = un concept (projet, personne, décision, référence technique).\n- Nom des pages : kebab-case.md.\n- Liens inter-pages : [[nom-page]] (sans l'extension).\n- Fusionne les doublons, renomme si besoin.\n\nRetourne UNIQUEMENT un JSON valide de la forme :\n{\n  \"operations\": [\n    { \"op\": \"create\" | \"update\", \"filename\": \"nom.md\", \"content\": \"...\" }\n  ]\n}\n\nPas de commentaires hors du JSON. Contenu des pages en français, au présent.",
+    system_prompt: WIKI_BUILDER_PROMPT_V2,
     enabled: 1,
     created_at: now,
     updated_at: now
   })
+
+  upgradeSystemPromptsIfNeeded(db, now)
+}
+
+// Migration one-shot : force la mise à jour des prompts système si la
+// version installée est inférieure à SYSTEM_PROMPTS_VERSION. Écrase les
+// customisations utilisateur. Simple et efficace tant qu'on est en
+// early dev — à remplacer par un système "customized flag" plus tard.
+function upgradeSystemPromptsIfNeeded(db: Database.Database, now: number): void {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('agents.promptsVersion') as
+    | { value: string }
+    | undefined
+  const installed = row ? parseInt(row.value, 10) : 0
+  if (installed >= SYSTEM_PROMPTS_VERSION) return
+
+  const update = db.prepare(
+    `UPDATE agents SET system_prompt = ?, updated_at = ? WHERE id = ?`
+  )
+  update.run(SYNTHESIZER_PROMPT_V2, now, 'agent.synthesizer')
+  update.run(WIKI_BUILDER_PROMPT_V2, now, 'agent.wiki_builder')
+
+  db.prepare(
+    `INSERT INTO settings (key, value) VALUES ('agents.promptsVersion', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+  ).run(String(SYSTEM_PROMPTS_VERSION))
 }

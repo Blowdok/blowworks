@@ -88,9 +88,16 @@ export const IPC_CHANNELS = {
     listWiki: 'wiki.listWiki',
     readRaw: 'wiki.readRaw',
     readWiki: 'wiki.readWiki',
+    readSchema: 'wiki.readSchema',
+    readIndex: 'wiki.readIndex',
+    readLog: 'wiki.readLog',
+    // Alias déprécié — preload continue de l'exposer le temps que les
+    // appelants renderer migrent (readMemoryTemplate → readSchema).
     readMemoryTemplate: 'wiki.readMemoryTemplate',
     writeRaw: 'wiki.writeRaw',
     writeWiki: 'wiki.writeWiki',
+    writeIndex: 'wiki.writeIndex',
+    appendLog: 'wiki.appendLog',
     openFolderInExplorer: 'wiki.openFolderInExplorer'
   }
 } as const
