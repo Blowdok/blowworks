@@ -172,7 +172,7 @@ export default function MemorySidebarSection({
             onClick={() => void handleImportToRaw()}
             disabled={building}
             className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--fg-muted)] hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)] disabled:cursor-not-allowed disabled:opacity-40"
-            title="Ajouter manuellement un .md ou .txt dans raw/ pour ingestion par le Wiki Builder"
+            title="Importer un .md, .txt, .html ou .pdf dans raw/ — converti automatiquement en markdown avant ingestion par le Wiki Builder"
           >
             📂 Importer dans raw
           </button>

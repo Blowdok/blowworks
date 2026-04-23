@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import {
@@ -46,6 +46,14 @@ export default function WikiPageViewer(): React.ReactElement | null {
   const [resizing, setResizing] = useState(false)
 
   const dirty = original !== null && draft !== original
+  // Refs pour que le handler de clic wikilink dans le useMemo ci-dessous
+  // voie TOUJOURS la valeur courante de dirty/pageName au moment du
+  // clic, sans recréer le memo à chaque frappe (draft change = dirty
+  // change → sans ref, invalidation du memo à chaque touche).
+  const dirtyRef = useRef(dirty)
+  const pageNameRef = useRef(pageName)
+  dirtyRef.current = dirty
+  pageNameRef.current = pageName
 
   // Reset content/error quand pageName change — render-reset pattern
   // pour éviter `react-hooks/set-state-in-effect`.
@@ -145,13 +153,11 @@ export default function WikiPageViewer(): React.ReactElement | null {
                   href={href}
                   onClick={(e) => {
                     e.preventDefault()
-                    // Garde dirty : si le draft contient des modifs non
-                    // sauvegardées, on demande confirmation AVANT de
-                    // naviguer. Sans ce guard, le render-reset écrase
-                    // silencieusement le draft au changement de pageName.
-                    if (dirty) {
+                    // Garde dirty : refs pour éviter la closure stale
+                    // (le useMemo n'a pas dirty/pageName dans ses deps).
+                    if (dirtyRef.current) {
                       const ok = window.confirm(
-                        `Modifications non sauvegardées sur "${pageName}". Quitter sans enregistrer ?`
+                        `Modifications non sauvegardées sur "${pageNameRef.current}". Quitter sans enregistrer ?`
                       )
                       if (!ok) return
                     }

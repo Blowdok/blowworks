@@ -81,7 +81,13 @@ export function registerWikiHandlers(): void {
       title: 'Importer dans raw/',
       properties: ['openFile', 'multiSelections', 'dontAddToRecent'],
       filters: [
-        { name: 'Notes markdown / texte', extensions: ['md', 'markdown', 'txt'] }
+        {
+          name: 'Tous formats supportés',
+          extensions: ['md', 'markdown', 'txt', 'html', 'htm', 'pdf']
+        },
+        { name: 'Markdown / texte', extensions: ['md', 'markdown', 'txt'] },
+        { name: 'HTML', extensions: ['html', 'htm'] },
+        { name: 'PDF', extensions: ['pdf'] }
       ]
     })
     if (result.canceled || result.filePaths.length === 0) {

@@ -581,12 +581,26 @@ export async function openRawInExplorer(): Promise<string> {
 // de format avancée (.pdf → .md, .html → .md) viendra plus tard via
 // `turndown` / `pdf-parse` si l'utilisateur le demande.
 //
-// Sécurité : on accepte UNIQUEMENT `.md`, `.markdown`, `.txt` (extensions
-// texte sûres). Tout autre format est rejeté pour éviter qu'un binaire
-// (image, PDF brut) ne pollue raw/ et casse les agents qui y lisent
-// du markdown attendu.
-const ALLOWED_IMPORT_EXTENSIONS = new Set(['.md', '.markdown', '.txt'])
-const MAX_IMPORT_BYTES = 5_000_000
+// Formats acceptés. Texte brut = copie directe. HTML = conversion via
+// turndown. PDF = extraction de texte via pdf-parse. Toute autre
+// extension est rejetée — le Wiki Builder lit du markdown, pas des
+// binaires arbitraires.
+const ALLOWED_IMPORT_EXTENSIONS = new Set([
+  '.md',
+  '.markdown',
+  '.txt',
+  '.html',
+  '.htm',
+  '.pdf'
+])
+const TEXT_IMPORT_EXTENSIONS = new Set(['.md', '.markdown', '.txt'])
+const HTML_IMPORT_EXTENSIONS = new Set(['.html', '.htm'])
+const PDF_IMPORT_EXTENSIONS = new Set(['.pdf'])
+// Limite globale 10 MiB pour supporter des PDFs un peu épais.
+// Texte/HTML reste limité à 5 MiB pour éviter les bombes zip style
+// HTML qui explosent en markdown.
+const MAX_IMPORT_BYTES_TEXT = 5_000_000
+const MAX_IMPORT_BYTES_PDF = 10_000_000
 
 export interface ImportResult {
   sourcePath: string
@@ -609,21 +623,42 @@ export async function importToRaw(sourcePaths: string[]): Promise<ImportResult[]
           sourcePath,
           targetName: null,
           bytes: 0,
-          error: `Extension non supportée : ${ext || '(aucune)'}. Accepté : .md, .markdown, .txt.`
+          error: `Extension non supportée : ${ext || '(aucune)'}. Accepté : .md, .markdown, .txt, .html, .htm, .pdf.`
         })
         continue
       }
       const stat = await fs.stat(sourcePath)
-      if (stat.size > MAX_IMPORT_BYTES) {
+      const maxBytes = PDF_IMPORT_EXTENSIONS.has(ext)
+        ? MAX_IMPORT_BYTES_PDF
+        : MAX_IMPORT_BYTES_TEXT
+      if (stat.size > maxBytes) {
         results.push({
           sourcePath,
           targetName: null,
           bytes: stat.size,
-          error: `Fichier trop volumineux (${formatSize(stat.size)}, max ${formatSize(MAX_IMPORT_BYTES)}).`
+          error: `Fichier trop volumineux (${formatSize(stat.size)}, max ${formatSize(maxBytes)}).`
         })
         continue
       }
-      const content = await fs.readFile(sourcePath, 'utf8')
+
+      // Lecture + conversion selon le type. Texte = tel quel, HTML =
+      // turndown, PDF = pdf-parse. Les conversions peuvent throw — on
+      // catch par fichier pour ne pas bloquer les imports valides du
+      // même batch.
+      let content: string
+      if (TEXT_IMPORT_EXTENSIONS.has(ext)) {
+        content = await fs.readFile(sourcePath, 'utf8')
+      } else if (HTML_IMPORT_EXTENSIONS.has(ext)) {
+        const html = await fs.readFile(sourcePath, 'utf8')
+        content = await convertHtmlToMarkdown(html, sourcePath)
+      } else if (PDF_IMPORT_EXTENSIONS.has(ext)) {
+        const buf = await fs.readFile(sourcePath)
+        content = await convertPdfToMarkdown(buf, sourcePath)
+      } else {
+        // Safety net : ALLOWED_IMPORT_EXTENSIONS couvre déjà tout au-dessus.
+        throw new Error(`Extension traitée non reconnue : ${ext}`)
+      }
+
       const targetName = await uniqueRawName(rawPath, sourcePath)
       const targetPath = resolveSafePath(folder, RAW_DIR, targetName)
       await fs.writeFile(targetPath, content, 'utf8')
@@ -699,4 +734,120 @@ function formatSize(n: number): string {
   if (n < 1024) return `${n} B`
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
   return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
+// ──────────────────────────────────────────────────────────── Conversions
+
+// HTML → markdown via turndown + turndown-plugin-gfm pour les tables.
+// On préfixe le résultat d'un mini-frontmatter source pour que le Wiki
+// Builder sache que ce raw vient d'un import HTML externe (utile pour
+// la traçabilité dans `sources:`).
+async function convertHtmlToMarkdown(html: string, sourcePath: string): Promise<string> {
+  // Import dynamique : turndown est une dépendance côté main, pas
+  // besoin qu'elle vive dans le graph de dépendances du renderer.
+  const TurndownService = (await import('turndown')).default
+  const td = new TurndownService({
+    headingStyle: 'atx',
+    bulletListMarker: '-',
+    codeBlockStyle: 'fenced',
+    emDelimiter: '_'
+  })
+  // Ignore les blocs qui n'apportent rien à une note (nav, scripts,
+  // styles, footers HTML auto-générés type "Copyright").
+  td.remove(['script', 'style', 'noscript', 'iframe'])
+  const markdown = td.turndown(html)
+
+  // Essaie de récupérer un titre depuis <title> ou <h1> pour le mettre
+  // en H1 au début du markdown si absent.
+  const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i)
+  const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i)
+  const guessedTitle = (titleMatch?.[1] || h1Match?.[1] || '').replace(/<[^>]+>/g, '').trim()
+
+  const header = buildImportHeader(sourcePath, guessedTitle, 'html')
+  return `${header}\n\n${markdown.trim()}\n`
+}
+
+// PDF → markdown via pdf-parse. Le texte extrait est déjà plat (pas
+// de structure de doc préservée), on ajoute juste un titre H1 depuis
+// les métadonnées si disponibles + le frontmatter d'import.
+async function convertPdfToMarkdown(buffer: Buffer, sourcePath: string): Promise<string> {
+  const { PDFParse } = await import('pdf-parse')
+  // pdf-parse attend Uint8Array. `Buffer` est une sous-classe mais le
+  // passer directement peut throw selon la version — on convertit
+  // explicitement.
+  const parser = new PDFParse({ data: new Uint8Array(buffer) })
+  try {
+    const textResult = await parser.getText()
+    let guessedTitle = ''
+    try {
+      const info = await parser.getInfo()
+      // InfoResult expose typiquement info.info.Title / Author / etc.
+      const infoObj = (info as { info?: Record<string, unknown> }).info
+      const rawTitle = infoObj && typeof infoObj.Title === 'string' ? infoObj.Title : ''
+      guessedTitle = rawTitle.trim()
+    } catch {
+      // Pas bloquant : si la métadonnée échoue, on continue sans titre.
+    }
+
+    const header = buildImportHeader(sourcePath, guessedTitle, 'pdf')
+    // Le texte PDF brut contient souvent des retours à la ligne aberrants
+    // (chaque ligne physique du PDF devient une newline). On normalise :
+    // - Join les lignes courtes adjacentes en paragraphes
+    // - Respecte les sauts de paragraphe réels (lignes vides)
+    const cleaned = normalizePdfText(textResult.text)
+    return `${header}\n\n${cleaned}\n`
+  } finally {
+    await parser.destroy().catch(() => {
+      /* best-effort cleanup */
+    })
+  }
+}
+
+// Normalise le texte brut d'un PDF : rejoint les lignes courtes en
+// paragraphes lisibles. Heuristique simple (pas parfait, mais suffisant
+// pour un raw destiné au LLM) :
+//   - Ligne vide = séparateur de paragraphe (préservé)
+//   - Ligne se terminant par `.`, `!`, `?`, `:` = fin de paragraphe
+//   - Sinon on join avec un espace (reflow)
+function normalizePdfText(text: string): string {
+  const lines = text.split(/\r?\n/)
+  const paragraphs: string[] = []
+  let current: string[] = []
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed === '') {
+      if (current.length > 0) {
+        paragraphs.push(current.join(' '))
+        current = []
+      }
+    } else {
+      current.push(trimmed)
+      if (/[.!?:]$/.test(trimmed)) {
+        paragraphs.push(current.join(' '))
+        current = []
+      }
+    }
+  }
+  if (current.length > 0) paragraphs.push(current.join(' '))
+  return paragraphs.join('\n\n')
+}
+
+// Mini-frontmatter ajouté en tête des raw importés depuis PDF/HTML.
+// Donne au Wiki Builder le contexte d'origine pour citer le `source:`
+// et adapter le traitement (ex: un import PDF d'un papier scientifique
+// mérite un article concept, pas une page qa/).
+function buildImportHeader(sourcePath: string, guessedTitle: string, kind: string): string {
+  const basename = path.basename(sourcePath)
+  const title = guessedTitle || basename.replace(/\.(pdf|html?|htm)$/i, '')
+  const iso = new Date().toISOString()
+  return [
+    '---',
+    `title: "${title.replace(/"/g, '\\"')}"`,
+    `source_kind: ${kind}`,
+    `source_file: "${basename.replace(/"/g, '\\"')}"`,
+    `imported_at: ${iso}`,
+    '---',
+    '',
+    `# ${title}`
+  ].join('\n')
 }

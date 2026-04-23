@@ -197,9 +197,12 @@ export default function WikiSettingsTab(): React.ReactElement {
               Importer dans raw/
             </div>
             <p className="text-[11px] text-[var(--fg-muted)]">
-              Ajoute des fichiers <code>.md</code>, <code>.markdown</code> ou <code>.txt</code>
-              externes au dossier <code>raw/</code>. Ils seront ingérés au prochain run du
-              Wiki Builder, comme s&apos;ils provenaient du Synthétiseur.
+              Ajoute des fichiers externes au dossier <code>raw/</code>. Formats pris en
+              charge : <code>.md</code>, <code>.markdown</code>, <code>.txt</code> (copie
+              directe), <code>.html</code> / <code>.htm</code> (converti en markdown via
+              turndown), <code>.pdf</code> (texte extrait via pdf-parse, 10 Mo max). Ils
+              seront ingérés au prochain run du Wiki Builder, comme s&apos;ils provenaient
+              du Synthétiseur.
             </p>
             <div>
               <button
