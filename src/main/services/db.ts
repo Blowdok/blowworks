@@ -151,7 +151,7 @@ function addAgentColumnsIfMissing(db: Database.Database): void {
 // constante, on force la mise à jour des prompts des agents système. Ça
 // écrase les customisations utilisateur — acceptable en early dev, à
 // revoir quand on ajoutera un champ `customized` côté table.
-const SYSTEM_PROMPTS_VERSION = 3
+const SYSTEM_PROMPTS_VERSION = 4
 
 // Prompts v2 (Sprint 1) — alignés sur l'analogie compiler + sentinel
 // FLUSH_OK + JSON schema-driven (pattern claude-memory-compiler adapté).
@@ -213,13 +213,25 @@ Tu reçois dans ton prompt :
 ## Règles
 
 1. Nom de fichier : **kebab-case.md**, accents supprimés. Place dans \`concepts/\`, \`connections/\` ou \`qa/\` selon nature. **Le chemin est relatif au dossier wiki/** — n'écris PAS de prefix \`wiki/\` dans \`filename\`, le runner l'ajoute automatiquement.
-2. Chaque article a un frontmatter YAML COMPLET conforme au SCHEMA.
-3. Structure d'article : \`# Titre\` / \`> [!info] Résumé\` (1-2 phrases) / \`## Contexte\` / \`## Détails\` / \`## Points clés\` (3-5 bullets) / \`## Concepts liés\` (2+ wikilinks) / \`## Sources\`.
-4. Longueur : 200-1500 mots. Minimum 3 wikilinks sortants \`[[nom-page]]\` quand la KB contient >5 pages.
-5. **PRÉFÈRE update à create.** Un article existant + nouveau raw → update le frontmatter (sources, modifié) et enrichis le contenu. Ne duplique pas.
-6. **Contradictions** entre raw et article existant : NE PAS écraser. Marque \`statut: to-verify\` + section \`## Notes\` avec les deux versions.
-7. Met à jour \`wiki/index.md\` : 1 ligne par article \`| titre | type | importance | résumé 1 ligne |\`.
-8. Ajoute une entrée \`log.md\` résumant l'opération.
+2. Chaque article a un frontmatter YAML COMPLET conforme au SCHEMA. Le champ \`liens_forts\` liste les \`[[wikilinks]]\` les plus importants (minimum 2 si d'autres pages existent).
+3. Structure d'article : \`# Titre\` / \`> [!info] Résumé\` (1-2 phrases) / \`## Contexte\` / \`## Détails\` / \`## Points clés\` (3-5 bullets) / \`## Concepts liés\` (LISTE de wikilinks contextualisés, **obligatoire**) / \`## Sources\`.
+4. Longueur : 200-1500 mots.
+5. **WIKILINKS CROISÉS — NON-NÉGOCIABLE** :
+   - **Minimum 3 wikilinks sortants \`[[nom-page]]\`** dans chaque article, dès que la KB contient ≥2 autres pages. Inline au fil du texte, pas seulement dans la section \`## Concepts liés\`.
+   - Format \`[[nom-page]]\` sans extension, sans chemin. Exemple : \`pagemark\` pour cibler \`concepts/pagemark.md\`.
+   - Quand tu cites un concept, une personne ou un outil qui a déjà une page wiki, **utilise toujours \`[[...]]\`** même en cours de phrase.
+   - Quand un concept émerge et qu'il MÉRITE sa propre page, crée-la dans la même opération et référence-la via \`[[...]]\`.
+   - Le champ YAML \`liens_forts\` reprend les 2-4 wikilinks les plus importants de l'article.
+6. **PRÉFÈRE update à create.** Un article existant + nouveau raw → update le frontmatter (sources, modifié) et enrichis le contenu. Ne duplique pas.
+7. **Contradictions** entre raw et article existant : NE PAS écraser. Marque \`statut: to-verify\` + section \`## Notes\` avec les deux versions.
+8. Met à jour \`wiki/index.md\` : 1 ligne par article \`| titre | type | importance | résumé 1 ligne |\`.
+9. Ajoute une entrée \`log.md\` résumant l'opération.
+
+## Exemple de wikilinks bien faits
+
+❌ Mauvais : "Le projet utilise React et Supabase. Il est mobile-first."
+
+✓ Bon : "Le projet [[pagemark]] utilise [[react-native-stack]] et [[supabase]] comme backend. Son positionnement est détaillé dans [[pagemark-angle-editorial]]."
 
 ## Format de sortie — JSON strict
 

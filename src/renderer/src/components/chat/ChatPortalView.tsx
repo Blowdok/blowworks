@@ -9,6 +9,7 @@ import ChatMessageList from './ChatMessageList.js'
 import ChatInput from './ChatInput.js'
 import ModelSelector from './ModelSelector.js'
 import ConversationHistoryDropdown from './ConversationHistoryDropdown.js'
+import ToolCallDialog from './ToolCallDialog.js'
 import {
   useShapeBorderState,
   getShapeBorderStyle
@@ -57,6 +58,7 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
 
   const sendMessage = useChatStore((s) => s.sendMessage)
   const cancelStream = useChatStore((s) => s.cancelStream)
+  const confirmToolCall = useChatStore((s) => s.confirmToolCall)
   const ensureConversation = useChatStore((s) => s.ensureConversation)
   const loadConversation = useChatStore((s) => s.loadConversation)
   const updateStoreConversation = useChatStore((s) => s.updateConversation)
@@ -74,6 +76,11 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     | { kind: 'flush-ok' }
     | { kind: 'error'; message: string }
   >({ kind: 'idle' })
+
+  // Sprint 3 : "Filer dans le wiki" en cours ? Stocke le messageId du
+  // message cible. Permet d'afficher "⏳ Filage…" sur le bouton
+  // correspondant et de désactiver les autres en parallèle.
+  const [fileBackInProgress, setFileBackInProgress] = useState<string | null>(null)
 
   // Statut wiki réactif : toute mutation (chooseFolder, reconstruire,
   // synthétiser) refresh le store → tous les consommateurs rerender.
@@ -156,102 +163,57 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     })
   }
 
-  // Injection mémoire Sprint 1 : on passe SCHEMA.md (conventions) + index.md
-  // (catalogue) + le CONTENU COMPLET des pages wiki (capé 80 KB sur les
-  // plus récentes). Sans le contenu, l'IA répond "je n'ai pas accès" ou
-  // pire, hallucine — car SCHEMA décrit COMMENT le système fonctionne mais
-  // pas CE QUI est stocké.
+  // Injection mémoire Sprint 2 : **SCHEMA.md + index.md uniquement**.
+  // L'IA dispose des tools wiki (read_wiki_page, search_wiki, …) pour
+  // aller chercher le contenu des pages qu'elle juge pertinentes. Plus
+  // de dump de 80 KB : le coût token est divisé et le modèle ne voit
+  // que ce qu'il lui faut vraiment.
   //
-  // IMPORTANT : on nettoie chaque page avant injection (strip du frontmatter
-  // YAML + de la section ## Sources) pour que l'IA ne voie JAMAIS les refs
-  // internes vers raw/xxx.md et ne les cite pas aux utilisateurs. Les raw/
-  // sont des artefacts de maintenance pour le Wiki Builder, pas du contenu
-  // adressable côté chat.
+  // Les pages elles-mêmes contiennent du frontmatter YAML avec `sources:
+  // [raw/xxx.md]`. Quand l'IA appellera `read_wiki_page`, elle recevra
+  // le contenu BRUT (frontmatter inclus) — c'est à elle d'ignorer les
+  // refs raw dans sa réponse, comme prévu dans le préambule ci-dessous.
   async function buildWikiContext(): Promise<string | null> {
     if (!wikiConfigured) return null
     try {
-      const [schema, indexContent, wikiEntries] = await Promise.all([
+      const [schema, indexContent] = await Promise.all([
         window.blow.wiki.readSchema() as Promise<string | null>,
-        window.blow.wiki.readIndex() as Promise<string | null>,
-        window.blow.wiki.listWiki() as Promise<
-          Array<{ name: string; size: number; modifiedAt: number }>
-        >
+        window.blow.wiki.readIndex() as Promise<string | null>
       ])
-      if (!schema && !indexContent && wikiEntries.length === 0) return null
+      if (!schema && !indexContent) return null
 
-      const MAX_CHARS = 80_000
-      const pageBlocks: string[] = []
-      const skipped: string[] = []
-      let used = 0
-      for (const entry of wikiEntries) {
-        try {
-          const raw = (await window.blow.wiki.readWiki(entry.name)) as string
-          const cleaned = stripInternalMetadata(raw)
-          const block = `##### wiki/${entry.name}\n\n${cleaned}`
-          if (used + block.length > MAX_CHARS) {
-            skipped.push(entry.name)
-            continue
-          }
-          pageBlocks.push(block)
-          used += block.length
-        } catch {
-          skipped.push(entry.name)
-        }
-      }
-
-      const lines: string[] = [
+      return [
         '### Mémoire long-terme partagée (BlowWorks)',
         '',
-        "Tu as accès à une mémoire persistante compilée à partir de mes conversations passées. Utilise-la comme SOURCE DE VÉRITÉ pour rester cohérent avec les décisions, contextes et références établis.",
+        "Tu as accès à une mémoire persistante via des tools function-calling. Utilise-la comme SOURCE DE VÉRITÉ pour rester cohérent avec les décisions et contextes établis.",
         '',
-        '**Règles de citation** :',
-        "- Cite les pages UNIQUEMENT par leur chemin wiki (`wiki/concepts/xxx.md`, `wiki/connections/yyy.md`, etc.).",
-        "- Ne cite JAMAIS de références `raw/…` — ce sont des fichiers internes de maintenance, invisibles à l'utilisateur et supprimables à tout moment.",
-        "- Si une information n'apparaît pas dans les pages ci-dessous, dis-le explicitement plutôt que d'inventer.",
+        '**Tools disponibles** :',
+        "- `read_wiki_page(name)` pour lire une page complète",
+        "- `list_wiki_pages(subdir?)` pour lister les pages",
+        "- `search_wiki(pattern, flags?)` pour trouver un concept par mot-clé",
+        "- `read_wiki_schema` / `read_wiki_index` si tu n'as pas le contexte ci-dessous",
+        "- `write_wiki_page(name, content)` / `rename_wiki_page(from, to)` / `delete_wiki_page(name)` — **destructifs, confirmation utilisateur requise**",
+        '',
+        '**Règles d\'usage** :',
+        "- Appelle `search_wiki` ou `list_wiki_pages` AVANT de supposer qu'une page existe.",
+        "- Appelle `read_wiki_page` pour obtenir le contenu précis avant de répondre à une question factuelle.",
+        "- Cite les pages par leur chemin wiki (`wiki/concepts/xxx.md`). Ne cite JAMAIS de références `raw/…` — les raw sont des artefacts internes.",
+        "- Si l'info n'existe pas dans le wiki après recherche, dis-le explicitement.",
         '',
         '#### SCHEMA.md — conventions du wiki',
         '',
         schema && schema.trim().length > 0 ? schema : '(SCHEMA.md absent)',
-        ''
-      ]
-      if (indexContent && indexContent.trim().length > 0) {
-        lines.push('#### wiki/index.md — catalogue', '', indexContent, '')
-      }
-      if (pageBlocks.length > 0) {
-        lines.push('#### Pages wiki (contenu compilé)', '', pageBlocks.join('\n\n---\n\n'))
-      } else {
-        lines.push('#### Pages wiki', '', "(aucune page compilée pour le moment — le Wiki Builder n'a pas encore tourné, ou il n'y a pas de raw à compiler)")
-      }
-      if (skipped.length > 0) {
-        lines.push(
-          '',
-          `_Pages non inlinées faute de budget (${skipped.length}) : ${skipped.join(', ')}. Demande-les si besoin._`
-        )
-      }
-      return lines.join('\n')
+        '',
+        '#### wiki/index.md — catalogue des pages',
+        '',
+        indexContent && indexContent.trim().length > 0
+          ? indexContent
+          : '(index.md vide — utilise list_wiki_pages pour inspecter directement)'
+      ].join('\n')
     } catch (e) {
       console.warn('[chat] buildWikiContext failed', e)
       return null
     }
-  }
-
-  // Retire les artefacts de maintenance qui ne doivent pas remonter dans
-  // les réponses de l'IA à l'utilisateur :
-  //   - le YAML frontmatter (--- ... ---) en tête, qui contient `sources:`
-  //     pointant vers raw/xxx.md
-  //   - toute section `## Sources` terminale qui liste les mêmes raw/
-  // Résultat : titre + corps markdown propre, sans mention du fichier raw.
-  function stripInternalMetadata(content: string): string {
-    // Frontmatter : --- suivi de lignes, jusqu'au prochain --- en début de ligne.
-    // Tolérant aux \r\n Windows.
-    const withoutFrontmatter = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
-    // Section ## Sources jusqu'au prochain H1/H2 ou fin de fichier.
-    // (?:\r?\n##\s|\r?\n#\s|$) = frontière = titre suivant ou EOF.
-    const withoutSources = withoutFrontmatter.replace(
-      /\r?\n#{1,3}\s*Sources?\b[\s\S]*?(?=\r?\n#{1,3}\s|\s*$)/gi,
-      ''
-    )
-    return withoutSources.trim()
   }
 
   async function handleSubmit(): Promise<void> {
@@ -265,9 +227,33 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       model: shape.props.model,
       temperature: defaults.temperature,
       webSearchEnabled: shape.props.webSearchEnabled && apiKeyStatus.tavily,
+      // Tools wiki activés quand le toggle 📚 est on et que le wiki
+      // est configuré. L'IA peut alors faire read_wiki_page/search_wiki/…
+      // en cours de réponse au lieu de recevoir un dump complet.
+      wikiToolsEnabled: shape.props.wikiContextEnabled && wikiConfigured,
       wikiContext,
       maxTokens: defaults.maxTokens
     })
+  }
+
+  async function handleFileBack(messageId: string): Promise<void> {
+    if (!wikiConfigured) return
+    setFileBackInProgress(messageId)
+    try {
+      const r = (await window.blow.agents.runFileBackResponse(convId, messageId)) as {
+        filename: string
+        logEntry: string
+      }
+      setSynthState({ kind: 'success', filename: r.filename })
+      void refreshWikiStatus()
+      setTimeout(() => setSynthState({ kind: 'idle' }), 4000)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSynthState({ kind: 'error', message: msg })
+      setTimeout(() => setSynthState({ kind: 'idle' }), 6000)
+    } finally {
+      setFileBackInProgress(null)
+    }
   }
 
   async function handleSynthesize(): Promise<void> {
@@ -552,6 +538,28 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
         streamingContent={activeStream?.content ?? null}
         streamingError={activeStream?.error ?? null}
         streamingCitations={activeStream?.citations}
+        streamingToolTraces={activeStream?.toolTraces}
+        onFileBack={wikiConfigured ? (id) => void handleFileBack(id) : undefined}
+        fileBackInProgress={fileBackInProgress}
+      />
+
+      {/* Dialog de confirmation pour les tools destructifs. Le main
+          attend côté streamChat — on débloque en envoyant la décision
+          via confirmToolCall. */}
+      <ToolCallDialog
+        open={activeStream?.awaitingConfirm !== null && activeStream?.awaitingConfirm !== undefined}
+        toolName={activeStream?.awaitingConfirm?.name ?? ''}
+        args={activeStream?.awaitingConfirm?.arguments ?? {}}
+        onApprove={() => {
+          const id = activeStream?.awaitingConfirm?.id
+          if (!id) return
+          void confirmToolCall(convId, id, true)
+        }}
+        onReject={() => {
+          const id = activeStream?.awaitingConfirm?.id
+          if (!id) return
+          void confirmToolCall(convId, id, false)
+        }}
       />
 
       {/* Zone de saisie fixée en bas. */}

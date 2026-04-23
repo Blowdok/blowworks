@@ -56,7 +56,11 @@ export const IPC_CHANNELS = {
     createConversation: 'ai.createConversation',
     updateConversation: 'ai.updateConversation',
     listConversations: 'ai.listConversations',
-    deleteConversation: 'ai.deleteConversation'
+    deleteConversation: 'ai.deleteConversation',
+    // Réveil d'un await côté main après que l'utilisateur a tranché
+    // un dialog de confirmation tool (write/rename/delete). Le payload
+    // est `{ toolCallId, approved }`.
+    confirmToolCall: 'ai.confirmToolCall'
   },
   browser: {
     // Push main → renderer : demander l'ouverture d'une URL dans une
@@ -74,7 +78,10 @@ export const IPC_CHANNELS = {
     update: 'agents.update',
     delete: 'agents.delete',
     runSynthesizer: 'agents.runSynthesizer',
-    runWikiBuilder: 'agents.runWikiBuilder'
+    runWikiBuilder: 'agents.runWikiBuilder',
+    // File-back (Sprint 3) : transforme un message assistant en page
+    // wiki qa/ réutilisable. Payload: { conversationId, messageId }.
+    runFileBackResponse: 'agents.runFileBackResponse'
   },
   wiki: {
     // Mémoire long-terme partagée entre conversations IA (dossier FS
@@ -98,6 +105,13 @@ export const IPC_CHANNELS = {
     writeWiki: 'wiki.writeWiki',
     writeIndex: 'wiki.writeIndex',
     appendLog: 'wiki.appendLog',
-    openFolderInExplorer: 'wiki.openFolderInExplorer'
+    openFolderInExplorer: 'wiki.openFolderInExplorer',
+    openRawInExplorer: 'wiki.openRawInExplorer',
+    // Import manuel : ouvre un file picker + copie .md/.txt dans raw/
+    // pour ingestion par le Wiki Builder. Atomique côté renderer.
+    importToRaw: 'wiki.importToRaw',
+    // Graphe du wiki (Sprint 3 étape 2). Retourne {nodes, edges}
+    // construits à partir des wikilinks du dossier wiki/.
+    getGraph: 'wiki.getGraph'
   }
 } as const

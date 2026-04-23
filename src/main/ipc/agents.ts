@@ -4,7 +4,8 @@ import {
   IPC_CHANNELS,
   AgentCreateInput,
   AgentUpdateInput,
-  AgentRunSynthesizerInput
+  AgentRunSynthesizerInput,
+  AgentRunFileBackInput
 } from '@shared/ipc-contract.js'
 import * as agents from '../services/agents-manager.js'
 
@@ -41,4 +42,9 @@ export function registerAgentsHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.agents.runWikiBuilder, () => agents.runWikiBuilder())
+
+  ipcMain.handle(IPC_CHANNELS.agents.runFileBackResponse, (_evt, raw) => {
+    const { conversationId, messageId } = AgentRunFileBackInput.parse(raw)
+    return agents.runFileBackResponse(conversationId, messageId)
+  })
 }

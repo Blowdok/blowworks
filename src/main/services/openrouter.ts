@@ -1,7 +1,11 @@
 import { safeStorage } from 'electron'
 import { getDb } from './db.js'
 import type { AIModelT } from '@shared/ipc-contract.js'
+import { WIKI_TOOL_SCHEMAS, TOOLS_REQUIRE_CONFIRMATION } from '@shared/ai-tool-schemas.js'
+import type { ToolCall, ToolResult } from '@shared/ai-tool-schemas.js'
 import * as Tavily from './tavily.js'
+import { executeAiTool } from './ai-tools.js'
+import { awaitToolConfirmation, cancelAllToolConfirmations } from './ai-tool-confirmation.js'
 
 // Service OpenRouter : liste des modèles (cache 1h) + streaming chat
 // completions (SSE → callback par delta). Appelé UNIQUEMENT depuis le
@@ -176,9 +180,21 @@ export async function listModels(options?: { forceRefresh?: boolean }): Promise<
 
 // ──────────────────────────────────────────────────────────── Streaming
 
+// Format OpenAI/OpenRouter chat completion. On supporte maintenant les
+// 4 rôles : system, user, assistant, tool (retour d'un tool call).
+// `tool_calls` apparaît sur un message assistant quand il décide d'appeler
+// un ou plusieurs tools. `tool_call_id` + `name` sur un message tool
+// pour renvoyer le résultat associé.
 export interface ChatCompletionMessage {
-  role: 'user' | 'assistant' | 'system'
-  content: string
+  role: 'user' | 'assistant' | 'system' | 'tool'
+  content: string | null
+  tool_calls?: Array<{
+    id: string
+    type: 'function'
+    function: { name: string; arguments: string }
+  }>
+  tool_call_id?: string
+  name?: string
 }
 
 export interface StreamChatOptions {
@@ -195,6 +211,10 @@ export interface StreamChatOptions {
   wikiContext?: string | null
   webSearchEnabled?: boolean
   webSearchQuery?: string
+  // Active les tools wiki (read/write/search/rename/delete). Déclenche
+  // une boucle agent multi-tours : le modèle peut lire et modifier le
+  // wiki en cours de réponse, jusqu'à MAX_AGENT_ITER tours.
+  wikiToolsEnabled?: boolean
 }
 
 export interface StreamChunk {
@@ -203,7 +223,16 @@ export interface StreamChunk {
   usage?: { promptTokens: number; completionTokens: number }
   citations?: string[]
   error?: string
+  // Tool events (Sprint 2). Chaque chunk en porte au max un des trois.
+  toolCall?: ToolCall
+  toolResult?: { id: string; name: string; result: string; error?: string }
+  toolConfirmNeeded?: ToolCall
 }
+
+// Limite d'itérations de la boucle agent (écho pattern nexusvault).
+// 15 tours laissent au modèle la marge d'orchestrer plusieurs reads,
+// un write, puis une réponse finale — sans permettre une boucle infinie.
+const MAX_AGENT_ITER = 15
 
 // Parse un flux SSE (ReadableStream de Uint8Array). OpenRouter suit le
 // protocole OpenAI : lignes `data: {...}` séparées par `\n\n`, avec un
@@ -324,57 +353,99 @@ export async function streamChat(
   // Messages historiques puis le prompt courant.
   messages.push(...opts.messages)
 
-  // ── Étape 2 : stream OpenRouter ─────────────────────────────────────
+  // ── Étape 2 : boucle agent ──────────────────────────────────────────
+  // Si `wikiToolsEnabled`, on entre dans une boucle multi-tours :
+  //   - stream 1 tour → accumule delta + tool_calls
+  //   - si finish_reason=tool_calls : exécute chaque call (avec
+  //     confirmation pour les destructifs), push les résultats dans
+  //     messages, et relance le stream
+  //   - sinon : fin normale
+  // Si `wikiToolsEnabled=false`, la boucle tourne une seule fois sans
+  // tools — comportement identique à Sprint 1.
   const controller = new AbortController()
   activeControllers.set(opts.requestId, controller)
 
-  try {
-    const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://blowworks.local',
-        'X-Title': 'BlowWorks'
-      },
-      body: JSON.stringify({
-        model: opts.model,
-        messages,
-        stream: true,
-        temperature: opts.temperature ?? 0.7,
-        max_tokens: opts.maxTokens
-      })
-    })
+  let promptTokens = 0
+  let completionTokens = 0
+  let iter = 0
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '')
-      onChunk({
-        error: `OpenRouter HTTP ${res.status} : ${text.slice(0, 300)}`,
-        done: true
+  try {
+    agentLoop: while (iter < MAX_AGENT_ITER) {
+      iter++
+      const turn = await runOneTurn(key, controller.signal, messages, opts, onChunk)
+
+      if (turn.error) {
+        onChunk({ error: turn.error, done: true })
+        return
+      }
+      promptTokens += turn.usage.promptTokens
+      completionTokens += turn.usage.completionTokens
+
+      if (turn.toolCalls.length === 0) {
+        // Pas de tool_calls → fin normale.
+        break agentLoop
+      }
+
+      // Le modèle a demandé des tools. On pousse son message assistant
+      // avec `tool_calls`, puis on exécute séquentiellement (les calls
+      // destructifs peuvent bloquer sur confirmation utilisateur).
+      messages.push({
+        role: 'assistant',
+        content: null,
+        tool_calls: turn.toolCalls.map((c) => ({
+          id: c.id,
+          type: 'function' as const,
+          function: { name: c.name, arguments: JSON.stringify(c.arguments) }
+        }))
       })
-      return
+
+      for (const call of turn.toolCalls) {
+        onChunk({ toolCall: call })
+
+        // Confirmation pour les tools destructifs. Bloque jusqu'à
+        // décision utilisateur (timeout 5 min → refus automatique).
+        if (TOOLS_REQUIRE_CONFIRMATION.has(call.name)) {
+          onChunk({ toolConfirmNeeded: call })
+          const approved = await awaitToolConfirmation(call.id)
+          if (!approved) {
+            const errMsg =
+              "ERREUR : l'utilisateur a refusé cette action destructive. Propose une alternative ou passe à autre chose."
+            onChunk({
+              toolResult: { id: call.id, name: call.name, result: '', error: errMsg }
+            })
+            messages.push({
+              role: 'tool',
+              tool_call_id: call.id,
+              name: call.name,
+              content: errMsg
+            })
+            continue
+          }
+        }
+
+        // Exécute (les erreurs retournent comme `error` dans ToolResult,
+        // ne throw pas — ça permet au modèle de corriger).
+        const result: ToolResult = await executeAiTool(call)
+        onChunk({
+          toolResult: { id: call.id, name: call.name, result: result.result, error: result.error }
+        })
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          name: call.name,
+          content: result.error ? `ERREUR : ${result.error}` : result.result || '(vide)'
+        })
+      }
+      // On boucle pour que le modèle voit les tool_results et continue.
     }
 
-    let promptTokens = 0
-    let completionTokens = 0
-
-    for await (const event of parseSSE(res)) {
-      // Format OpenAI/OpenRouter : `choices[0].delta.content` pour le
-      // delta texte, `usage` sur le dernier event (non-standard SSE mais
-      // OpenRouter l'envoie systématiquement).
-      const choices = event.choices as
-        | Array<{ delta?: { content?: string }; finish_reason?: string | null }>
-        | undefined
-      const usage = event.usage as
-        | { prompt_tokens?: number; completion_tokens?: number }
-        | undefined
-      if (usage) {
-        promptTokens = usage.prompt_tokens ?? promptTokens
-        completionTokens = usage.completion_tokens ?? completionTokens
-      }
-      const content = choices?.[0]?.delta?.content
-      if (content) onChunk({ delta: content })
+    if (iter >= MAX_AGENT_ITER) {
+      onChunk({
+        delta:
+          '\n\n_⚠️ Limite d\'itérations atteinte (' +
+          MAX_AGENT_ITER +
+          " tours d'outils). Stream arrêté pour éviter une boucle._\n"
+      })
     }
 
     onChunk({
@@ -386,6 +457,7 @@ export async function streamChat(
     // AbortError (cancel utilisateur) est un flux normal → on émet
     // quand même un `done: true` pour que le renderer fasse son cleanup.
     if (e instanceof Error && e.name === 'AbortError') {
+      cancelAllToolConfirmations()
       onChunk({ done: true, citations: citations.length > 0 ? citations : undefined })
       return
     }
@@ -393,6 +465,121 @@ export async function streamChat(
     onChunk({ error: msg, done: true })
   } finally {
     activeControllers.delete(opts.requestId)
+  }
+}
+
+// Exécute UN tour de stream OpenRouter. Accumule le texte (delta), les
+// tool_calls partiels (concaténés sur plusieurs chunks SSE) et l'usage.
+// Retourne quand le stream est fini (finish_reason détecté ou [DONE]).
+async function runOneTurn(
+  apiKey: string,
+  signal: AbortSignal,
+  messages: ChatCompletionMessage[],
+  opts: StreamChatOptions,
+  onChunk: (chunk: StreamChunk) => void
+): Promise<{
+  toolCalls: ToolCall[]
+  usage: { promptTokens: number; completionTokens: number }
+  error: string | null
+}> {
+  const body: Record<string, unknown> = {
+    model: opts.model,
+    messages,
+    stream: true,
+    temperature: opts.temperature ?? 0.7,
+    max_tokens: opts.maxTokens
+  }
+  if (opts.wikiToolsEnabled) {
+    body.tools = WIKI_TOOL_SCHEMAS
+    body.tool_choice = 'auto'
+  }
+
+  const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+    method: 'POST',
+    signal,
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://blowworks.local',
+      'X-Title': 'BlowWorks'
+    },
+    body: JSON.stringify(body)
+  })
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    return {
+      toolCalls: [],
+      usage: { promptTokens: 0, completionTokens: 0 },
+      error: `OpenRouter HTTP ${res.status} : ${text.slice(0, 300)}`
+    }
+  }
+
+  // Accumulateurs de tool_calls (le JSON des arguments arrive en N chunks).
+  const toolAccs = new Map<
+    number,
+    { id: string; name: string; args: string }
+  >()
+  let promptTokens = 0
+  let completionTokens = 0
+
+  for await (const event of parseSSE(res)) {
+    const choices = event.choices as
+      | Array<{
+          delta?: {
+            content?: string
+            tool_calls?: Array<{
+              index: number
+              id?: string
+              function?: { name?: string; arguments?: string }
+            }>
+          }
+          finish_reason?: string | null
+        }>
+      | undefined
+    const usage = event.usage as
+      | { prompt_tokens?: number; completion_tokens?: number }
+      | undefined
+    if (usage) {
+      promptTokens = usage.prompt_tokens ?? promptTokens
+      completionTokens = usage.completion_tokens ?? completionTokens
+    }
+
+    const delta = choices?.[0]?.delta
+    if (delta?.content) onChunk({ delta: delta.content })
+
+    // Accumulation progressive des tool_calls. OpenRouter/OpenAI envoie
+    // le JSON des arguments en plusieurs chunks — on concatène jusqu'à
+    // finish_reason='tool_calls' où on a le JSON complet.
+    if (Array.isArray(delta?.tool_calls)) {
+      for (const tc of delta.tool_calls) {
+        const existing = toolAccs.get(tc.index) ?? { id: '', name: '', args: '' }
+        if (tc.id) existing.id = tc.id
+        if (tc.function?.name) existing.name = tc.function.name
+        if (tc.function?.arguments) existing.args += tc.function.arguments
+        toolAccs.set(tc.index, existing)
+      }
+    }
+  }
+
+  // Parse les arguments JSON accumulés. Les calls sans id/name (malformés)
+  // sont ignorés.
+  const toolCalls: ToolCall[] = []
+  for (const acc of toolAccs.values()) {
+    if (!acc.id || !acc.name) continue
+    let parsedArgs: Record<string, unknown> = {}
+    try {
+      parsedArgs = acc.args ? JSON.parse(acc.args) : {}
+    } catch {
+      parsedArgs = {}
+    }
+    toolCalls.push({ id: acc.id, name: acc.name, arguments: parsedArgs })
+  }
+
+  return {
+    toolCalls,
+    usage: { promptTokens, completionTokens },
+    error: null
   }
 }
 
@@ -490,8 +677,11 @@ function enrichSearchQuery(
   for (let i = messages.length - 1; i >= 0 && priorUserMessages.length < 2; i--) {
     const m = messages[i]
     if (m.role !== 'user') continue
-    if (m.content.trim() === trimmed) continue // skip la question courante
-    priorUserMessages.unshift(m.content.trim().slice(0, 180))
+    // `content` peut être null pour assistant tool-call ; pour user c'est
+    // toujours string — cast défensif pour le typecheck.
+    const text = typeof m.content === 'string' ? m.content : ''
+    if (text.trim() === trimmed) continue // skip la question courante
+    priorUserMessages.unshift(text.trim().slice(0, 180))
   }
   if (priorUserMessages.length === 0) return trimmed
 

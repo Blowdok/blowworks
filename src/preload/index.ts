@@ -122,10 +122,14 @@ const api = {
       systemPrompt?: string | null
       wikiContext?: string | null
       webSearchEnabled?: boolean
+      wikiToolsEnabled?: boolean
       maxTokens?: number
     }) => ipcRenderer.invoke(IPC_CHANNELS.ai.sendMessage, input),
     cancelStream: (requestId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.ai.cancelStream, { requestId }),
+    // Réveil d'un await de confirmation tool côté main.
+    confirmToolCall: (toolCallId: string, approved: boolean) =>
+      ipcRenderer.invoke(IPC_CHANNELS.ai.confirmToolCall, { toolCallId, approved }),
     onChunk: (
       cb: (payload: {
         requestId: string
@@ -135,6 +139,13 @@ const api = {
         error?: string
         usage?: { promptTokens: number; completionTokens: number }
         citations?: string[]
+        toolCall?: { id: string; name: string; arguments: Record<string, unknown> }
+        toolResult?: { id: string; name: string; result: string; error?: string }
+        toolConfirmNeeded?: {
+          id: string
+          name: string
+          arguments: Record<string, unknown>
+        }
       }) => void
     ) => {
       const listener = (_: unknown, payload: unknown): void =>
@@ -178,7 +189,9 @@ const api = {
     delete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.agents.delete, { id }),
     runSynthesizer: (conversationId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.agents.runSynthesizer, { conversationId }),
-    runWikiBuilder: () => ipcRenderer.invoke(IPC_CHANNELS.agents.runWikiBuilder)
+    runWikiBuilder: () => ipcRenderer.invoke(IPC_CHANNELS.agents.runWikiBuilder),
+    runFileBackResponse: (conversationId: string, messageId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.agents.runFileBackResponse, { conversationId, messageId })
   },
   wiki: {
     getFolder: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.getFolder),
@@ -203,7 +216,11 @@ const api = {
     appendLog: (entry: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.wiki.appendLog, { entry }),
     openFolderInExplorer: () =>
-      ipcRenderer.invoke(IPC_CHANNELS.wiki.openFolderInExplorer)
+      ipcRenderer.invoke(IPC_CHANNELS.wiki.openFolderInExplorer),
+    openRawInExplorer: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.wiki.openRawInExplorer),
+    importToRaw: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.importToRaw),
+    getGraph: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.getGraph)
   }
 }
 

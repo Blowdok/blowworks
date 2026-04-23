@@ -491,3 +491,140 @@ export async function openFolderInExplorer(): Promise<string> {
   const folder = ensureConfigured()
   return shell.openPath(folder)
 }
+
+// Ouvre directement le sous-dossier `raw/` dans l'explorateur — utile
+// pour le glisser-déposer manuel de notes (l'utilisateur peut y poser
+// des .md à la main, le Wiki Builder les compilera au prochain run).
+export async function openRawInExplorer(): Promise<string> {
+  const folder = ensureConfigured()
+  await initStructureIfNeeded(folder)
+  return shell.openPath(path.join(folder, RAW_DIR))
+}
+
+// ──────────────────────────────────────────────────────────── Import manuel
+
+// Importe un fichier externe dans `raw/` après normalisation du nom et
+// validation de l'extension. Le contenu est COPIÉ tel quel — c'est au
+// Wiki Builder de l'interpréter à la compilation suivante. La conversion
+// de format avancée (.pdf → .md, .html → .md) viendra plus tard via
+// `turndown` / `pdf-parse` si l'utilisateur le demande.
+//
+// Sécurité : on accepte UNIQUEMENT `.md`, `.markdown`, `.txt` (extensions
+// texte sûres). Tout autre format est rejeté pour éviter qu'un binaire
+// (image, PDF brut) ne pollue raw/ et casse les agents qui y lisent
+// du markdown attendu.
+const ALLOWED_IMPORT_EXTENSIONS = new Set(['.md', '.markdown', '.txt'])
+const MAX_IMPORT_BYTES = 5_000_000
+
+export interface ImportResult {
+  sourcePath: string
+  targetName: string | null
+  bytes: number
+  error: string | null
+}
+
+export async function importToRaw(sourcePaths: string[]): Promise<ImportResult[]> {
+  const folder = ensureConfigured()
+  await initStructureIfNeeded(folder)
+  const rawPath = path.join(folder, RAW_DIR)
+  const results: ImportResult[] = []
+
+  for (const sourcePath of sourcePaths) {
+    try {
+      const ext = path.extname(sourcePath).toLowerCase()
+      if (!ALLOWED_IMPORT_EXTENSIONS.has(ext)) {
+        results.push({
+          sourcePath,
+          targetName: null,
+          bytes: 0,
+          error: `Extension non supportée : ${ext || '(aucune)'}. Accepté : .md, .markdown, .txt.`
+        })
+        continue
+      }
+      const stat = await fs.stat(sourcePath)
+      if (stat.size > MAX_IMPORT_BYTES) {
+        results.push({
+          sourcePath,
+          targetName: null,
+          bytes: stat.size,
+          error: `Fichier trop volumineux (${formatSize(stat.size)}, max ${formatSize(MAX_IMPORT_BYTES)}).`
+        })
+        continue
+      }
+      const content = await fs.readFile(sourcePath, 'utf8')
+      const targetName = await uniqueRawName(rawPath, sourcePath)
+      const targetPath = resolveSafePath(folder, RAW_DIR, targetName)
+      await fs.writeFile(targetPath, content, 'utf8')
+      results.push({
+        sourcePath,
+        targetName,
+        bytes: content.length,
+        error: null
+      })
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      results.push({
+        sourcePath,
+        targetName: null,
+        bytes: 0,
+        error: msg
+      })
+    }
+  }
+
+  // Append au log un résumé d'opération pour audit.
+  const ok = results.filter((r) => r.error === null).length
+  if (ok > 0) {
+    const iso = new Date().toISOString()
+    await fs.appendFile(
+      path.join(folder, LOG_FILENAME),
+      `## [${iso}] import | ${ok} fichier${ok > 1 ? 's' : ''} ajouté${ok > 1 ? 's' : ''} dans raw/\n`,
+      'utf8'
+    )
+  }
+
+  return results
+}
+
+// Génère un nom de fichier raw unique à partir du nom source.
+// Forme : `import-<slug>-<timestamp>.md`. `.md` forcé pour cohérence
+// avec le reste de raw/ même si la source était un .txt.
+async function uniqueRawName(rawPath: string, sourcePath: string): Promise<string> {
+  const base = path
+    .basename(sourcePath, path.extname(sourcePath))
+    .toLowerCase()
+    // Normalise unicode → ASCII, supprime les accents.
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    // Tout caractère non word/dash → tiret.
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+
+  const iso = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  let candidate = `import-${base || 'note'}-${iso}.md`
+  // Garde-fou : si collision (très improbable avec timestamp à la seconde),
+  // suffixe -1, -2, …
+  let suffix = 1
+  while (await pathExists(path.join(rawPath, candidate))) {
+    candidate = `import-${base || 'note'}-${iso}-${suffix}.md`
+    suffix++
+    if (suffix > 99) throw new Error('Trop de collisions de nom — abandon.')
+  }
+  return candidate
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function formatSize(n: number): string {
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}

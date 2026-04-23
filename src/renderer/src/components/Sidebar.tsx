@@ -13,6 +13,10 @@ import GitHubAccount from './GitHubAccount.js'
 import SettingsModal from './SettingsModal.js'
 import MemorySidebarSection from './MemorySidebarSection.js'
 import GraphSidebarSection from './GraphSidebarSection.js'
+import WikiExplorerSidebar from './WikiExplorerSidebar.js'
+import WikiPageViewer from './WikiPageViewer.js'
+import WikiGraphModal from './WikiGraphModal.js'
+import { useWikiStore } from '../stores/wiki-store.js'
 
 // Barre latérale gauche : liste des projets + création + glissement caméra
 // vers la zone déterministe de chaque projet. Chaque projet occupe sa
@@ -151,10 +155,121 @@ export default function Sidebar() {
     arrangeProjectInGrid(editor, projects, projectId)
   }
 
+  // Mode d'affichage de la sidebar : standard (projets/mémoire/graph)
+  // ou explorateur wiki plein cadre. Déclenché par le bouton 📖 dans
+  // la section Mémoire. Footer Paramètres+GitHub reste visible dans
+  // les deux modes.
+  const sidebarMode = useWikiStore((s) => s.sidebarMode)
+
   return (
     <aside
       className={`${width} flex h-full flex-col border-r border-[var(--border)] bg-[var(--bg-secondary)] transition-[width] duration-150`}
     >
+      {sidebarMode === 'wiki-explorer' ? (
+        <WikiExplorerSidebar collapsed={collapsed} />
+      ) : (
+        <StandardSidebarContent
+          collapsed={collapsed}
+          draft={draft}
+          setDraft={setDraft}
+          draftColor={draftColor}
+          setDraftColor={setDraftColor}
+          handleCreate={handleCreate}
+          projects={projects}
+          projectCounts={projectCounts}
+          activeProjectId={activeProjectId}
+          handleSlideToProject={handleSlideToProject}
+          handleArrangeGrid={handleArrangeGrid}
+          broadcast={broadcast}
+          setProjectToDelete={setProjectToDelete}
+          setSettingsInitialTab={setSettingsInitialTab}
+          setSettingsOpen={setSettingsOpen}
+        />
+      )}
+
+      <Footer
+        collapsed={collapsed}
+        onOpenSettings={() => {
+          setSettingsInitialTab(undefined)
+          setSettingsOpen(true)
+        }}
+      />
+
+      <WikiPageViewer />
+
+      <WikiGraphModalMount />
+
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        initialTab={settingsInitialTab}
+      />
+
+      <ConfirmDialog
+        open={projectToDelete !== null}
+        title="Supprimer le projet"
+        message={
+          <>
+            Le projet <strong>« {projectToDelete?.name} »</strong> sera
+            supprimé. Les fenêtres (terminaux et VSCode) qui lui étaient
+            affectées ne seront <em>pas</em> supprimées : elles redeviendront
+            simplement « aucun projet ». Cette action est irréversible.
+          </>
+        }
+        confirmLabel="Supprimer"
+        onConfirm={() => {
+          if (projectToDelete) void deleteProject(projectToDelete.id)
+          setProjectToDelete(null)
+        }}
+        onCancel={() => setProjectToDelete(null)}
+      />
+    </aside>
+  )
+}
+
+// ─────────────────────────────────────────────────────── StandardSidebarContent
+
+// Contenu de la sidebar en mode standard. Extrait de Sidebar pour alléger
+// le JSX principal et permettre le switch avec WikiExplorerSidebar.
+interface StandardSidebarContentProps {
+  collapsed: boolean
+  draft: string
+  setDraft: (v: string) => void
+  draftColor: string
+  setDraftColor: (v: string) => void
+  handleCreate: () => Promise<void>
+  projects: ReturnType<typeof useProjectStore.getState>['projects']
+  projectCounts: Map<string, number>
+  activeProjectId: string | null
+  handleSlideToProject: (id: string) => void
+  handleArrangeGrid: (id: string) => void
+  broadcast: (projectId: string, cmd: string) => Promise<void>
+  setProjectToDelete: (p: { id: string; name: string } | null) => void
+  setSettingsInitialTab: (t: 'openrouter' | 'wiki' | undefined) => void
+  setSettingsOpen: (v: boolean) => void
+}
+
+function StandardSidebarContent(props: StandardSidebarContentProps): React.ReactElement {
+  const {
+    collapsed,
+    draft,
+    setDraft,
+    draftColor,
+    setDraftColor,
+    handleCreate,
+    projects,
+    projectCounts,
+    activeProjectId,
+    handleSlideToProject,
+    handleArrangeGrid,
+    broadcast,
+    setProjectToDelete,
+    setSettingsInitialTab,
+    setSettingsOpen
+  } = props
+
+  return (
+    <>
       <div className="border-b border-[var(--border)] px-3 py-3">
         {!collapsed && (
           <h2 className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-[var(--fg-muted)]">
@@ -307,57 +422,52 @@ export default function Sidebar() {
       <section className="shrink-0 border-t border-[var(--border)] py-2">
         <GraphSidebarSection collapsed={collapsed} />
       </section>
+    </>
+  )
+}
 
-      {/* Footer : Paramètres + avatar GitHub + version uniquement. Les
-          sections fonctionnelles (Projets, Mémoire) vivent au-dessus. */}
-      <footer className="flex shrink-0 flex-col gap-2 border-t border-[var(--border)] px-3 py-2">
-        <button
-          type="button"
-          onClick={() => {
-            setSettingsInitialTab(undefined)
-            setSettingsOpen(true)
-          }}
-          className={`flex w-full items-center rounded-[var(--radius-sm)] py-1.5 text-sm text-[var(--fg-muted)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)] ${
-            collapsed ? 'justify-center px-2' : 'gap-2 px-2'
-          }`}
-          title="Paramètres"
-          aria-label="Paramètres"
-        >
-          <GearIcon />
-          {!collapsed && <span>Paramètres</span>}
-        </button>
-        <div className={collapsed ? 'flex justify-center' : ''}>
-          <GitHubAccount compact={collapsed} />
-        </div>
-        {!collapsed && (
-          <span className="text-[10px] text-[var(--fg-muted)]">BlowWorks v1.0.0</span>
-        )}
-      </footer>
+// Wrapper qui branche le wiki-store à WikiGraphModal pour que n'importe
+// quel composant (GraphSidebarSection en l'occurrence) puisse ouvrir le
+// graph via `setGraphOpen(true)` sans connaître le composant modal.
+function WikiGraphModalMount(): React.ReactElement {
+  const open = useWikiStore((s) => s.graphOpen)
+  const setGraphOpen = useWikiStore((s) => s.setGraphOpen)
+  return <WikiGraphModal open={open} onClose={() => setGraphOpen(false)} />
+}
 
-      <SettingsModal
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        initialTab={settingsInitialTab}
-      />
+// ─────────────────────────────────────────────────────── Footer (commun)
 
-      <ConfirmDialog
-        open={projectToDelete !== null}
-        title="Supprimer le projet"
-        message={
-          <>
-            Le projet <strong>« {projectToDelete?.name} »</strong> sera
-            supprimé. Les fenêtres (terminaux et VSCode) qui lui étaient
-            affectées ne seront <em>pas</em> supprimées : elles redeviendront
-            simplement « aucun projet ». Cette action est irréversible.
-          </>
-        }
-        onCancel={() => setProjectToDelete(null)}
-        onConfirm={() => {
-          if (projectToDelete) void deleteProject(projectToDelete.id)
-          setProjectToDelete(null)
-        }}
-      />
-    </aside>
+// Footer commun aux 2 modes de sidebar (standard / wiki-explorer).
+// Reste toujours visible en bas — ne se fait JAMAIS pousser hors écran
+// grâce au `shrink-0`.
+function Footer({
+  collapsed,
+  onOpenSettings
+}: {
+  collapsed: boolean
+  onOpenSettings: () => void
+}): React.ReactElement {
+  return (
+    <footer className="flex shrink-0 flex-col gap-2 border-t border-[var(--border)] px-3 py-2">
+      <button
+        type="button"
+        onClick={onOpenSettings}
+        className={`flex w-full items-center rounded-[var(--radius-sm)] py-1.5 text-sm text-[var(--fg-muted)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)] ${
+          collapsed ? 'justify-center px-2' : 'gap-2 px-2'
+        }`}
+        title="Paramètres"
+        aria-label="Paramètres"
+      >
+        <GearIcon />
+        {!collapsed && <span>Paramètres</span>}
+      </button>
+      <div className={collapsed ? 'flex justify-center' : ''}>
+        <GitHubAccount compact={collapsed} />
+      </div>
+      {!collapsed && (
+        <span className="text-[10px] text-[var(--fg-muted)]">BlowWorks v1.0.0</span>
+      )}
+    </footer>
   )
 }
 

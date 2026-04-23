@@ -4,7 +4,10 @@ import { markdownRemarkPlugins, markdownRehypePlugins } from '../../lib/markdown
 import type { AIMessageT } from '@shared/ipc-contract.js'
 import CitationsList from './CitationsList.js'
 import CodeBlock from './CodeBlock.js'
+import type { ToolTrace } from '../../stores/chat-store.js'
 import { useEditorStore } from '../../stores/editor-store.js'
+import { useWikiStore } from '../../stores/wiki-store.js'
+import { linkifyWikiRefs } from '../WikiPageViewer.js'
 import { spawnBrowserShape } from '../canvas/InfiniteCanvas.js'
 
 interface ChatMessageListProps {
@@ -14,6 +17,15 @@ interface ChatMessageListProps {
   streamingContent: string | null
   streamingError: string | null
   streamingCitations: string[] | undefined
+  // Tool calls en cours dans le stream actif (affichés inline au-dessus
+  // du texte streamé). Vide si pas d'appel d'outil.
+  streamingToolTraces?: ToolTrace[]
+  // Sprint 3 : callback "Filer cette réponse dans le wiki". Si fourni,
+  // chaque MessageBubble assistant affiche un bouton 📥 qui relance
+  // l'agent QA Filer sur ce seul message. Null = fonctionnalité désactivée
+  // (wiki non configuré, par exemple).
+  onFileBack?: (messageId: string) => void
+  fileBackInProgress?: string | null
 }
 
 // Zone scrollable de l'historique de conversation. Les messages user sont
@@ -27,7 +39,10 @@ export default function ChatMessageList({
   messages,
   streamingContent,
   streamingError,
-  streamingCitations
+  streamingCitations,
+  streamingToolTraces,
+  onFileBack,
+  fileBackInProgress
 }: ChatMessageListProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const isAtBottomRef = useRef(true)
@@ -134,7 +149,12 @@ export default function ChatMessageList({
         )}
 
         {messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
+          <MessageBubble
+            key={m.id}
+            message={m}
+            onFileBack={onFileBack}
+            fileBackInProgress={fileBackInProgress === m.id}
+          />
         ))}
 
         {streamingContent !== null && (
@@ -142,6 +162,7 @@ export default function ChatMessageList({
             content={streamingContent}
             error={streamingError}
             citations={streamingCitations}
+            toolTraces={streamingToolTraces}
           />
         )}
       </div>
@@ -162,35 +183,70 @@ export default function ChatMessageList({
 // inutile de ReactMarkdown à chaque frame du streaming.
 const markdownComponents: Components = {
   pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
-  a: ({ children, href, ...rest }) => (
-    <a
-      {...rest}
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      onClick={(e) => {
-        if (!href) return
-        // Ancres internes (#...), mailto:, tel:, etc. → laisser passer.
-        if (!/^https?:\/\//i.test(href)) return
-        e.preventDefault()
-        e.stopPropagation()
-        const editor = useEditorStore.getState().editor
-        if (editor) spawnBrowserShape(editor, href)
-      }}
-      // Stop pointerdown pour préserver la sélection du texte dans la
-      // bulle — sans ça, le pointerdown sur un lien peut annuler une
-      // range de sélection en cours.
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      {children}
-    </a>
-  )
+  a: ({ children, href, ...rest }) => {
+    // Liens `wiki-page://xxx.md` produits par linkifyWikiRefs → ouvre
+    // le viewer markdown interne (WikiPageViewer). Évite d'ouvrir un
+    // browser pour du contenu local.
+    if (href && href.startsWith('wiki-page://')) {
+      const target = href.slice('wiki-page://'.length)
+      return (
+        <a
+          {...rest}
+          href={href}
+          onClick={(e) => {
+            e.preventDefault()
+            e.stopPropagation()
+            useWikiStore.getState().openWikiPage(target)
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+          style={{
+            color: 'var(--fg-secondary)',
+            cursor: 'pointer',
+            textDecoration: 'underline',
+            textDecorationStyle: 'dashed',
+            textUnderlineOffset: '3px'
+          }}
+          title={`Ouvrir wiki/${target}`}
+        >
+          {children}
+        </a>
+      )
+    }
+    return (
+      <a
+        {...rest}
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => {
+          if (!href) return
+          if (!/^https?:\/\//i.test(href)) return
+          e.preventDefault()
+          e.stopPropagation()
+          const editor = useEditorStore.getState().editor
+          if (editor) spawnBrowserShape(editor, href)
+        }}
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        {children}
+      </a>
+    )
+  }
 }
 
 // Bulle d'un message commité en DB (user ou assistant).
-function MessageBubble({ message }: { message: AIMessageT }): React.ReactElement {
+function MessageBubble({
+  message,
+  onFileBack,
+  fileBackInProgress
+}: {
+  message: AIMessageT
+  onFileBack?: (messageId: string) => void
+  fileBackInProgress?: boolean
+}): React.ReactElement {
   const isUser = message.role === 'user'
   const isAssistant = message.role === 'assistant'
+  const showFileBack = isAssistant && onFileBack && message.content.length > 60
 
   return (
     <div className={`mb-4 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -199,7 +255,7 @@ function MessageBubble({ message }: { message: AIMessageT }): React.ReactElement
         // les réponses assistant sur la colonne de lecture (bord gauche
         // ET droit alignés sur la capsule de saisie) tout en gardant
         // l'effet « bulle » pour les messages user à droite.
-        className={`rounded-[var(--radius-md)] ${
+        className={`group rounded-[var(--radius-md)] ${
           isUser ? 'max-w-[92%] border px-3 py-2' : 'w-full max-w-full px-1 py-1'
         }`}
         style={{
@@ -215,7 +271,7 @@ function MessageBubble({ message }: { message: AIMessageT }): React.ReactElement
               rehypePlugins={markdownRehypePlugins}
               components={markdownComponents}
             >
-              {message.content}
+              {linkifyWikiRefs(message.content)}
             </ReactMarkdown>
           </div>
         ) : (
@@ -226,6 +282,20 @@ function MessageBubble({ message }: { message: AIMessageT }): React.ReactElement
             {message.content}
           </div>
         )}
+        {showFileBack && (
+          <div className="mt-2 flex justify-end">
+            <button
+              type="button"
+              onClick={() => onFileBack!(message.id)}
+              disabled={fileBackInProgress}
+              className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-0.5 text-[10px] text-[var(--fg-muted)] opacity-60 transition-opacity hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)] hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-40 group-hover:opacity-100"
+              title="Convertit cette réponse en page wiki permanente dans wiki/qa/ (agent QA Filer → demande confirmation avant écriture)"
+              aria-label="Filer dans le wiki"
+            >
+              {fileBackInProgress ? '⏳ Filage en cours…' : '📥 Ajouter au wiki (qa/)'}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -233,18 +303,24 @@ function MessageBubble({ message }: { message: AIMessageT }): React.ReactElement
 
 // Bulle pour le message assistant en cours de streaming : cursor clignotant,
 // markdown rendu en live (pas de buffer — `react-markdown` tolère bien les
-// petits deltas tant qu'il y a un re-render par chunk).
+// petits deltas tant qu'il y a un re-render par chunk). Affiche aussi les
+// tool calls de la boucle agent en cours (read_wiki_page, search_wiki, …)
+// sous forme de badges compacts au-dessus du markdown.
 function StreamingBubble({
   content,
   error,
-  citations
+  citations,
+  toolTraces
 }: {
   content: string
   error: string | null
   citations: string[] | undefined
+  toolTraces?: ToolTrace[]
 }): React.ReactElement {
   // Memo du rendu : évite de refabriquer l'arbre markdown à chaque delta
   // si le texte cumulé n'a pas changé (cas des chunks vides/keep-alive).
+  // On linkifie les refs wiki avant rendu → les mentions `wiki/xxx.md`
+  // et `[[slug]]` deviennent cliquables vers le WikiPageViewer.
   const rendered = useMemo(
     () => (
       <ReactMarkdown
@@ -252,7 +328,7 @@ function StreamingBubble({
         rehypePlugins={markdownRehypePlugins}
         components={markdownComponents}
       >
-        {content.length > 0 ? content : ' '}
+        {content.length > 0 ? linkifyWikiRefs(content) : ' '}
       </ReactMarkdown>
     ),
     [content]
@@ -267,6 +343,13 @@ function StreamingBubble({
         className="w-full max-w-full rounded-[var(--radius-md)] px-1 py-1"
         style={{ color: 'var(--fg-primary)' }}
       >
+        {toolTraces && toolTraces.length > 0 && (
+          <div className="mb-2 flex flex-col gap-1">
+            {toolTraces.map((t) => (
+              <ToolTraceBadge key={t.id} trace={t} />
+            ))}
+          </div>
+        )}
         <div className="markdown-body">
           {rendered}
           <span className="animate-pulse text-[var(--fg-secondary)]">▋</span>
@@ -283,4 +366,51 @@ function StreamingBubble({
       </div>
     </div>
   )
+}
+
+// Badge compact représentant l'état d'un tool call en cours. Les icônes
+// suivent le cycle de vie : ⌛ pending/running, ⚠️ awaiting-confirm,
+// ✓ success, ✗ error, ⛔ refused.
+function ToolTraceBadge({ trace }: { trace: ToolTrace }): React.ReactElement {
+  const icon =
+    trace.status === 'success'
+      ? '✓'
+      : trace.status === 'error'
+        ? '✗'
+        : trace.status === 'refused'
+          ? '⛔'
+          : trace.status === 'awaiting-confirm'
+            ? '⚠️'
+            : '⌛'
+  const color =
+    trace.status === 'success'
+      ? 'var(--fg-secondary)'
+      : trace.status === 'error' || trace.status === 'refused'
+        ? '#f87171'
+        : trace.status === 'awaiting-confirm'
+          ? '#f59e0b'
+          : 'var(--fg-muted)'
+  const label = summarizeToolCall(trace.name, trace.arguments)
+  return (
+    <div
+      className="flex items-center gap-2 rounded-[var(--radius-sm)] border px-2 py-1 text-[11px]"
+      style={{ borderColor: 'var(--border)', background: 'var(--bg-tertiary)' }}
+    >
+      <span style={{ color }}>{icon}</span>
+      <code className="font-mono text-[10px] text-[var(--fg-muted)]">{trace.name}</code>
+      <span className="truncate text-[var(--fg-primary)]">{label}</span>
+    </div>
+  )
+}
+
+function summarizeToolCall(name: string, args: Record<string, unknown>): string {
+  if (name === 'read_wiki_page' && typeof args.name === 'string') return `wiki/${args.name}`
+  if (name === 'write_wiki_page' && typeof args.name === 'string') return `wiki/${args.name}`
+  if (name === 'delete_wiki_page' && typeof args.name === 'string') return `wiki/${args.name}`
+  if (name === 'rename_wiki_page' && typeof args.from === 'string' && typeof args.to === 'string')
+    return `${args.from} → ${args.to}`
+  if (name === 'search_wiki' && typeof args.pattern === 'string') return `/${args.pattern}/`
+  if (name === 'list_wiki_pages')
+    return typeof args.subdir === 'string' ? `subdir: ${args.subdir}` : 'all pages'
+  return ''
 }

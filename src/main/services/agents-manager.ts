@@ -538,3 +538,149 @@ function extractJsonObject(s: string): string | null {
   }
   return null
 }
+
+// ──────────────────────────────────────────────────────────── File-back (Sprint 3)
+
+// Pattern Karpathy "file answers back" : transforme un échange Q/R du chat
+// en page wiki `qa/*.md` réutilisable. L'utilisateur clique un bouton sur
+// une réponse assistant, on récupère la question précédente + la réponse,
+// et on demande à un LLM de produire une page wiki structurée dédiée.
+//
+// Pas d'agent configurable pour Sprint 3 — un prompt en dur avec le modèle
+// par défaut du Wiki Builder. Si besoin d'édition ultérieure, on ajoutera
+// un 3e agent système ("QA Filer") comme pour synthesizer/wiki_builder.
+
+const QA_FILER_PROMPT = `Tu es l'agent QA Filer de BlowWorks.
+
+Tu reçois UN échange question/réponse entre un utilisateur et une IA. Ton rôle : le transformer en UNE page wiki \`qa/*.md\` structurée et autonome, destinée à être réutilisée comme source de vérité pour de futures conversations.
+
+## Règles
+
+- Nom de fichier : kebab-case, préfixe \`qa/\`, ex: \`qa/pourquoi-supabase-pour-pagemark.md\`.
+- Frontmatter YAML obligatoire :
+  ---
+  titre: "Question canonique reformulée"
+  type: qa
+  statut: verified
+  importance: standard
+  tags: [#qa]
+  liens_forts: []
+  sources: []
+  source_knowledge: mixed
+  créé: <date ISO>
+  modifié: <date ISO>
+  ---
+- Structure : # Titre / > Résumé (1-2 lignes) / ## Question / ## Réponse / ## Contexte et limites.
+- Si la réponse contient des faits factuels datés ou chiffrés sans source explicite, marque-les \`(à-vérifier)\` dans le corps.
+- Pas de markdown fence autour du JSON que tu retournes.
+
+## Format de sortie — JSON strict
+
+{
+  "filename": "qa/xxx.md",
+  "content": "contenu markdown complet avec frontmatter YAML",
+  "logEntry": "## [ISO] file-back | résumé 1 ligne"
+}`
+
+export async function runFileBackResponse(
+  conversationId: string,
+  assistantMessageId: string
+): Promise<{ filename: string; logEntry: string }> {
+  const conv = getConversation(conversationId)
+  if (!conv) throw new Error(`Conversation ${conversationId} introuvable.`)
+
+  const messages = listMessages(conversationId)
+  const idx = messages.findIndex((m) => m.id === assistantMessageId)
+  if (idx === -1) throw new Error(`Message ${assistantMessageId} introuvable dans la conversation.`)
+  const assistant = messages[idx]
+  if (assistant.role !== 'assistant') {
+    throw new Error('Le message ciblé doit être une réponse assistant.')
+  }
+  // Cherche la question user la plus récente avant cette réponse.
+  let userQ: (typeof messages)[number] | null = null
+  for (let i = idx - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') {
+      userQ = messages[i]
+      break
+    }
+  }
+  if (!userQ) {
+    throw new Error("Aucune question utilisateur trouvée avant cette réponse.")
+  }
+
+  // Utilise le modèle + la température du Wiki Builder comme référence —
+  // c'est le même type de tâche (structure markdown + JSON strict).
+  const wikiBuilder = getAgentByKind('wiki_builder')
+  const model = wikiBuilder?.model ?? 'anthropic/claude-sonnet-4-6'
+  const temperature = wikiBuilder?.temperature ?? 0.2
+  const maxTokens = wikiBuilder?.maxTokens ?? 4096
+
+  const userPrompt = [
+    "## Échange à filer",
+    '',
+    "### Question utilisateur",
+    '',
+    userQ.content,
+    '',
+    "### Réponse assistant",
+    '',
+    assistant.content,
+    '',
+    '## Tâche',
+    "Produis le JSON avec la page wiki qa/ correspondante."
+  ].join('\n\n')
+
+  const result = await oneShotChat({
+    model,
+    systemPrompt: QA_FILER_PROMPT,
+    userPrompt,
+    temperature,
+    maxTokens
+  })
+  if (result.error) {
+    throw new Error(`Échec QA Filer : ${result.error}`)
+  }
+
+  // Parse le JSON. Tolérant fences comme pour Wiki Builder.
+  const stripped = stripMarkdownCodeFence(result.content)
+  const jsonText = extractJsonObject(stripped)
+  if (!jsonText) {
+    throw new Error('Réponse QA Filer invalide : aucun JSON détecté.')
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(jsonText)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    throw new Error(`Réponse QA Filer invalide : JSON malformé (${msg}).`)
+  }
+  if (
+    !parsed ||
+    typeof parsed !== 'object' ||
+    typeof (parsed as { filename?: unknown }).filename !== 'string' ||
+    typeof (parsed as { content?: unknown }).content !== 'string'
+  ) {
+    throw new Error('Réponse QA Filer invalide : filename ou content manquant.')
+  }
+  const obj = parsed as { filename: string; content: string; logEntry?: string }
+
+  // Strip le prefix `wiki/` si l'agent l'a ajouté malgré l'instruction
+  // (writeWiki l'ajoute déjà au niveau FS).
+  let cleanFilename = obj.filename.replace(/\\/g, '/').trim()
+  if (cleanFilename.startsWith('./')) cleanFilename = cleanFilename.slice(2)
+  if (cleanFilename.startsWith('/')) cleanFilename = cleanFilename.slice(1)
+  if (cleanFilename.startsWith('wiki/')) cleanFilename = cleanFilename.slice(5)
+
+  await wiki.writeWiki(cleanFilename, obj.content)
+  const logEntry =
+    typeof obj.logEntry === 'string' && obj.logEntry.trim().length > 0
+      ? obj.logEntry
+      : `## [${new Date().toISOString()}] file-back | ${cleanFilename}`
+  try {
+    await wiki.appendLog(logEntry + '\n')
+  } catch (e) {
+    console.warn('[qa-filer] appendLog échoué :', e)
+  }
+
+  return { filename: cleanFilename, logEntry }
+}

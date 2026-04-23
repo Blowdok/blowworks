@@ -1,19 +1,22 @@
 import { create } from 'zustand'
-import type { WikiFolderStatusT } from '@shared/ipc-contract.js'
+import type { WikiFolderStatusT, AgentWikiBuilderResultT } from '@shared/ipc-contract.js'
 
 // Store Zustand pour le statut du dossier wiki (mémoire long-terme).
 //
-// Problème sans ce store : chaque composant qui dépend de l'état
-// "wiki configuré ?" (ChatPortalView, MemorySidebarSection, WikiSettingsTab,
-// GraphSidebarSection demain) appelait `window.blow.wiki.getFolder()` au
-// mount et gardait son résultat en state local. Si l'utilisateur
-// configure le dossier APRÈS avoir ouvert une ChatShape, la shape voyait
-// toujours `initialized: false` et le bouton ✦ Synthétiser restait grisé
-// jusqu'à un refresh complet.
+// Deux rôles :
+//   1. Statut wiki (folderPath, initialized, rawCount, wikiCount) partagé
+//      entre ChatPortalView, MemorySidebarSection, WikiSettingsTab et
+//      WikiSidebarSection — évite que chaque composant garde un state
+//      local qui dérive quand l'utilisateur configure le wiki ailleurs.
+//   2. État d'exécution `building` du Wiki Builder partagé : n'importe
+//      où on clique « Reconstruire », les deux boutons (sidebar +
+//      settings) passent en « en cours » et ne peuvent pas lancer une
+//      seconde exécution en parallèle.
 //
-// Solution : un point unique de vérité côté renderer, refreshé après
-// chaque mutation (chooseFolder notamment). Tous les consommateurs
-// souscrivent et rerender automatiquement.
+// Le chemin vers le viewer markdown (openPageName) permet aussi aux
+// liens markdown dans le chat de pointer vers une page précise :
+// n'importe quel composant set openPageName → WikiPageViewer (mount
+// dans la sidebar) ouvre la modale.
 
 const EMPTY_STATUS: WikiFolderStatusT = {
   folderPath: null,
@@ -26,19 +29,49 @@ interface WikiStore {
   status: WikiFolderStatusT
   loading: boolean
 
-  // Refetch le statut depuis le main. Appelé au boot + après chaque
-  // mutation (choose, reconstruire, synthétiser).
-  refresh: () => Promise<void>
+  // Exécution Wiki Builder — partagée entre sidebar et settings pour
+  // qu'un seul bouton soit actif à la fois et que le feedback soit
+  // cohérent partout.
+  building: boolean
+  buildFeedback:
+    | { kind: 'ok'; message: string }
+    | { kind: 'error'; message: string }
+    | null
 
-  // Setter direct utilisé par les handlers qui reçoivent déjà le
-  // statut à jour dans leur réponse (chooseFolder retourne le statut
-  // final). Évite un refetch inutile.
+  // Page wiki à afficher dans le viewer modal. Null = aucun viewer
+  // ouvert. Toute chaîne = ouvre la modale sur cette page (chemin
+  // relatif à wiki/, ex: "concepts/pagemark.md").
+  openPageName: string | null
+
+  // Mode d'affichage de la sidebar : standard (projets + mémoire + graph)
+  // ou explorateur wiki plein cadre. Contrôle lancé par un bouton dans
+  // la section Mémoire.
+  sidebarMode: 'standard' | 'wiki-explorer'
+
+  // Ouvre/ferme la modale de visualisation du graphe wiki.
+  graphOpen: boolean
+
+  refresh: () => Promise<void>
   setStatus: (s: WikiFolderStatusT) => void
+
+  runWikiBuilder: () => Promise<void>
+  dismissBuildFeedback: () => void
+
+  openWikiPage: (name: string) => void
+  closeWikiPage: () => void
+
+  setSidebarMode: (m: 'standard' | 'wiki-explorer') => void
+  setGraphOpen: (v: boolean) => void
 }
 
-export const useWikiStore = create<WikiStore>((set) => ({
+export const useWikiStore = create<WikiStore>((set, get) => ({
   status: EMPTY_STATUS,
   loading: false,
+  building: false,
+  buildFeedback: null,
+  openPageName: null,
+  sidebarMode: 'standard',
+  graphOpen: false,
 
   refresh: async () => {
     set({ loading: true })
@@ -51,5 +84,34 @@ export const useWikiStore = create<WikiStore>((set) => ({
     }
   },
 
-  setStatus: (s) => set({ status: s })
+  setStatus: (s) => set({ status: s }),
+
+  runWikiBuilder: async () => {
+    // Re-entrancy guard : si un build est déjà en cours, on ne relance pas.
+    if (get().building) return
+    set({ building: true, buildFeedback: null })
+    try {
+      const r = (await window.blow.agents.runWikiBuilder()) as AgentWikiBuilderResultT
+      const n = r.operations.length
+      set({
+        building: false,
+        buildFeedback: {
+          kind: 'ok',
+          message: `${n} page${n > 1 ? 's' : ''} mise${n > 1 ? 's' : ''} à jour`
+        }
+      })
+      await get().refresh()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      set({ building: false, buildFeedback: { kind: 'error', message: msg } })
+    }
+  },
+
+  dismissBuildFeedback: () => set({ buildFeedback: null }),
+
+  openWikiPage: (name) => set({ openPageName: name }),
+  closeWikiPage: () => set({ openPageName: null }),
+
+  setSidebarMode: (m) => set({ sidebarMode: m }),
+  setGraphOpen: (v) => set({ graphOpen: v })
 }))

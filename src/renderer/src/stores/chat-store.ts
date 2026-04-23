@@ -21,12 +21,29 @@ import type {
 // pour avoir le message assistant final avec ses usage/tokens, puis on
 // efface l'entrée activeStreams.
 
+// Trace d'un tool call au cours d'un stream. `result` vide tant que le
+// tool n'a pas renvoyé. `pendingConfirm: true` quand le modèle attend la
+// décision utilisateur sur un tool destructif.
+export interface ToolTrace {
+  id: string
+  name: string
+  arguments: Record<string, unknown>
+  status: 'pending' | 'running' | 'success' | 'error' | 'awaiting-confirm' | 'refused'
+  result?: string
+  error?: string
+}
+
 export interface StreamState {
   requestId: string
   content: string
   startedAt: number
   citations?: string[]
   error?: string
+  // Liste ordonnée de tool calls au cours de la réponse en stream.
+  toolTraces: ToolTrace[]
+  // Demande de confirmation en cours (toolCallId, args) pour qu'un
+  // composant UI puisse afficher le dialog. Null quand rien en attente.
+  awaitingConfirm: { id: string; name: string; arguments: Record<string, unknown> } | null
 }
 
 export interface ChatConversation {
@@ -81,12 +98,17 @@ interface ChatStore {
       model: string
       temperature: number
       webSearchEnabled: boolean
+      wikiToolsEnabled?: boolean
       systemPrompt?: string | null
       wikiContext?: string | null
       maxTokens?: number
     }
   ) => Promise<void>
   cancelStream: (conversationId: string) => Promise<void>
+  // Confirmation de tool destructif. Envoie la décision au main qui
+  // réveille le await côté streamChat. Met à jour localement le
+  // ToolTrace pour l'affichage inline.
+  confirmToolCall: (conversationId: string, toolCallId: string, approved: boolean) => Promise<void>
 }
 
 const DEFAULT_API_KEY_STATUS: AIApiKeyStatusT = {
@@ -298,6 +320,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       systemPrompt: opts.systemPrompt ?? null,
       wikiContext: opts.wikiContext ?? null,
       webSearchEnabled: opts.webSearchEnabled,
+      wikiToolsEnabled: opts.wikiToolsEnabled ?? false,
       maxTokens: opts.maxTokens
     })) as { requestId: string }
 
@@ -305,7 +328,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     streams.set(conversationId, {
       requestId,
       content: '',
-      startedAt: Date.now()
+      startedAt: Date.now(),
+      toolTraces: [],
+      awaitingConfirm: null
     })
     set({ activeStreams: streams })
   },
@@ -316,6 +341,31 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     await window.blow.ai.cancelStream(stream.requestId)
     // Le listener chunk `done` nettoiera activeStreams à la réception
     // du broadcast de fin — pas besoin de le faire ici.
+  },
+
+  confirmToolCall: async (conversationId, toolCallId, approved) => {
+    // Update optimiste : on sort la demande "awaitingConfirm" et on
+    // passe le ToolTrace correspondant en status = en cours / refusé.
+    const streams = new Map(get().activeStreams)
+    const stream = streams.get(conversationId)
+    if (stream) {
+      const traces: ToolTrace[] = stream.toolTraces.map((t) =>
+        t.id === toolCallId
+          ? { ...t, status: approved ? ('running' as const) : ('refused' as const) }
+          : t
+      )
+      streams.set(conversationId, {
+        ...stream,
+        awaitingConfirm: null,
+        toolTraces: traces
+      })
+      set({ activeStreams: streams })
+    }
+    try {
+      await window.blow.ai.confirmToolCall(toolCallId, approved)
+    } catch (e) {
+      console.warn('[chat-store] confirmToolCall failed', e)
+    }
   }
 }))
 
@@ -335,7 +385,7 @@ function installChunkListener(
   chunkListenerInstalled = true
 
   window.blow.ai.onChunk((payload) => {
-    const { conversationId, delta, done, error, citations } = payload
+    const { conversationId, delta, done, error, citations, toolCall, toolResult, toolConfirmNeeded } = payload
     const state = useChatStore.getState()
 
     if (delta) {
@@ -343,6 +393,78 @@ function installChunkListener(
       const current = streams.get(conversationId)
       if (current) {
         streams.set(conversationId, { ...current, content: current.content + delta })
+        useChatStore.setState({ activeStreams: streams })
+      }
+    }
+
+    // Tool events (Sprint 2). On met à jour la liste `toolTraces` du
+    // stream actif pour que le renderer puisse afficher le cycle de vie
+    // de chaque tool (pending → running/awaiting-confirm → success/error).
+    if (toolCall) {
+      const streams = new Map(useChatStore.getState().activeStreams)
+      const current = streams.get(conversationId)
+      if (current) {
+        const existing = current.toolTraces.find((t) => t.id === toolCall.id)
+        const newTrace: ToolTrace = existing
+          ? { ...existing, arguments: toolCall.arguments, status: 'running' }
+          : {
+              id: toolCall.id,
+              name: toolCall.name,
+              arguments: toolCall.arguments,
+              status: 'running'
+            }
+        const traces = existing
+          ? current.toolTraces.map((t) => (t.id === toolCall.id ? newTrace : t))
+          : [...current.toolTraces, newTrace]
+        streams.set(conversationId, { ...current, toolTraces: traces })
+        useChatStore.setState({ activeStreams: streams })
+      }
+    }
+
+    if (toolConfirmNeeded) {
+      const streams = new Map(useChatStore.getState().activeStreams)
+      const current = streams.get(conversationId)
+      if (current) {
+        const existing = current.toolTraces.find((t) => t.id === toolConfirmNeeded.id)
+        const newTrace: ToolTrace = existing
+          ? { ...existing, arguments: toolConfirmNeeded.arguments, status: 'awaiting-confirm' }
+          : {
+              id: toolConfirmNeeded.id,
+              name: toolConfirmNeeded.name,
+              arguments: toolConfirmNeeded.arguments,
+              status: 'awaiting-confirm'
+            }
+        const traces = existing
+          ? current.toolTraces.map((t) => (t.id === toolConfirmNeeded.id ? newTrace : t))
+          : [...current.toolTraces, newTrace]
+        streams.set(conversationId, {
+          ...current,
+          toolTraces: traces,
+          awaitingConfirm: {
+            id: toolConfirmNeeded.id,
+            name: toolConfirmNeeded.name,
+            arguments: toolConfirmNeeded.arguments
+          }
+        })
+        useChatStore.setState({ activeStreams: streams })
+      }
+    }
+
+    if (toolResult) {
+      const streams = new Map(useChatStore.getState().activeStreams)
+      const current = streams.get(conversationId)
+      if (current) {
+        const traces = current.toolTraces.map((t) =>
+          t.id === toolResult.id
+            ? {
+                ...t,
+                status: toolResult.error ? ('error' as const) : ('success' as const),
+                result: toolResult.result,
+                error: toolResult.error
+              }
+            : t
+        )
+        streams.set(conversationId, { ...current, toolTraces: traces })
         useChatStore.setState({ activeStreams: streams })
       }
     }

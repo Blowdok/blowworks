@@ -6,11 +6,13 @@ import {
   AICreateConversationInput,
   AIUpdateConversationInput,
   AISetApiKeyInput,
+  AIConfirmToolCallInput,
   AIDefaultsSchema,
   type AIChunkEventT,
   type AIApiKeyStatusT,
   type AIDefaultsT
 } from '@shared/ipc-contract.js'
+import { resolveToolConfirmation } from '../services/ai-tool-confirmation.js'
 import {
   createConversation,
   getConversation,
@@ -184,7 +186,8 @@ export function registerAIHandlers(): void {
           systemPrompt: input.systemPrompt ?? conv.system ?? undefined,
           wikiContext: input.wikiContext ?? undefined,
           webSearchEnabled: input.webSearchEnabled,
-          webSearchQuery: input.content
+          webSearchQuery: input.content,
+          wikiToolsEnabled: input.wikiToolsEnabled
         },
         (chunk) => {
           if (chunk.delta) {
@@ -203,6 +206,32 @@ export function registerAIHandlers(): void {
           }
           if (chunk.citations) {
             finalCitations = chunk.citations
+          }
+          // Tool events (Sprint 2). Forwardés tels quels au renderer.
+          // Pour `toolCall`/`toolResult`, le renderer affiche inline dans
+          // le streaming bubble. Pour `toolConfirmNeeded`, il ouvre un
+          // dialog et attend la décision utilisateur (qui revient via
+          // le canal `ai.confirmToolCall`).
+          if (chunk.toolCall) {
+            broadcastChunk({
+              requestId,
+              conversationId: input.conversationId,
+              toolCall: chunk.toolCall
+            })
+          }
+          if (chunk.toolResult) {
+            broadcastChunk({
+              requestId,
+              conversationId: input.conversationId,
+              toolResult: chunk.toolResult
+            })
+          }
+          if (chunk.toolConfirmNeeded) {
+            broadcastChunk({
+              requestId,
+              conversationId: input.conversationId,
+              toolConfirmNeeded: chunk.toolConfirmNeeded
+            })
           }
           if (chunk.done) {
             // Commit le message assistant final AVANT d'émettre le `done`
@@ -248,6 +277,15 @@ export function registerAIHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.ai.cancelStream, (_evt, raw) => {
     const { requestId } = z.object({ requestId: z.string().min(1) }).parse(raw)
     const ok = OpenRouter.cancelStream(requestId)
+    return { ok }
+  })
+
+  // Confirmation d'un tool destructif (Sprint 2). Le renderer appelle ce
+  // canal quand l'utilisateur clique Approuver/Refuser dans le dialog.
+  // Le await côté streamChat se débloque et la boucle agent continue.
+  ipcMain.handle(IPC_CHANNELS.ai.confirmToolCall, (_evt, raw) => {
+    const { toolCallId, approved } = AIConfirmToolCallInput.parse(raw)
+    const ok = resolveToolConfirmation(toolCallId, approved)
     return { ok }
   })
 }

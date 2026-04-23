@@ -177,13 +177,45 @@ export const AISendMessageInput = z.object({
   // quand le toggle 📚 est actif, à partir de MEMORY.md + titres de pages wiki.
   wikiContext: z.string().max(200_000).nullable().optional(),
   webSearchEnabled: z.boolean().default(false),
+  // Active les tools wiki (read/write/search/rename/delete). Branché au
+  // toggle 📚 côté renderer : quand la mémoire est activée pour une conv,
+  // l'IA peut naviguer le wiki à la demande au lieu de recevoir un dump.
+  wikiToolsEnabled: z.boolean().default(false),
   maxTokens: z.number().int().positive().optional()
 })
 export type AISendMessageInputT = z.infer<typeof AISendMessageInput>
 
-// Chunk de streaming. Un seul champ à la fois (delta OU done OU error).
-// `requestId` permet au renderer de router vers la bonne conversation
-// active si plusieurs streams tournent en parallèle.
+export const AIConfirmToolCallInput = z.object({
+  toolCallId: z.string().min(1),
+  approved: z.boolean()
+})
+export type AIConfirmToolCallInputT = z.infer<typeof AIConfirmToolCallInput>
+
+// Événements tool (Sprint 2) — envoyés en cours de stream quand l'IA
+// appelle un tool ou attend une confirmation utilisateur. Les 3 types
+// sont mutuellement exclusifs : un chunk en porte au maximum un.
+export const AIToolCallEventSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  // Zod v4 : z.record(keySchema, valueSchema). Les clés sont des noms
+  // d'arguments (strings arbitraires), les valeurs sont n'importe quoi
+  // selon le tool appelé.
+  arguments: z.record(z.string(), z.unknown())
+})
+export type AIToolCallEventT = z.infer<typeof AIToolCallEventSchema>
+
+export const AIToolResultEventSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  result: z.string(),
+  error: z.string().optional()
+})
+export type AIToolResultEventT = z.infer<typeof AIToolResultEventSchema>
+
+// Chunk de streaming. Un seul champ parmi (delta | done | error | toolCall
+// | toolResult | toolConfirmNeeded) est présent par chunk. `requestId`
+// permet au renderer de router vers la bonne conversation active si
+// plusieurs streams tournent en parallèle.
 export const AIChunkEventSchema = z.object({
   requestId: z.string().min(1),
   conversationId: z.string().min(1),
@@ -197,8 +229,13 @@ export const AIChunkEventSchema = z.object({
     })
     .optional(),
   // URLs Tavily utilisées pour cette réponse (si webSearchEnabled).
-  // Émises dans le chunk final `done: true` pour affichage en CitationsList.
-  citations: z.array(z.string().url()).optional()
+  citations: z.array(z.string().url()).optional(),
+  // Tool events (Sprint 2) — voir schémas dédiés pour détail. Le renderer
+  // les affiche inline dans le message streamé + déclenche un dialog
+  // quand toolConfirmNeeded arrive.
+  toolCall: AIToolCallEventSchema.optional(),
+  toolResult: AIToolResultEventSchema.optional(),
+  toolConfirmNeeded: AIToolCallEventSchema.optional()
 })
 export type AIChunkEventT = z.infer<typeof AIChunkEventSchema>
 
@@ -305,6 +342,21 @@ export const AgentRunSynthesizerInput = z.object({
 })
 export type AgentRunSynthesizerInputT = z.infer<typeof AgentRunSynthesizerInput>
 
+// Input pour runFileBackResponse : cible un message assistant précis
+// à transformer en page wiki qa/. Utilisé par le bouton "📥 Filer" sur
+// chaque MessageBubble assistant du chat.
+export const AgentRunFileBackInput = z.object({
+  conversationId: z.string().min(1),
+  messageId: z.string().min(1)
+})
+export type AgentRunFileBackInputT = z.infer<typeof AgentRunFileBackInput>
+
+export const AgentFileBackResultSchema = z.object({
+  filename: z.string().min(1),
+  logEntry: z.string()
+})
+export type AgentFileBackResultT = z.infer<typeof AgentFileBackResultSchema>
+
 // Résultat d'un run Synthétiseur : chemin de la note écrite + contenu
 // pour feedback UI.
 export const AgentSynthesizerResultSchema = z.object({
@@ -347,6 +399,35 @@ export const WikiEntrySchema = z.object({
   modifiedAt: z.number().int().nonnegative()
 })
 export type WikiEntryT = z.infer<typeof WikiEntrySchema>
+
+// Graphe du wiki : noeuds = pages, arêtes = wikilinks. Construit côté
+// main par `wiki-graph.ts` et consommé par le renderer (GraphSidebarSection,
+// futurs composants d'exploration).
+export const WikiGraphNodeSchema = z.object({
+  id: z.string().min(1), // chemin relatif ex: concepts/pagemark.md
+  title: z.string(),
+  type: z.string(),
+  importance: z.string(),
+  statut: z.string(),
+  backlinks: z.number().int().nonnegative(),
+  outlinks: z.number().int().nonnegative()
+})
+export type WikiGraphNodeT = z.infer<typeof WikiGraphNodeSchema>
+
+export const WikiGraphEdgeSchema = z.object({
+  source: z.string().min(1),
+  // `target` null = wikilink orphelin (pointe vers une page inexistante).
+  // Utile pour afficher en pointillé côté renderer.
+  target: z.string().nullable(),
+  targetSlug: z.string()
+})
+export type WikiGraphEdgeT = z.infer<typeof WikiGraphEdgeSchema>
+
+export const WikiGraphDataSchema = z.object({
+  nodes: z.array(WikiGraphNodeSchema),
+  edges: z.array(WikiGraphEdgeSchema)
+})
+export type WikiGraphDataT = z.infer<typeof WikiGraphDataSchema>
 
 // Validation stricte du nom de fichier wiki : .md uniquement, sous-dossiers
 // autorisés (segments séparés par /), pas de `..`, caractère ASCII printable

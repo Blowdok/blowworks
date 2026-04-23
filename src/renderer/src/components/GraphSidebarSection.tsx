@@ -1,31 +1,33 @@
-// Section « Graph » de la Sidebar — placeholder pour le futur graphe
-// neuronal lié au wiki. L'idée : visualiser les pages wiki comme nœuds,
-// les wiki-links `[[xxx]]` comme arêtes, et permettre d'explorer la
-// mémoire par navigation plutôt que par arborescence de fichiers.
+import { useWikiStore } from '../stores/wiki-store.js'
+
+// Section « Graph » de la Sidebar — bouton qui ouvre la modale de
+// visualisation force-directed du graphe wiki (WikiGraphModal).
 //
-// Pour l'instant, la section est structurellement identique à
-// MemorySidebarSection (titre + raccourci ⚙ + contenu désactivé) pour
-// que l'utilisateur sache déjà où ça va vivre. Le contenu réel viendra
-// dans un lot dédié (rendu d3/sigma + parsing des [[liens]]).
+// Le placeholder Sprint 3 est remplacé par le vrai graph maintenant
+// qu'on a le service `buildWikiGraphData` côté main + la modale SVG
+// avec simulation physique maison.
 
 interface GraphSidebarSectionProps {
   collapsed: boolean
-  onOpenGraph?: () => void
 }
 
 export default function GraphSidebarSection({
-  collapsed,
-  onOpenGraph
+  collapsed
 }: GraphSidebarSectionProps): React.ReactElement {
+  const status = useWikiStore((s) => s.status)
+  const setGraphOpen = useWikiStore((s) => s.setGraphOpen)
+
+  const isConfigured = status.folderPath != null && status.initialized
+
   if (collapsed) {
     return (
       <div className="flex justify-center px-2">
         <button
           type="button"
-          disabled
-          onClick={onOpenGraph}
-          className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[12px] text-[var(--fg-muted)] opacity-50"
-          title="Graph — à venir"
+          disabled={!isConfigured}
+          onClick={() => setGraphOpen(true)}
+          className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[12px] text-[var(--fg-muted)] hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)] disabled:cursor-not-allowed disabled:opacity-40"
+          title={isConfigured ? 'Ouvrir le graph du wiki' : 'Wiki non configuré'}
         >
           ⬡
         </button>
@@ -39,31 +41,34 @@ export default function GraphSidebarSection({
         <h3 className="text-[10px] font-semibold uppercase tracking-widest text-[var(--fg-muted)]">
           Graph
         </h3>
-        <button
-          type="button"
-          disabled
-          onClick={onOpenGraph}
-          className="rounded-[var(--radius-sm)] px-1 text-[10px] text-[var(--fg-muted)] opacity-50"
-          title="Paramètres du Graph — à venir"
-          aria-label="Paramètres du Graph"
-        >
-          ⚙
-        </button>
       </div>
-
       <div className="flex flex-col gap-1.5">
-        <span className="text-[10px] text-[var(--fg-muted)]">
-          Graphe neuronal — à venir.
-        </span>
-        <button
-          type="button"
-          disabled
-          className="rounded-[var(--radius-sm)] border px-2 py-1 text-[10px] opacity-50"
-          style={{ borderColor: 'var(--border)', color: 'var(--fg-muted)' }}
-          title="Visualisation réseau des pages wiki — pas encore implémenté"
-        >
-          ⬡ Ouvrir le graph
-        </button>
+        {!isConfigured && (
+          <span className="text-[10px] text-[var(--fg-muted)]">
+            Wiki non configuré.
+          </span>
+        )}
+        {isConfigured && (
+          <>
+            <span className="text-[10px] text-[var(--fg-muted)]">
+              {status.wikiCount} nœud{status.wikiCount > 1 ? 's' : ''} wiki connecté{status.wikiCount > 1 ? 's' : ''} par les \`[[liens]]\`.
+            </span>
+            <button
+              type="button"
+              onClick={() => setGraphOpen(true)}
+              disabled={status.wikiCount === 0}
+              className="rounded-[var(--radius-sm)] border px-2 py-1 text-[10px] disabled:cursor-not-allowed disabled:opacity-40"
+              style={{ borderColor: 'var(--border)', color: 'var(--fg-secondary)' }}
+              title={
+                status.wikiCount === 0
+                  ? 'Aucune page à visualiser — lance le Wiki Builder'
+                  : 'Visualiser le graphe des wikilinks'
+              }
+            >
+              ⬡ Ouvrir le graph
+            </button>
+          </>
+        )}
       </div>
     </div>
   )

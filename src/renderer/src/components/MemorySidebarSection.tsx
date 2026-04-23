@@ -1,5 +1,3 @@
-import { useState } from 'react'
-import type { AgentWikiBuilderResultT } from '@shared/ipc-contract.js'
 import { useWikiStore } from '../stores/wiki-store.js'
 
 // Section « Mémoire » de la Sidebar de l'app — permet de reconstruire le
@@ -21,30 +19,26 @@ export default function MemorySidebarSection({
   onOpenWikiSettings
 }: MemorySidebarSectionProps): React.ReactElement {
   const status = useWikiStore((s) => s.status)
+  const building = useWikiStore((s) => s.building)
+  const feedback = useWikiStore((s) => s.buildFeedback)
+  const runWikiBuilder = useWikiStore((s) => s.runWikiBuilder)
+  const setSidebarMode = useWikiStore((s) => s.setSidebarMode)
   const refreshStatus = useWikiStore((s) => s.refresh)
 
-  const [building, setBuilding] = useState(false)
-  const [feedback, setFeedback] = useState<
-    { kind: 'ok'; message: string } | { kind: 'error'; message: string } | null
-  >(null)
-
   async function handleBuild(): Promise<void> {
-    setBuilding(true)
-    setFeedback(null)
+    await runWikiBuilder()
+  }
+
+  async function handleImportToRaw(): Promise<void> {
     try {
-      const r = (await window.blow.agents.runWikiBuilder()) as AgentWikiBuilderResultT
-      setFeedback({
-        kind: 'ok',
-        message: `${r.operations.length} page${r.operations.length > 1 ? 's' : ''} mise${r.operations.length > 1 ? 's' : ''} à jour`
-      })
+      const r = (await window.blow.wiki.importToRaw()) as {
+        canceled: boolean
+        results: Array<{ targetName: string | null; error: string | null; sourcePath: string }>
+      }
+      if (r.canceled) return
       void refreshStatus()
-      setTimeout(() => setFeedback(null), 5000)
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      setFeedback({ kind: 'error', message: msg })
-      setTimeout(() => setFeedback(null), 8000)
-    } finally {
-      setBuilding(false)
+      console.warn('[memory] import failed', e)
     }
   }
 
@@ -80,17 +74,28 @@ export default function MemorySidebarSection({
         <h3 className="text-[10px] font-semibold uppercase tracking-widest text-[var(--fg-muted)]">
           Mémoire
         </h3>
-        {/* Raccourci → Paramètres > Wiki. Utile pour rentrer dans la
-            config sans passer par l'engrenage du footer. */}
-        <button
-          type="button"
-          onClick={onOpenWikiSettings}
-          className="rounded-[var(--radius-sm)] px-1 text-[10px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-secondary)]"
-          title="Ouvrir les paramètres du Wiki"
-          aria-label="Paramètres du Wiki"
-        >
-          ⚙
-        </button>
+        <div className="flex items-center gap-1">
+          {isConfigured && (
+            <button
+              type="button"
+              onClick={() => setSidebarMode('wiki-explorer')}
+              className="rounded-[var(--radius-sm)] px-1 text-[10px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-secondary)]"
+              title="Explorateur wiki — bascule la sidebar en mode arborescence"
+              aria-label="Explorateur wiki"
+            >
+              📖
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onOpenWikiSettings}
+            className="rounded-[var(--radius-sm)] px-1 text-[10px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-secondary)]"
+            title="Ouvrir les paramètres du Wiki"
+            aria-label="Paramètres du Wiki"
+          >
+            ⚙
+          </button>
+        </div>
       </div>
 
       {!isConfigured && (
@@ -126,11 +131,20 @@ export default function MemorySidebarSection({
             }}
             title={
               status.rawCount === 0
-                ? 'Aucune synthèse à traiter — utilise ✦ dans le chat'
+                ? "Aucune synthèse à traiter — utilise ✦ dans le chat ou importe un fichier dans raw/"
                 : 'Reconstruire le wiki à partir des synthèses raw/ (peut prendre plusieurs minutes)'
             }
           >
             {building ? '⏳ Construction…' : '✦ Reconstruire le wiki'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleImportToRaw()}
+            disabled={building}
+            className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--fg-muted)] hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)] disabled:cursor-not-allowed disabled:opacity-40"
+            title="Ajouter manuellement un .md ou .txt dans raw/ pour ingestion par le Wiki Builder"
+          >
+            📂 Importer dans raw
           </button>
           {building && (
             <div className="text-[9px] text-[var(--fg-muted)]">
