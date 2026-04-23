@@ -250,6 +250,12 @@ export type AIDefaultsT = z.infer<typeof AIDefaultsSchema>
 export const AgentKindSchema = z.enum(['synthesizer', 'wiki_builder', 'custom'])
 export type AgentKindT = z.infer<typeof AgentKindSchema>
 
+// Bornes max tokens : 128 min (quelque chose de significatif), 200k max
+// (contexte max de Claude / GPT-4 Turbo). Le runtime caspe de toute
+// façon selon le modèle choisi côté OpenRouter.
+const MAX_TOKENS_MIN = 128
+const MAX_TOKENS_MAX = 200_000
+
 export const AgentSchema = z.object({
   id: z.string().min(1),
   kind: AgentKindSchema,
@@ -257,6 +263,13 @@ export const AgentSchema = z.object({
   description: z.string().max(500).default(''),
   model: z.string().min(1),
   systemPrompt: z.string().min(1).max(50_000),
+  // 0.0 = déterministe, 2.0 = très créatif. Valeur par agent (les runners
+  // la passent à OpenRouter). Default 0.7 pour les agents custom, 0.2-0.3
+  // pour les agents système (cf. seed dans db.ts).
+  temperature: z.number().min(0).max(2),
+  // Taille max de la réponse générée. Bornée pour éviter qu'un prompt
+  // utilisateur cassé ne demande 500k tokens et fasse exploser la facture.
+  maxTokens: z.number().int().min(MAX_TOKENS_MIN).max(MAX_TOKENS_MAX),
   enabled: z.boolean(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative()
@@ -268,6 +281,8 @@ export const AgentCreateInput = z.object({
   description: z.string().max(500).optional(),
   model: z.string().min(1),
   systemPrompt: z.string().min(1).max(50_000),
+  temperature: z.number().min(0).max(2).optional(),
+  maxTokens: z.number().int().min(MAX_TOKENS_MIN).max(MAX_TOKENS_MAX).optional(),
   enabled: z.boolean().optional()
 })
 export type AgentCreateInputT = z.infer<typeof AgentCreateInput>
@@ -278,6 +293,8 @@ export const AgentUpdateInput = z.object({
   description: z.string().max(500).optional(),
   model: z.string().min(1).optional(),
   systemPrompt: z.string().min(1).max(50_000).optional(),
+  temperature: z.number().min(0).max(2).optional(),
+  maxTokens: z.number().int().min(MAX_TOKENS_MIN).max(MAX_TOKENS_MAX).optional(),
   enabled: z.boolean().optional()
 })
 export type AgentUpdateInputT = z.infer<typeof AgentUpdateInput>

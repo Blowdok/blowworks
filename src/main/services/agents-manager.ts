@@ -27,6 +27,8 @@ interface AgentRow {
   description: string
   model: string
   system_prompt: string
+  temperature: number
+  max_tokens: number
   enabled: number
   created_at: number
   updated_at: number
@@ -40,6 +42,11 @@ function rowToAgent(row: AgentRow): AgentT {
     description: row.description,
     model: row.model,
     systemPrompt: row.system_prompt,
+    // Fallback 0.7 si une install antérieure a une ligne sans temperature
+    // (cas impossible après la migration ALTER TABLE, mais ceinture +
+    // bretelles contre un cache/corruption).
+    temperature: typeof row.temperature === 'number' ? row.temperature : 0.7,
+    maxTokens: typeof row.max_tokens === 'number' ? row.max_tokens : 4096,
     enabled: row.enabled === 1,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -73,8 +80,8 @@ export function createAgent(input: AgentCreateInputT): AgentT {
   getDb()
     .prepare(
       `INSERT INTO agents (id, kind, name, description, model, system_prompt,
-                           enabled, created_at, updated_at)
-       VALUES (?, 'custom', ?, ?, ?, ?, ?, ?, ?)`
+                           temperature, max_tokens, enabled, created_at, updated_at)
+       VALUES (?, 'custom', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -82,6 +89,8 @@ export function createAgent(input: AgentCreateInputT): AgentT {
       input.description ?? '',
       input.model,
       input.systemPrompt,
+      input.temperature ?? 0.7,
+      input.maxTokens ?? 4096,
       input.enabled === false ? 0 : 1,
       now,
       now
@@ -99,6 +108,8 @@ export function updateAgent(input: AgentUpdateInputT): AgentT | null {
     description: input.description ?? existing.description,
     model: input.model ?? existing.model,
     systemPrompt: input.systemPrompt ?? existing.systemPrompt,
+    temperature: input.temperature ?? existing.temperature,
+    maxTokens: input.maxTokens ?? existing.maxTokens,
     enabled: input.enabled ?? existing.enabled,
     updatedAt: Date.now()
   }
@@ -107,7 +118,7 @@ export function updateAgent(input: AgentUpdateInputT): AgentT | null {
     .prepare(
       `UPDATE agents
          SET name = ?, description = ?, model = ?, system_prompt = ?,
-             enabled = ?, updated_at = ?
+             temperature = ?, max_tokens = ?, enabled = ?, updated_at = ?
        WHERE id = ?`
     )
     .run(
@@ -115,6 +126,8 @@ export function updateAgent(input: AgentUpdateInputT): AgentT | null {
       next.description,
       next.model,
       next.systemPrompt,
+      next.temperature,
+      next.maxTokens,
       next.enabled ? 1 : 0,
       next.updatedAt,
       next.id
@@ -198,8 +211,8 @@ export async function runSynthesizer(
     model: agent.model,
     systemPrompt: agent.systemPrompt,
     userPrompt,
-    temperature: 0.3, // température basse : on veut un résumé stable, pas créatif
-    maxTokens: 2048
+    temperature: agent.temperature,
+    maxTokens: agent.maxTokens
   })
 
   if (result.error) {
@@ -315,13 +328,19 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
     model: agent.model,
     systemPrompt: agent.systemPrompt,
     userPrompt,
-    temperature: 0.2,
-    maxTokens: 8192
+    temperature: agent.temperature,
+    maxTokens: agent.maxTokens
   })
 
   if (result.error) {
     throw new Error(`Échec Wiki Builder : ${result.error}`)
   }
+
+  // Log systématique de la réponse brute — facilite le diagnostic quand
+  // le modèle produit du JSON invalide (tronqué, fence mal formé, refus).
+  console.log(
+    `[wiki-builder] réponse brute (${result.content.length} chars) :\n${result.content.slice(0, 2000)}${result.content.length > 2000 ? '\n…[tronqué pour log]' : ''}`
+  )
 
   const parsed = parseWikiBuilderResponse(result.content)
   const applied: AgentWikiBuilderOperationT[] = []
@@ -394,10 +413,27 @@ interface WikiBuilderParsedResponse {
 }
 
 function parseWikiBuilderResponse(raw: string): WikiBuilderParsedResponse {
-  const jsonText = extractJsonObject(raw)
+  // Strip markdown fences `\`\`\`json ... \`\`\`` ou `\`\`\` ... \`\`\``
+  // avant de chercher l'objet JSON. Certains modèles les ajoutent malgré
+  // l'instruction contraire dans le prompt.
+  const stripped = stripMarkdownCodeFence(raw)
+  const jsonText = extractJsonObject(stripped)
   if (!jsonText) {
+    // Diagnostic détaillé : longueur de réponse, nb d'accolades ouvrantes
+    // vs fermantes, extrait initial. Aide l'utilisateur à décider s'il
+    // s'agit d'un refus du modèle, d'un JSON tronqué, ou d'un autre bug.
+    const opens = (stripped.match(/\{/g) ?? []).length
+    const closes = (stripped.match(/\}/g) ?? []).length
+    const head = stripped.slice(0, 400).replace(/\n/g, ' ↵ ')
+    const hint =
+      opens === 0
+        ? 'aucune accolade ouvrante — le modèle a refusé la tâche ou renvoyé du texte libre.'
+        : opens > closes
+          ? `JSON probablement tronqué (maxTokens atteint) : ${opens} { pour ${closes} }.`
+          : 'structure JSON incohérente.'
     throw new Error(
-      "Réponse Wiki Builder invalide : aucun objet JSON détecté dans la sortie du modèle."
+      `Réponse Wiki Builder invalide : ${hint}\n\n` +
+        `Longueur : ${raw.length} chars. Début de la réponse : "${head}"`
     )
   }
   let parsed: unknown
@@ -405,7 +441,11 @@ function parseWikiBuilderResponse(raw: string): WikiBuilderParsedResponse {
     parsed = JSON.parse(jsonText)
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
-    throw new Error(`Réponse Wiki Builder invalide : JSON malformé (${msg}).`)
+    const head = jsonText.slice(0, 300).replace(/\n/g, ' ↵ ')
+    throw new Error(
+      `Réponse Wiki Builder invalide : JSON malformé (${msg}).\n\n` +
+        `Début du bloc JSON extrait : "${head}"`
+    )
   }
   if (
     !parsed ||
@@ -447,6 +487,22 @@ function parseWikiBuilderResponse(raw: string): WikiBuilderParsedResponse {
     indexUpdate: typeof obj.indexUpdate === 'string' ? obj.indexUpdate : '',
     logEntry: typeof obj.logEntry === 'string' ? obj.logEntry : ''
   }
+}
+
+// Retire les fences markdown ```json ... ``` ou ``` ... ``` que certains
+// modèles ajoutent malgré l'instruction "pas de markdown fence". Pattern
+// volontairement greedy pour gérer plusieurs blocs. Si le résultat strippé
+// est vide, on retombe sur l'original (mieux vaut essayer de parser le
+// texte brut que d'échouer silencieusement).
+function stripMarkdownCodeFence(s: string): string {
+  const trimmed = s.trim()
+  // Cas principal : fence entière englobant la réponse
+  const fenceMatch = trimmed.match(/^```(?:json|javascript|js)?\s*\r?\n([\s\S]*?)\r?\n```\s*$/i)
+  if (fenceMatch) return fenceMatch[1]
+  // Cas variant : fence en tête/fin mais du texte explicatif autour
+  // → on retire juste les lignes ```… qui restent, le parser extractJsonObject
+  //   s'occupera de trouver le {} au milieu.
+  return trimmed.replace(/^```[a-zA-Z]*\s*\r?\n/gm, '').replace(/\r?\n```\s*$/gm, '')
 }
 
 // Extraction robuste d'un objet JSON depuis une chaîne : on cherche la 1ère

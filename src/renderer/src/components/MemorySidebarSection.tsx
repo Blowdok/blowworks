@@ -127,11 +127,16 @@ export default function MemorySidebarSection({
             title={
               status.rawCount === 0
                 ? 'Aucune synthèse à traiter — utilise ✦ dans le chat'
-                : 'Reconstruire le wiki à partir des synthèses raw/'
+                : 'Reconstruire le wiki à partir des synthèses raw/ (peut prendre plusieurs minutes)'
             }
           >
             {building ? '⏳ Construction…' : '✦ Reconstruire le wiki'}
           </button>
+          {building && (
+            <div className="text-[9px] text-[var(--fg-muted)]">
+              Le modèle traite {status.rawCount} synthèse{status.rawCount > 1 ? 's' : ''} — peut durer plusieurs minutes. Timeout à 5 min.
+            </div>
+          )}
           {feedback && (
             <div
               className="text-[9px]"

@@ -44,6 +44,8 @@ export default function AgentsSettingsTab(): React.ReactElement {
         description: '',
         model: models[0]?.id ?? 'anthropic/claude-sonnet-4-6',
         systemPrompt: 'Tu es un agent BlowWorks. Décris ton rôle ici.',
+        temperature: 0.7,
+        maxTokens: 4096,
         enabled: true
       })) as AgentT
       await refresh()
@@ -75,6 +77,8 @@ export default function AgentsSettingsTab(): React.ReactElement {
         description: patch.description,
         model: patch.model,
         systemPrompt: patch.systemPrompt,
+        temperature: patch.temperature,
+        maxTokens: patch.maxTokens,
         enabled: patch.enabled
       })
       await refresh()
@@ -203,6 +207,8 @@ function AgentEditor({
   const [description, setDescription] = useState(agent.description)
   const [model, setModel] = useState(agent.model)
   const [systemPrompt, setSystemPrompt] = useState(agent.systemPrompt)
+  const [temperature, setTemperature] = useState(agent.temperature)
+  const [maxTokens, setMaxTokens] = useState(agent.maxTokens)
   const [enabled, setEnabled] = useState(agent.enabled)
 
   const isSystem = agent.kind !== 'custom'
@@ -211,6 +217,8 @@ function AgentEditor({
     description !== agent.description ||
     model !== agent.model ||
     systemPrompt !== agent.systemPrompt ||
+    temperature !== agent.temperature ||
+    maxTokens !== agent.maxTokens ||
     enabled !== agent.enabled
 
   return (
@@ -265,6 +273,80 @@ function AgentEditor({
         </div>
       </div>
 
+      <div className="flex flex-col gap-1">
+        <div className="flex items-baseline justify-between">
+          <span className="text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
+            Température
+          </span>
+          <code className="text-[10px] text-[var(--fg-muted)]">
+            {temperature.toFixed(2)} — {temperatureLabel(temperature)}
+          </code>
+        </div>
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min={0}
+            max={2}
+            step={0.05}
+            value={temperature}
+            onChange={(e) => setTemperature(parseFloat(e.target.value))}
+            className="flex-1 accent-[var(--fg-secondary)]"
+          />
+          <input
+            type="number"
+            min={0}
+            max={2}
+            step={0.05}
+            value={temperature}
+            onChange={(e) => {
+              const v = parseFloat(e.target.value)
+              if (Number.isFinite(v)) setTemperature(Math.min(2, Math.max(0, v)))
+            }}
+            className="w-20 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-tertiary)] px-2 py-1 text-[12px] text-[var(--fg-primary)] outline-none focus:border-[var(--fg-secondary)]"
+          />
+        </div>
+        <span className="text-[10px] text-[var(--fg-muted)]">
+          0 = déterministe (idéal pour JSON strict, synthèses factuelles) · 0.7 = équilibré · 1.5+ = créatif (brainstorm, variantes).
+        </span>
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <div className="flex items-baseline justify-between">
+          <span className="text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
+            Max tokens (sortie)
+          </span>
+          <code className="text-[10px] text-[var(--fg-muted)]">
+            {maxTokens.toLocaleString('fr-FR')} tokens
+          </code>
+        </div>
+        <div className="flex items-center gap-3">
+          <input
+            type="range"
+            min={128}
+            max={32768}
+            step={128}
+            value={Math.min(32768, maxTokens)}
+            onChange={(e) => setMaxTokens(parseInt(e.target.value, 10))}
+            className="flex-1 accent-[var(--fg-secondary)]"
+          />
+          <input
+            type="number"
+            min={128}
+            max={200000}
+            step={128}
+            value={maxTokens}
+            onChange={(e) => {
+              const v = parseInt(e.target.value, 10)
+              if (Number.isFinite(v)) setMaxTokens(Math.min(200000, Math.max(128, v)))
+            }}
+            className="w-24 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-tertiary)] px-2 py-1 text-[12px] text-[var(--fg-primary)] outline-none focus:border-[var(--fg-secondary)]"
+          />
+        </div>
+        <span className="text-[10px] text-[var(--fg-muted)]">
+          Plafonne la longueur de la réponse. 2 048 suffit pour une synthèse courte, 16 384+ pour un gros JSON de Wiki Builder. Au-delà de 32 768 tape la valeur à la main — dépend du modèle choisi.
+        </span>
+      </div>
+
       <label className="flex flex-1 flex-col gap-1 text-[11px] uppercase tracking-widest text-[var(--fg-muted)]">
         Prompt système
         <textarea
@@ -290,7 +372,7 @@ function AgentEditor({
         </div>
         <button
           type="button"
-          onClick={() => onSave({ name, description, model, systemPrompt, enabled })}
+          onClick={() => onSave({ name, description, model, systemPrompt, temperature, maxTokens, enabled })}
           disabled={!dirty}
           className="rounded-[var(--radius-sm)] border px-3 py-1.5 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-40"
           style={{ borderColor: 'var(--fg-secondary)', color: 'var(--fg-secondary)' }}
@@ -300,4 +382,15 @@ function AgentEditor({
       </div>
     </div>
   )
+}
+
+// Classement lisible de la température pour guider l'utilisateur. Seuils
+// calés sur le mapping d'usage OpenAI/OpenRouter : <0.3 = tâches
+// déterministes, 0.7 = conversationnel, >1.2 = créatif.
+function temperatureLabel(t: number): string {
+  if (t <= 0.2) return 'déterministe'
+  if (t <= 0.5) return 'stable'
+  if (t <= 0.9) return 'équilibré'
+  if (t <= 1.3) return 'varié'
+  return 'créatif'
 }

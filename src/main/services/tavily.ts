@@ -86,6 +86,52 @@ export interface TavilySearchOptions {
   depth?: 'basic' | 'advanced'
   maxResults?: number
   timeoutMs?: number
+  // `topic` = 'news' active le crawler d'actualités récentes (résultats
+  // datés, presse généraliste). 'general' = recherche web standard.
+  // Par défaut on auto-détecte via heuristique de mots-clés temporels.
+  topic?: 'general' | 'news'
+  // Quand topic=news, limite la fenêtre temporelle. Fortement utile pour
+  // "prochain match", "aujourd'hui", "cette semaine" — évite de retomber
+  // sur des articles de 2023.
+  timeRange?: 'day' | 'week' | 'month' | 'year'
+}
+
+// Détection heuristique : la question porte-t-elle sur un événement
+// courant/futur/récent ? Si oui, on bascule Tavily en mode news.
+// Keywords volontairement larges pour ratisser français + anglais.
+const TEMPORAL_KEYWORDS = [
+  'prochain',
+  'prochaine',
+  'aujourd\'hui',
+  'aujourd hui',
+  'hier',
+  'demain',
+  'cette semaine',
+  'ce mois',
+  'cette année',
+  'actuel',
+  'actuelle',
+  'récent',
+  'récente',
+  'maintenant',
+  'en ce moment',
+  'dernier',
+  'dernière',
+  'upcoming',
+  'today',
+  'yesterday',
+  'tomorrow',
+  'this week',
+  'this month',
+  'recent',
+  'latest',
+  'current',
+  'now'
+]
+
+export function detectTemporalIntent(query: string): boolean {
+  const q = query.toLowerCase()
+  return TEMPORAL_KEYWORDS.some((k) => q.includes(k))
 }
 
 export async function search(
@@ -99,21 +145,33 @@ export async function search(
     )
   }
 
+  // Si topic non-forcé, on auto-détecte via les mots-clés temporels.
+  const topic: 'general' | 'news' = opts.topic ?? (detectTemporalIntent(query) ? 'news' : 'general')
+  // Par défaut : fenêtre courte (week) si topic=news, sinon pas de contrainte.
+  const timeRange = opts.timeRange ?? (topic === 'news' ? 'week' : undefined)
+
   const ctrl = new AbortController()
   const timeout = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? DEFAULT_TIMEOUT_MS)
 
   try {
+    const body: Record<string, unknown> = {
+      api_key: apiKey,
+      query,
+      // `advanced` coûte plus cher mais retourne des snippets plus
+      // longs et des scores de pertinence mieux calibrés — vaut le coup
+      // pour un outil desktop où la qualité prime sur le coût unitaire.
+      search_depth: opts.depth ?? 'advanced',
+      max_results: opts.maxResults ?? 8,
+      include_answer: true,
+      topic
+    }
+    if (timeRange) body.time_range = timeRange
+
     const res = await fetch(TAVILY_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       signal: ctrl.signal,
-      body: JSON.stringify({
-        api_key: apiKey,
-        query,
-        search_depth: opts.depth ?? 'basic',
-        max_results: opts.maxResults ?? 5,
-        include_answer: true
-      })
+      body: JSON.stringify(body)
     })
     if (!res.ok) {
       const text = await res.text().catch(() => '')
@@ -140,24 +198,34 @@ export async function search(
 // Formate la réponse Tavily pour injection comme message système
 // additionnel, juste avant la requête user. Le modèle reçoit alors un
 // contexte web à jour et doit citer ses sources via les URLs fournies.
+//
+// Les consignes finales sont strictes : si les sources ne contiennent
+// PAS la réponse, le modèle doit le dire plutôt qu'inventer des faits
+// plausibles (ex: programmer des matchs de Ligue des Champions avec des
+// équipes au hasard au lieu de reconnaître qu'il n'a pas l'info).
 export function formatSearchForPrompt(query: string, r: TavilySearchResponse): string {
   const lines: string[] = [
     `[Contexte web récupéré via Tavily pour la requête : "${query}"]`
   ]
   if (r.answer) {
-    lines.push('', 'Réponse rapide synthétisée :', r.answer)
+    lines.push('', 'Réponse rapide synthétisée par Tavily :', r.answer)
   }
   if (r.results.length > 0) {
-    lines.push('', 'Sources (cite-les en markdown quand tu les utilises) :')
+    lines.push('', `Sources (${r.results.length}, triées par pertinence) :`)
     for (const [i, src] of r.results.entries()) {
       const snippet = src.content.slice(0, 500).replace(/\s+/g, ' ').trim()
       lines.push(`${i + 1}. [${src.title}](${src.url})`, `   ${snippet}`)
     }
+  } else {
+    lines.push('', '**Aucune source pertinente retournée par Tavily pour cette requête.**')
   }
   lines.push(
     '',
-    'Consigne : utilise ces sources pour répondre avec précision et actualité,',
-    "et inclus les liens [titre](url) dans ta réponse quand c'est pertinent."
+    '## Règles de réponse',
+    "- Base-toi EXCLUSIVEMENT sur les sources ci-dessus pour les faits factuels (dates, scores, noms, affiches).",
+    "- Cite les sources en markdown `[titre](url)` à côté de chaque fait factuel.",
+    "- Si les sources ne contiennent PAS la réponse demandée, dis-le explicitement — NE PAS extrapoler ni inventer des affiches, dates ou résultats plausibles.",
+    "- Ne conjugue JAMAIS ton training cutoff avec ces sources : les sources priment."
   )
   return lines.join('\n')
 }

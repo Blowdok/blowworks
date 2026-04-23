@@ -121,7 +121,29 @@ function runMigrations(db: Database.Database): void {
     );
   `)
 
+  addAgentColumnsIfMissing(db)
   seedSystemAgents(db)
+}
+
+// Migrations ALTER TABLE conditionnelles pour la table `agents`. Ajoute
+// les colonnes qui manquent à un schéma d'install antérieur. SQLite n'a
+// pas de `ADD COLUMN IF NOT EXISTS` avant 3.35 chez tout le monde — on
+// lit `pragma_table_info` et on décide à la main.
+function addAgentColumnsIfMissing(db: Database.Database): void {
+  const cols = db
+    .prepare(`SELECT name FROM pragma_table_info('agents')`)
+    .all() as Array<{ name: string }>
+  const has = (n: string): boolean => cols.some((c) => c.name === n)
+
+  if (!has('temperature')) {
+    db.exec(`ALTER TABLE agents ADD COLUMN temperature REAL NOT NULL DEFAULT 0.7`)
+  }
+  if (!has('max_tokens')) {
+    // 4096 : défaut raisonnable pour un agent conversationnel. Les
+    // runners système bumpent ensuite via le seed (2048 Synthétiseur,
+    // 16384 Wiki Builder — cf. seedSystemAgents).
+    db.exec(`ALTER TABLE agents ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 4096`)
+  }
 }
 
 // Version des prompts système — incrémentée à chaque upgrade majeur.
@@ -230,9 +252,9 @@ function seedSystemAgents(db: Database.Database): void {
   const now = Date.now()
   const insert = db.prepare(`
     INSERT INTO agents (id, kind, name, description, model, system_prompt,
-                         enabled, created_at, updated_at)
+                         temperature, max_tokens, enabled, created_at, updated_at)
     VALUES (@id, @kind, @name, @description, @model, @system_prompt,
-            @enabled, @created_at, @updated_at)
+            @temperature, @max_tokens, @enabled, @created_at, @updated_at)
     ON CONFLICT(id) DO NOTHING
   `)
 
@@ -244,6 +266,11 @@ function seedSystemAgents(db: Database.Database): void {
       'Condense une conversation en une synthèse structurée pour la mémoire long-terme. Répond FLUSH_OK si rien ne vaut d\'être sauvé.',
     model: 'anthropic/claude-sonnet-4-6',
     system_prompt: SYNTHESIZER_PROMPT_V2,
+    // Température basse : on veut une synthèse stable et factuelle,
+    // pas une réécriture créative de la conversation.
+    temperature: 0.3,
+    // Synthèse courte : 2048 tokens suffisent pour 5 sections concises.
+    max_tokens: 2048,
     enabled: 1,
     created_at: now,
     updated_at: now
@@ -257,6 +284,13 @@ function seedSystemAgents(db: Database.Database): void {
       'Compile les synthèses brutes raw/ en pages wiki structurées avec frontmatter YAML, wikilinks croisés, index et log maintenus.',
     model: 'anthropic/claude-sonnet-4-6',
     system_prompt: WIKI_BUILDER_PROMPT_V2,
+    // Température très basse : le Wiki Builder doit produire du JSON
+    // strictement valide + des pages cohérentes avec l'existant — pas
+    // de place pour de la créativité qui casserait la structure.
+    temperature: 0.2,
+    // Gros budget : JSON d'opérations avec N pages complètes + index + log.
+    // 16 384 laisse de la marge. Passe à 32 768 si wiki > 20 pages.
+    max_tokens: 16384,
     enabled: 1,
     created_at: now,
     updated_at: now

@@ -161,6 +161,8 @@ const api = {
       description?: string
       model: string
       systemPrompt: string
+      temperature?: number
+      maxTokens?: number
       enabled?: boolean
     }) => ipcRenderer.invoke(IPC_CHANNELS.agents.create, input),
     update: (input: {
@@ -169,6 +171,8 @@ const api = {
       description?: string
       model?: string
       systemPrompt?: string
+      temperature?: number
+      maxTokens?: number
       enabled?: boolean
     }) => ipcRenderer.invoke(IPC_CHANNELS.agents.update, input),
     delete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.agents.delete, { id }),

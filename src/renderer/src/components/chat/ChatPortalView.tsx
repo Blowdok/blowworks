@@ -160,9 +160,13 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
   // (catalogue) + le CONTENU COMPLET des pages wiki (capé 80 KB sur les
   // plus récentes). Sans le contenu, l'IA répond "je n'ai pas accès" ou
   // pire, hallucine — car SCHEMA décrit COMMENT le système fonctionne mais
-  // pas CE QUI est stocké. Au Sprint 2 on passera à schema+index seuls +
-  // tools function-calling `read_wiki_page(name)` pour chargement à la
-  // demande. En attendant : injecter tout.
+  // pas CE QUI est stocké.
+  //
+  // IMPORTANT : on nettoie chaque page avant injection (strip du frontmatter
+  // YAML + de la section ## Sources) pour que l'IA ne voie JAMAIS les refs
+  // internes vers raw/xxx.md et ne les cite pas aux utilisateurs. Les raw/
+  // sont des artefacts de maintenance pour le Wiki Builder, pas du contenu
+  // adressable côté chat.
   async function buildWikiContext(): Promise<string | null> {
     if (!wikiConfigured) return null
     try {
@@ -175,17 +179,15 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       ])
       if (!schema && !indexContent && wikiEntries.length === 0) return null
 
-      // Charge chaque page (ordre récent→ancien) jusqu'au budget. Les
-      // pages non-inlinées sont signalées pour que l'IA sache qu'il y a
-      // plus de contenu et ne l'invente pas.
       const MAX_CHARS = 80_000
       const pageBlocks: string[] = []
       const skipped: string[] = []
       let used = 0
       for (const entry of wikiEntries) {
         try {
-          const content = (await window.blow.wiki.readWiki(entry.name)) as string
-          const block = `##### wiki/${entry.name}\n\n${content.trim()}`
+          const raw = (await window.blow.wiki.readWiki(entry.name)) as string
+          const cleaned = stripInternalMetadata(raw)
+          const block = `##### wiki/${entry.name}\n\n${cleaned}`
           if (used + block.length > MAX_CHARS) {
             skipped.push(entry.name)
             continue
@@ -200,7 +202,12 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       const lines: string[] = [
         '### Mémoire long-terme partagée (BlowWorks)',
         '',
-        "Tu as accès à une mémoire persistante compilée à partir de mes conversations passées. Utilise-la comme SOURCE DE VÉRITÉ pour rester cohérent avec les décisions, contextes et références établis. Cite les pages que tu utilises par leur chemin (`wiki/xxx.md`). N'invente RIEN : si une info n'est pas présente ci-dessous, dis-le explicitement plutôt que de halluciner.",
+        "Tu as accès à une mémoire persistante compilée à partir de mes conversations passées. Utilise-la comme SOURCE DE VÉRITÉ pour rester cohérent avec les décisions, contextes et références établis.",
+        '',
+        '**Règles de citation** :',
+        "- Cite les pages UNIQUEMENT par leur chemin wiki (`wiki/concepts/xxx.md`, `wiki/connections/yyy.md`, etc.).",
+        "- Ne cite JAMAIS de références `raw/…` — ce sont des fichiers internes de maintenance, invisibles à l'utilisateur et supprimables à tout moment.",
+        "- Si une information n'apparaît pas dans les pages ci-dessous, dis-le explicitement plutôt que d'inventer.",
         '',
         '#### SCHEMA.md — conventions du wiki',
         '',
@@ -211,9 +218,9 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
         lines.push('#### wiki/index.md — catalogue', '', indexContent, '')
       }
       if (pageBlocks.length > 0) {
-        lines.push('#### Pages wiki (contenu complet)', '', pageBlocks.join('\n\n---\n\n'))
+        lines.push('#### Pages wiki (contenu compilé)', '', pageBlocks.join('\n\n---\n\n'))
       } else {
-        lines.push('#### Pages wiki', '', '(aucune page compilée pour le moment — le Wiki Builder n\'a pas encore tourné, ou il n\'y a pas de raw à compiler)')
+        lines.push('#### Pages wiki', '', "(aucune page compilée pour le moment — le Wiki Builder n'a pas encore tourné, ou il n'y a pas de raw à compiler)")
       }
       if (skipped.length > 0) {
         lines.push(
@@ -226,6 +233,25 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       console.warn('[chat] buildWikiContext failed', e)
       return null
     }
+  }
+
+  // Retire les artefacts de maintenance qui ne doivent pas remonter dans
+  // les réponses de l'IA à l'utilisateur :
+  //   - le YAML frontmatter (--- ... ---) en tête, qui contient `sources:`
+  //     pointant vers raw/xxx.md
+  //   - toute section `## Sources` terminale qui liste les mêmes raw/
+  // Résultat : titre + corps markdown propre, sans mention du fichier raw.
+  function stripInternalMetadata(content: string): string {
+    // Frontmatter : --- suivi de lignes, jusqu'au prochain --- en début de ligne.
+    // Tolérant aux \r\n Windows.
+    const withoutFrontmatter = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
+    // Section ## Sources jusqu'au prochain H1/H2 ou fin de fichier.
+    // (?:\r?\n##\s|\r?\n#\s|$) = frontière = titre suivant ou EOF.
+    const withoutSources = withoutFrontmatter.replace(
+      /\r?\n#{1,3}\s*Sources?\b[\s\S]*?(?=\r?\n#{1,3}\s|\s*$)/gi,
+      ''
+    )
+    return withoutSources.trim()
   }
 
   async function handleSubmit(): Promise<void> {

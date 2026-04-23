@@ -276,7 +276,10 @@ export async function streamChat(
   // sources pourtant datées correctement). Fuseau horaire fixe
   // Asia/Dubai = UTC+4 (pas de DST) comme demandé.
   const messages: ChatCompletionMessage[] = [
-    { role: 'system', content: buildTemporalAnchor() }
+    {
+      role: 'system',
+      content: buildTemporalAnchor({ webSearchEnabled: opts.webSearchEnabled ?? false })
+    }
   ]
   const citations: string[] = []
 
@@ -297,10 +300,11 @@ export async function streamChat(
   }
 
   if (opts.webSearchEnabled) {
-    const query = opts.webSearchQuery ?? getLastUserContent(opts.messages)
+    const currentQ = opts.webSearchQuery ?? getLastUserContent(opts.messages)
+    const query = currentQ ? enrichSearchQuery(opts.messages, currentQ) : null
     if (query) {
       try {
-        const r = await Tavily.search(query, { depth: 'basic', maxResults: 5 })
+        const r = await Tavily.search(query)
         messages.push({
           role: 'system',
           content: Tavily.formatSearchForPrompt(query, r)
@@ -396,31 +400,53 @@ export async function streamChat(
 // reconstruit simplement streamChat en accumulant les deltas et on
 // retourne le texte complet. Évite la duplication de la logique
 // d'authentification / Tavily / gestion d'erreurs.
+//
+// Timeout : 5 minutes par défaut. Les runs Wiki Builder peuvent être
+// longs (gros contexte inliné) mais un run qui dépasse 5 min est
+// probablement un modèle qui boucle / une connexion morte. On abort
+// proprement plutôt que de laisser le renderer bloqué indéfiniment.
 export async function oneShotChat(opts: {
   model: string
   systemPrompt: string
   userPrompt: string
   temperature?: number
   maxTokens?: number
+  timeoutMs?: number
 }): Promise<{ content: string; error: string | null }> {
   const requestId = `oneshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
   let assembled = ''
   let streamError: string | null = null
 
-  await streamChat(
-    {
-      requestId,
-      model: opts.model,
-      systemPrompt: opts.systemPrompt,
-      messages: [{ role: 'user', content: opts.userPrompt }],
-      temperature: opts.temperature,
-      maxTokens: opts.maxTokens
-    },
-    (chunk) => {
-      if (chunk.delta) assembled += chunk.delta
-      if (chunk.error) streamError = chunk.error
-    }
-  )
+  const timeoutMs = opts.timeoutMs ?? 5 * 60 * 1000
+  const timer = setTimeout(() => {
+    cancelStream(requestId)
+  }, timeoutMs)
+
+  try {
+    await streamChat(
+      {
+        requestId,
+        model: opts.model,
+        systemPrompt: opts.systemPrompt,
+        messages: [{ role: 'user', content: opts.userPrompt }],
+        temperature: opts.temperature,
+        maxTokens: opts.maxTokens
+      },
+      (chunk) => {
+        if (chunk.delta) assembled += chunk.delta
+        if (chunk.error) streamError = chunk.error
+      }
+    )
+  } finally {
+    clearTimeout(timer)
+  }
+
+  // Si on est arrivé ici sans texte ni erreur, c'est que le timeout a
+  // coupé avant que le modèle ne streame quoi que ce soit. Signaler
+  // explicitement pour que l'UI affiche un message actionnable.
+  if (!assembled && !streamError) {
+    streamError = `Timeout après ${Math.round(timeoutMs / 1000)}s sans réponse du modèle. Réduisez la taille du wiki ou réessayez.`
+  }
 
   return { content: assembled, error: streamError }
 }
@@ -440,12 +466,51 @@ function getLastUserContent(messages: ChatCompletionMessage[]): string | null {
   return null
 }
 
-// Formate un message système d'ancrage temporel. L'utilisateur opère depuis
-// le fuseau Asia/Dubai (Abou Dabi / Mascate, UTC+4, sans DST) — tout calcul
-// de date relative ("hier", "la semaine prochaine") doit partir de là.
-// Appelé à chaque streamChat pour que l'info soit TOUJOURS fraîche (pas
-// stockée, pas cachée).
-function buildTemporalAnchor(): string {
+// Enrichit une requête de recherche avec le contexte conversationnel
+// pour éviter les requêtes orphelines style "quels sont les prochain
+// match ?" qui n'ont aucun sens envoyées à Tavily telles quelles.
+//
+// Heuristique :
+// - Si la question fait déjà ≥ 60 caractères, on la laisse — elle est
+//   probablement autonome.
+// - Sinon on cherche les 1-2 messages user précédents de la conversation
+//   et on préfixe la question avec leur contenu tronqué.
+// - On coupe à 500 caractères au total pour garder la query focalisée
+//   (Tavily perd en précision sur les requêtes trop longues).
+function enrichSearchQuery(
+  messages: ChatCompletionMessage[],
+  currentQuestion: string
+): string {
+  const trimmed = currentQuestion.trim()
+  if (trimmed.length >= 60) return trimmed.slice(0, 500)
+
+  // Collecte les messages user précédents (hors currentQuestion qui est
+  // le dernier). On parcourt en reverse pour prendre les plus récents.
+  const priorUserMessages: string[] = []
+  for (let i = messages.length - 1; i >= 0 && priorUserMessages.length < 2; i--) {
+    const m = messages[i]
+    if (m.role !== 'user') continue
+    if (m.content.trim() === trimmed) continue // skip la question courante
+    priorUserMessages.unshift(m.content.trim().slice(0, 180))
+  }
+  if (priorUserMessages.length === 0) return trimmed
+
+  // Format : "Contexte: <msg N-1> // <msg N>. Question actuelle: <Q>"
+  const context = priorUserMessages.join(' // ')
+  const combined = `Contexte précédent : ${context}. Question actuelle : ${trimmed}`
+  return combined.slice(0, 500)
+}
+
+// Formate un message système d'ancrage temporel + garde-fou capacités.
+// Injecté à chaque streamChat pour :
+//   1. Donner la date/heure réelle (fuseau Asia/Dubai) — contre les
+//      hallucinations temporelles dues au training cutoff du modèle.
+//   2. Clarifier quelles capacités sont réellement disponibles pour CE
+//      tour précis. Sans cette garde, le modèle prétend parfois "avoir
+//      fait une recherche web" alors qu'aucun contexte Tavily n'a été
+//      injecté — il invente alors des sources et des faits plausibles
+//      mais fabriqués (pattern classique d'hallucination).
+function buildTemporalAnchor(opts: { webSearchEnabled: boolean }): string {
   const now = new Date()
   const formatter = new Intl.DateTimeFormat('fr-FR', {
     weekday: 'long',
@@ -458,11 +523,17 @@ function buildTemporalAnchor(): string {
   })
   const human = formatter.format(now)
   const iso = now.toISOString()
-  return (
-    `Date et heure actuelles : **${human}** (fuseau horaire Abou Dabi / Mascate, UTC+4).\n` +
-    `ISO 8601 UTC : ${iso}\n\n` +
-    `Utilise cette référence comme vérité de terrain. N'utilise JAMAIS une date issue de ton training cutoff pour évaluer si un événement est passé, futur ou "prospectif" — ça cause des hallucinations temporelles. Si l'utilisateur mentionne une date relative ("hier", "la semaine prochaine", "dans 3 mois"), résous-la à partir de la date ci-dessus.`
-  )
+  return [
+    `Date et heure actuelles : **${human}** (fuseau horaire Abou Dabi / Mascate, UTC+4).`,
+    `ISO 8601 UTC : ${iso}`,
+    '',
+    "Utilise cette référence comme vérité de terrain. N'utilise JAMAIS une date issue de ton training cutoff pour évaluer si un événement est passé, futur ou \"prospectif\" — ça cause des hallucinations temporelles. Si l'utilisateur mentionne une date relative (\"hier\", \"la semaine prochaine\", \"dans 3 mois\"), résous-la à partir de la date ci-dessus.",
+    '',
+    '## Capacités disponibles pour CE tour',
+    opts.webSearchEnabled
+      ? "- ✅ Recherche web activée : un bloc `[Contexte web récupéré via Tavily …]` sera (ou ne sera pas) inséré ci-dessous selon les résultats. Si AUCUN bloc Tavily n'apparaît, ça veut dire qu'aucun résultat pertinent n'a été trouvé — dis-le honnêtement au lieu d'inventer."
+      : "- ❌ Recherche web désactivée pour ce tour. Tu n'as PAS consulté internet. N'emploie JAMAIS de formulations comme \"d'après mes recherches sur le web\", \"j'ai consulté le web\", \"voici ce que j'ai trouvé en ligne\" — ce sont des mensonges. Si l'utilisateur te demande de chercher, réponds explicitement que la recherche web n'est pas activée (bouton 🌐 dans la zone de saisie) et propose la réponse à partir de tes connaissances générales, en le signalant comme tel."
+  ].join('\n')
 }
 
 // Exposé pour les tests uniquement : permet d'injecter un état de cache
