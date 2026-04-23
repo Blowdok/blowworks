@@ -269,10 +269,18 @@ export async function streamChat(
     return
   }
 
-  // ── Étape 1 : system prompt utilisateur ─────────────────────────────
-  const messages: ChatCompletionMessage[] = []
+  // ── Étape 0 : ancrage temporel ──────────────────────────────────────
+  // Injection systématique de la date/heure réelle pour contrer les
+  // hallucinations temporelles (ex: le modèle croit qu'on est en 2024
+  // alors qu'on est en 2026, puis flag à tort comme "prospectif" des
+  // sources pourtant datées correctement). Fuseau horaire fixe
+  // Asia/Dubai = UTC+4 (pas de DST) comme demandé.
+  const messages: ChatCompletionMessage[] = [
+    { role: 'system', content: buildTemporalAnchor() }
+  ]
   const citations: string[] = []
 
+  // ── Étape 1 : system prompt utilisateur ─────────────────────────────
   if (opts.systemPrompt && opts.systemPrompt.trim().length > 0) {
     messages.push({ role: 'system', content: opts.systemPrompt })
   }
@@ -430,6 +438,31 @@ function getLastUserContent(messages: ChatCompletionMessage[]): string | null {
     if (messages[i].role === 'user') return messages[i].content
   }
   return null
+}
+
+// Formate un message système d'ancrage temporel. L'utilisateur opère depuis
+// le fuseau Asia/Dubai (Abou Dabi / Mascate, UTC+4, sans DST) — tout calcul
+// de date relative ("hier", "la semaine prochaine") doit partir de là.
+// Appelé à chaque streamChat pour que l'info soit TOUJOURS fraîche (pas
+// stockée, pas cachée).
+function buildTemporalAnchor(): string {
+  const now = new Date()
+  const formatter = new Intl.DateTimeFormat('fr-FR', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Asia/Dubai'
+  })
+  const human = formatter.format(now)
+  const iso = now.toISOString()
+  return (
+    `Date et heure actuelles : **${human}** (fuseau horaire Abou Dabi / Mascate, UTC+4).\n` +
+    `ISO 8601 UTC : ${iso}\n\n` +
+    `Utilise cette référence comme vérité de terrain. N'utilise JAMAIS une date issue de ton training cutoff pour évaluer si un événement est passé, futur ou "prospectif" — ça cause des hallucinations temporelles. Si l'utilisateur mentionne une date relative ("hier", "la semaine prochaine", "dans 3 mois"), résous-la à partir de la date ci-dessus.`
+  )
 }
 
 // Exposé pour les tests uniquement : permet d'injecter un état de cache

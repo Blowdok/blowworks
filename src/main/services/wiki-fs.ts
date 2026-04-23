@@ -300,21 +300,42 @@ async function initStructureIfNeeded(folder: string): Promise<void> {
 
 // ──────────────────────────────────────────────────────────── Listing / Read / Write
 
+// Scan récursif des .md dans `dir` et tous ses sous-dossiers. Les `name`
+// retournés sont RELATIFS au dossier racine et utilisent TOUJOURS le
+// séparateur `/` (pattern URL / markdown) — `readWiki`/`writeWiki` et
+// les wikilinks les utilisent sans conversion.
+//
+// Sans cette récursion, les pages dans wiki/concepts/, wiki/connections/
+// ou wiki/qa/ étaient invisibles (fs.readdir non-récursif) → l'index
+// affichait 0 pages alors que le Wiki Builder en avait créé.
 async function listMarkdownFiles(dir: string): Promise<WikiEntryT[]> {
-  try {
-    const names = await fs.readdir(dir)
-    const mdNames = names.filter((n) => n.endsWith('.md'))
-    const entries = await Promise.all(
-      mdNames.map(async (name) => {
-        const stat = await fs.stat(path.join(dir, name))
-        return { name, size: stat.size, modifiedAt: stat.mtimeMs }
-      })
-    )
-    entries.sort((a, b) => b.modifiedAt - a.modifiedAt)
-    return entries
-  } catch {
-    return []
+  const out: WikiEntryT[] = []
+  async function walk(abs: string, rel: string): Promise<void> {
+    let names: string[]
+    try {
+      names = await fs.readdir(abs)
+    } catch {
+      return
+    }
+    for (const name of names) {
+      const absChild = path.join(abs, name)
+      const relChild = rel ? `${rel}/${name}` : name
+      let stat
+      try {
+        stat = await fs.stat(absChild)
+      } catch {
+        continue
+      }
+      if (stat.isDirectory()) {
+        await walk(absChild, relChild)
+      } else if (stat.isFile() && name.endsWith('.md')) {
+        out.push({ name: relChild, size: stat.size, modifiedAt: stat.mtimeMs })
+      }
+    }
   }
+  await walk(dir, '')
+  out.sort((a, b) => b.modifiedAt - a.modifiedAt)
+  return out
 }
 
 function ensureConfigured(): string {

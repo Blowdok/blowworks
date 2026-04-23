@@ -156,39 +156,72 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     })
   }
 
-  // Injection mémoire v2 (Sprint 1) : on passe au modèle UNIQUEMENT le
-  // SCHEMA.md (conventions + analogie compiler) et wiki/index.md
-  // (catalogue plat). Contenu total ~5-15 KB au lieu de 80 KB de dump.
-  //
-  // L'IA a une vue COMPLÈTE de la structure et des pages disponibles,
-  // mais PAS le contenu intégral. Si elle a besoin d'une page précise,
-  // elle demande dans sa réponse et l'utilisateur peut référencer la
-  // page. Les tools function-calling (Sprint 2) feront cette demande
-  // automatiquement via `read_wiki_page(name)`.
+  // Injection mémoire Sprint 1 : on passe SCHEMA.md (conventions) + index.md
+  // (catalogue) + le CONTENU COMPLET des pages wiki (capé 80 KB sur les
+  // plus récentes). Sans le contenu, l'IA répond "je n'ai pas accès" ou
+  // pire, hallucine — car SCHEMA décrit COMMENT le système fonctionne mais
+  // pas CE QUI est stocké. Au Sprint 2 on passera à schema+index seuls +
+  // tools function-calling `read_wiki_page(name)` pour chargement à la
+  // demande. En attendant : injecter tout.
   async function buildWikiContext(): Promise<string | null> {
     if (!wikiConfigured) return null
     try {
-      const [schema, indexContent] = await Promise.all([
+      const [schema, indexContent, wikiEntries] = await Promise.all([
         window.blow.wiki.readSchema() as Promise<string | null>,
-        window.blow.wiki.readIndex() as Promise<string | null>
+        window.blow.wiki.readIndex() as Promise<string | null>,
+        window.blow.wiki.listWiki() as Promise<
+          Array<{ name: string; size: number; modifiedAt: number }>
+        >
       ])
-      if (!schema && !indexContent) return null
+      if (!schema && !indexContent && wikiEntries.length === 0) return null
 
-      return [
+      // Charge chaque page (ordre récent→ancien) jusqu'au budget. Les
+      // pages non-inlinées sont signalées pour que l'IA sache qu'il y a
+      // plus de contenu et ne l'invente pas.
+      const MAX_CHARS = 80_000
+      const pageBlocks: string[] = []
+      const skipped: string[] = []
+      let used = 0
+      for (const entry of wikiEntries) {
+        try {
+          const content = (await window.blow.wiki.readWiki(entry.name)) as string
+          const block = `##### wiki/${entry.name}\n\n${content.trim()}`
+          if (used + block.length > MAX_CHARS) {
+            skipped.push(entry.name)
+            continue
+          }
+          pageBlocks.push(block)
+          used += block.length
+        } catch {
+          skipped.push(entry.name)
+        }
+      }
+
+      const lines: string[] = [
         '### Mémoire long-terme partagée (BlowWorks)',
         '',
-        "Tu as accès à une mémoire persistante extraite des conversations passées. Ci-dessous : les conventions du wiki (SCHEMA.md) et l'index de toutes les pages disponibles. Si une page t'est utile pour répondre, mentionne son nom et demande à l'utilisateur de la joindre au contexte — tant que les outils de lecture automatique ne sont pas branchés.",
+        "Tu as accès à une mémoire persistante compilée à partir de mes conversations passées. Utilise-la comme SOURCE DE VÉRITÉ pour rester cohérent avec les décisions, contextes et références établis. Cite les pages que tu utilises par leur chemin (`wiki/xxx.md`). N'invente RIEN : si une info n'est pas présente ci-dessous, dis-le explicitement plutôt que de halluciner.",
         '',
-        '#### SCHEMA.md — spec du compilateur de mémoire',
+        '#### SCHEMA.md — conventions du wiki',
         '',
         schema && schema.trim().length > 0 ? schema : '(SCHEMA.md absent)',
-        '',
-        '#### wiki/index.md — catalogue des pages',
-        '',
-        indexContent && indexContent.trim().length > 0
-          ? indexContent
-          : '(index.md vide — aucune page compilée pour le moment)'
-      ].join('\n')
+        ''
+      ]
+      if (indexContent && indexContent.trim().length > 0) {
+        lines.push('#### wiki/index.md — catalogue', '', indexContent, '')
+      }
+      if (pageBlocks.length > 0) {
+        lines.push('#### Pages wiki (contenu complet)', '', pageBlocks.join('\n\n---\n\n'))
+      } else {
+        lines.push('#### Pages wiki', '', '(aucune page compilée pour le moment — le Wiki Builder n\'a pas encore tourné, ou il n\'y a pas de raw à compiler)')
+      }
+      if (skipped.length > 0) {
+        lines.push(
+          '',
+          `_Pages non inlinées faute de budget (${skipped.length}) : ${skipped.join(', ')}. Demande-les si besoin._`
+        )
+      }
+      return lines.join('\n')
     } catch (e) {
       console.warn('[chat] buildWikiContext failed', e)
       return null
