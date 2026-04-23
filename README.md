@@ -87,13 +87,61 @@
 
   - **Tests unitaires** : 6 tests Tavily (format du prompt système), 4 tests `generateTitleFromFirstMessage`, 15 tests des schémas Zod IA (`AISendMessageInput`, `AIChunkEventSchema`, `AIModelSchema`, `AICreateConversationInput`, `AISetApiKeyInput`, `AIDefaultsSchema`). Total projet : **68/68 tests verts**.
 
+- **Mémoire long-terme type « LLM Wiki » (pattern Karpathy / claude-memory-compiler)** : BlowWorks transforme progressivement tes conversations en une base de connaissance markdown structurée, entièrement local. Un dossier choisi à la main héberge `raw/` (synthèses brutes des chats), `wiki/` (pages structurées avec `[[wikilinks]]` croisés), `SCHEMA.md` (conventions + analogie compiler), `wiki/index.md` (catalogue maître) et `log.md` (journal append-only parsable).
+
+  - **Onboarding paresseux** — aucune modale bloquante au boot. L'utilisateur choisit le dossier wiki depuis **Settings > Wiki** (picker natif OS). Tant que ce n'est pas configuré, toute fonctionnalité mémoire est silencieusement désactivée. Migration automatique `MEMORY.md` → `SCHEMA.md` pour les installs antérieures, sans écrasement des édits utilisateur.
+
+  - **Agents configurables (Settings > Agents)** — trois rôles système, chacun avec modèle, température, max tokens et prompt système éditables :
+    - **Synthétiseur** (bouton ✦ dans le header de chaque ChatShape) : condense une conversation en note structurée (contexte, points clés, décisions, questions ouvertes, pages suggérées). Retourne `FLUSH_OK` si rien ne vaut d'être sauvé. Écrit dans `raw/conv-<id>-<timestamp>.md`.
+    - **Wiki Builder** (bouton ✦ dans la section Mémoire de la sidebar OU Settings > Wiki) : lit tous les fichiers `raw/` nouveaux, compile en pages `wiki/concepts/`, `wiki/connections/`, `wiki/qa/` avec frontmatter YAML strict (titre, type, statut, importance, tags, liens_forts, sources…) et **wikilinks croisés obligatoires** (min. 3 par page dès que le wiki a >2 pages). **Chunking automatique** par lots de 3 raw pour éviter les troncatures, **parser JSON tolérant** qui récupère les opérations valides même quand le modèle dépasse sa fenêtre de tokens, **migration DB** auto pour pousser les bons défauts (`temperature: 0.2`, `max_tokens: 24576`) au prochain boot.
+    - **QA Filer** (bouton 📥 *Ajouter au wiki* sous chaque réponse assistant) : transforme UN échange Q/R du chat en page `wiki/qa/*.md` permanente. Pattern « file answers back » — ta KB grossit par son usage, pas seulement par compilation post-conversation.
+
+  - **Toggle 📚 "Injecter la mémoire"** par conversation : quand actif, chaque `sendMessage` reçoit le `SCHEMA.md` + `wiki/index.md` comme contexte système (~5-15 KB au lieu de 80 KB de dump). L'IA voit la **structure complète** du wiki et appelle les tools function-calling à la demande pour lire les pages précises qu'elle veut consulter.
+
+  - **Tools function-calling pour l'IA** (pattern `nexusvault_v4` / OpenAI function calling) — 8 tools exposés au modèle quand 📚 est actif :
+
+    | Tool | Effet | Confirmation |
+    |---|---|---|
+    | `read_wiki_page(name)` | Contenu complet d'une page | auto |
+    | `list_wiki_pages(subdir?)` | Catalogue plat, filtrable par dossier | auto |
+    | `search_wiki(pattern, flags?)` | Regex sur tout le wiki, 50 hits max | auto |
+    | `read_wiki_schema()` / `read_wiki_index()` | Conventions + index | auto |
+    | `write_wiki_page(name, content)` | Create/update | **⚠ user confirm** |
+    | `rename_wiki_page(from, to)` | Fusionner, renommer | **⚠ user confirm** |
+    | `delete_wiki_page(name)` | Supprimer | **⚠ user confirm** |
+
+    Les appels progressifs sont accumulés depuis le flux SSE OpenRouter (`choices[0].delta.tool_calls`), exécutés séquentiellement, résultats re-injectés comme `role: 'tool'` dans les messages, et la **boucle agent** tourne jusqu'à 15 itérations max ou jusqu'à absence de tool call (réponse finale). Les tools destructifs passent par une **Promise Map côté main** (`ai-tool-confirmation.ts`) qui bloque le stream le temps que l'utilisateur clique Approuver/Refuser dans un dialog (timeout 5 min → refus auto). Les confirmations affichent un **preview formaté des arguments** (contenu markdown tronqué à 400 chars pour `write_wiki_page`).
+
+    Chaque tool call est affiché **inline dans le streaming bubble** avec icône d'état (`⌛` pending / `⚠️` awaiting-confirm / `✓` success / `✗` error / `⛔` refused) + résumé compact (`wiki/concepts/pagemark`, `/regex/`, etc.). Les paths sont **sandboxed** (`resolveSafePath` refuse toute évasion hors du dossier wiki), la lecture `read_wiki_page` est **tronquée à 40 KB** pour ne pas saturer le prompt suivant.
+
+  - **Liens wiki cliquables dans les réponses chat** — helper `linkifyWikiRefs` transforme les mentions textuelles `wiki/concepts/xxx.md` et les wikilinks `[[slug]]` en liens markdown `wiki-page://xxx.md` interceptés par `markdownComponents.a` : clic → ouvre le viewer markdown intégré (pas le navigateur). Fonctionne en streaming au fil du rendu.
+
+  - **Éditeur markdown split intégré** — les pages wiki s'ouvrent dans un panneau qui **occupe la zone canvas** (pas de modale bloquante, la sidebar et le header restent accessibles). Trois modes au choix : **✎ édition seule** (textarea monofonte), **⊟ split** (éditeur gauche | aperçu droite), **◉ aperçu seul**. Garde dirty avec confirmation avant fermeture, raccourci **Ctrl+S** pour enregistrer, indicateur orange quand des modifs sont non-sauvées. Utilise le canal IPC `wiki.writeWiki` existant — pas de pipeline spécial, tu édites comme n'importe quel éditeur markdown.
+
+  - **Graphe force-directed du wiki** — visualisation du réseau des wikilinks, panneau plein cadre qui remplace le canvas temporairement. **Simulation physique maison** (~60 lignes, Fruchterman-Reingold simplifié : répulsion coulombienne + attraction par ressort + gravité vers centre + amortissement) — **zéro dépendance d3** pour un graphe jusqu'à ~200 nœuds. Couleurs par `type` YAML (concepts cyan, connections amber, qa émeraude, projet bleu, outil slate, personne rose), taille de nœud ∝ `backlinks`, contour blanc sur les nœuds `importance: pilier`, opacité réduite sur `statut: to-verify`. **Drag** pour déplacer un nœud, **clic** pour ouvrir la page dans le viewer markdown, labels tronqués pour éviter l'encombrement. Construction du graphe côté main (`wiki-graph.ts`) : parsing récursif du dossier wiki/, extraction des `[[wikilinks]]` par regex (hors fences de code), résolution par basename avec priorité `concepts/` > `connections/` > `qa/` > racine.
+
+  - **Explorateur wiki dans la sidebar (toggle)** — un bouton 📖 dans la section Mémoire bascule la sidebar du mode standard (projets + mémoire + graph + footer) vers un **explorateur plein cadre** de l'arborescence `wiki/` : pages groupées par dossier 1er niveau, champ de filtre, scrollbar interne propre qui ne pousse plus le footer Paramètres/GitHub hors écran. Bouton **← Retour** pour revenir à la sidebar standard. Clic sur un fichier → ouvre le viewer/éditeur markdown dans la zone canvas.
+
+  - **Import manuel dans raw/** — bouton 📂 *Importer dans raw* dans la section Mémoire OU dans Settings > Wiki (avec rapport détaillé fichier par fichier). File picker multi-sélection natif, accepte `.md`, `.markdown`, `.txt` (5 MB max par fichier). Chaque fichier devient `raw/import-<slug>-<timestamp>.md` (collision quasi-impossible grâce au timestamp seconde). Au prochain ✦ Reconstruire, le Wiki Builder ingère ces imports comme s'ils venaient du Synthétiseur. Alternative zéro-friction : bouton 📂 *Ouvrir raw/* qui ouvre directement le sous-dossier dans l'explorateur Windows pour glisser-déposer.
+
+  - **Ancrage temporel Asia/Dubai (UTC+4)** — chaque appel LLM (chat, Synthétiseur, Wiki Builder, QA Filer) reçoit automatiquement en tête des messages système la **date et l'heure courantes formatées en français** + ISO 8601 UTC. Contre les hallucinations temporelles (« cet événement est en 2026 donc prospectif »). Le fuseau est fixe, pas de DST, l'heure système de l'OS est convertie via `Intl.DateTimeFormat({ timeZone: 'Asia/Dubai' })`.
+
+  - **Anti-hallucinations renforcées** : quand la recherche web est **désactivée**, le prompt système injecte explicitement « tu n'as PAS consulté internet, n'emploie JAMAIS d'expressions comme "d'après mes recherches" ». Quand le wiki est injecté, le préambule impose « cite les pages UNIQUEMENT par leur chemin `wiki/xxx.md`, ne cite JAMAIS de références `raw/…` (fichiers internes de maintenance) ». Frontmatter YAML et section `## Sources` sont stripés du contenu envoyé au modèle avant l'injection, évitant qu'il recopie les ref raw dans ses réponses.
+
+  - **Recherche web Tavily améliorée** — la query envoyée à Tavily est enrichie avec le **contexte conversationnel** (messages user précédents) si la question courante est trop courte (<60 chars, ex. « quels sont les prochains matchs ? » sans sujet). Détection heuristique de l'intention temporelle (mots-clés « prochain », « récent », « cette semaine », « today », etc.) qui bascule automatiquement Tavily en mode `topic: 'news'` + `time_range: 'week'`. `search_depth: 'advanced'` par défaut (snippets plus longs, pertinence mieux calibrée), 8 résultats au lieu de 5. Consignes au modèle renforcées : « base-toi EXCLUSIVEMENT sur ces sources, ne conjugue JAMAIS ton training cutoff avec elles ».
+
+  - **Robustesse Wiki Builder** — au-delà du chunking + parser tolérant, on log systématiquement la réponse brute du modèle (2000 premiers chars) pour diagnostic, timeout dédié de 5 minutes côté `oneShotChat` avec abort propre, strip automatique des markdown fences (` ```json `) que certains modèles collent malgré l'instruction contraire, strip automatique du prefix `wiki/` dans les filenames (évite l'arborescence `wiki/wiki/concepts/`), format d'erreur diagnostic qui distingue "aucun JSON / modèle a refusé" vs "JSON tronqué (N { pour M })" vs "JSON malformé".
+
+  - **Store réactif partagé** (`useWikiStore`) : un seul point de vérité côté renderer pour le statut du dossier wiki (`folderPath`, `initialized`, `rawCount`, `wikiCount`), l'état d'exécution du Wiki Builder (`building` + re-entrancy guard contre les double-lancements en parallèle entre sidebar et settings), la page wiki actuellement ouverte dans le viewer (`openPageName`), le mode de la sidebar (`sidebarMode: 'standard' | 'wiki-explorer'`) et l'ouverture du graph (`graphOpen`). Tous les composants (`ChatPortalView`, `MemorySidebarSection`, `WikiSettingsTab`, `WikiExplorerSidebar`, `GraphSidebarSection`) souscrivent au même state → mutations propagées automatiquement, fini les désynchronisations.
+
 ## 🚧 Prévu en v2
 
 - Intégration **CLI-Anything** pour piloter les apps natives (GIMP, Blender, Photoshop, OBS…) via leur CLI auto-générée.
 - Support macOS et Linux.
 - Auto-update via `electron-updater`.
 - **Chat IA — v2 :** upload d'images/fichiers (multimodal vision), optimisation automatique de prompt via modèle cheap (Haiku/Gemini Flash), mode thinking (`reasoning.effort`), Exa en alternative/complément de Tavily.
-- **Chat IA — v3 :** générateur d'agents custom (nom, prompt système, modèle, tools), équipes d'agents, RAG local par projet via `sqlite-vec`, actions sur shapes (« explique cette sortie terminal », « revue de code sur ce VSCode »), client MCP (stdio/SSE).
+- **Chat IA — v3 :** ~~générateur d'agents custom~~ ✅ livré (Settings > Agents), équipes d'agents, RAG local par projet via `sqlite-vec`, actions sur shapes (« explique cette sortie terminal », « revue de code sur ce VSCode »), client MCP (stdio/SSE).
+- **Mémoire wiki — v2 :** tracking SHA-256 des raw déjà compilés (incremental build, évite re-soumission au modèle), agent Lint périodique (6 checks déterministes : orphans, broken-refs, stale, ghost-concepts, sparse, orphan-sources + 1 check LLM contradictions), conversion PDF/HTML → markdown à l'import via `pdf-parse` + `turndown`, auto-trigger Synthétiseur sur fin de conversation + avant saturation du contexte (pattern `PreCompact`), MCP server local exposant la mémoire à d'autres clients (Claude Code, Cursor, ChatGPT Desktop), flag `customized` sur la table agents pour ne plus écraser les tunings utilisateur aux bumps de prompts système.
 
 ---
 
@@ -107,9 +155,12 @@
 | Canvas infini           | tldraw 4 + `@tldraw/assets` (bundle Vite local, CSP-safe)               |
 | Terminal                | @lydell/node-pty 1.2 + xterm.js 6 + addons fit/webgl/serialize/web-links |
 | IDE embarqué            | openvscode-server 1.96                                                  |
-| Chat IA (modèles)       | OpenRouter (API OpenAI-compatible, 300+ modèles) — streaming SSE natif  |
-| Chat IA (recherche web) | Tavily API (`search_depth: basic`, réponse orientée LLM)                |
+| Chat IA (modèles)       | OpenRouter (API OpenAI-compatible, 300+ modèles) — streaming SSE + tool_calls progressifs |
+| Chat IA (recherche web) | Tavily API (`search_depth: advanced`, `topic: news`, enrichissement conversationnel) |
 | Chat IA (rendu)         | react-markdown 10 + remark-gfm 4 + rehype-highlight 7 + highlight.js 11 |
+| Mémoire wiki            | FS local markdown + wikilinks croisés + `Intl.DateTimeFormat` fuseau Asia/Dubai |
+| Graph wiki              | SVG + force-directed maison (zéro dépendance d3) + parsing YAML frontmatter léger |
+| Agents IA               | 3 agents système (Synthétiseur / Wiki Builder / QA Filer) + tools function-calling (8 outils) avec confirmation utilisateur sur destructifs |
 | State                   | Zustand 5                                                               |
 | Persistance             | better-sqlite3 12                                                       |
 | Styling                 | Tailwind CSS 4                                                          |

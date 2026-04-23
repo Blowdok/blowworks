@@ -151,7 +151,7 @@ function addAgentColumnsIfMissing(db: Database.Database): void {
 // constante, on force la mise à jour des prompts des agents système. Ça
 // écrase les customisations utilisateur — acceptable en early dev, à
 // revoir quand on ajoutera un champ `customized` côté table.
-const SYSTEM_PROMPTS_VERSION = 4
+const SYSTEM_PROMPTS_VERSION = 5
 
 // Prompts v2 (Sprint 1) — alignés sur l'analogie compiler + sentinel
 // FLUSH_OK + JSON schema-driven (pattern claude-memory-compiler adapté).
@@ -281,8 +281,9 @@ function seedSystemAgents(db: Database.Database): void {
     // Température basse : on veut une synthèse stable et factuelle,
     // pas une réécriture créative de la conversation.
     temperature: 0.3,
-    // Synthèse courte : 2048 tokens suffisent pour 5 sections concises.
-    max_tokens: 2048,
+    // Synthèse courte : 4096 tokens (était 2048) — laisse plus d'air pour
+    // les longues conversations. Toujours conservateur côté facture.
+    max_tokens: 4096,
     enabled: 1,
     created_at: now,
     updated_at: now
@@ -301,8 +302,11 @@ function seedSystemAgents(db: Database.Database): void {
     // de place pour de la créativité qui casserait la structure.
     temperature: 0.2,
     // Gros budget : JSON d'opérations avec N pages complètes + index + log.
-    // 16 384 laisse de la marge. Passe à 32 768 si wiki > 20 pages.
-    max_tokens: 16384,
+    // 24 576 (était 16 384) — combiné au chunking par batch de 3 raw du
+    // runner, évite les troncatures observées sur les imports volumineux
+    // (romans, longs articles). Passe à 32 768 manuellement si tu as un
+    // modèle qui le supporte (Claude Opus, GPT-4 Turbo).
+    max_tokens: 24576,
     enabled: 1,
     created_at: now,
     updated_at: now
@@ -327,6 +331,15 @@ function upgradeSystemPromptsIfNeeded(db: Database.Database, now: number): void 
   )
   update.run(SYNTHESIZER_PROMPT_V2, now, 'agent.synthesizer')
   update.run(WIKI_BUILDER_PROMPT_V2, now, 'agent.wiki_builder')
+
+  // À chaque bump majeur du prompt, on bump aussi temperature/maxTokens
+  // aux nouveaux defaults — sinon les installations existantes restent
+  // sur les anciennes valeurs (16 384) qui causent les troncatures.
+  const updateTuning = db.prepare(
+    `UPDATE agents SET temperature = ?, max_tokens = ?, updated_at = ? WHERE id = ?`
+  )
+  updateTuning.run(0.3, 4096, now, 'agent.synthesizer')
+  updateTuning.run(0.2, 24576, now, 'agent.wiki_builder')
 
   db.prepare(
     `INSERT INTO settings (key, value) VALUES ('agents.promptsVersion', ?)

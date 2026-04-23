@@ -44,6 +44,17 @@ export default function App() {
           <TabsBar />
           <main className="relative h-full min-h-0 w-full min-w-0 overflow-hidden">
             <InfiniteCanvas />
+            {/* Point de montage des panneaux d'overlay (viewer markdown,
+                graph) — target de createPortal. Positionné en absolute
+                inset-0 mais pointer-events: none au wrapper pour que
+                tldraw reste cliquable en dessous tant qu'aucun panneau
+                n'est ouvert. Les enfants activent pointer-events: auto
+                sur leur propre contenu. z-[30] = au-dessus des shapes
+                mais en dessous du DeleteInterceptor (z > 9000). */}
+            <div
+              id="canvas-overlay-root"
+              className="pointer-events-none absolute inset-0 z-[30]"
+            />
           </main>
         </div>
       </div>

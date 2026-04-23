@@ -15,9 +15,17 @@ export default function GraphSidebarSection({
   collapsed
 }: GraphSidebarSectionProps): React.ReactElement {
   const status = useWikiStore((s) => s.status)
+  const graphOpen = useWikiStore((s) => s.graphOpen)
   const setGraphOpen = useWikiStore((s) => s.setGraphOpen)
 
   const isConfigured = status.folderPath != null && status.initialized
+
+  // Toggle : un clic ouvre OU ferme selon l'état actuel. Pattern plus
+  // naturel qu'un bouton "Ouvrir" séparé d'un bouton de fermeture dans
+  // le header du graph (qui reste aussi disponible pour Échap).
+  function toggleGraph(): void {
+    setGraphOpen(!graphOpen)
+  }
 
   if (collapsed) {
     return (
@@ -25,9 +33,20 @@ export default function GraphSidebarSection({
         <button
           type="button"
           disabled={!isConfigured}
-          onClick={() => setGraphOpen(true)}
-          className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[12px] text-[var(--fg-muted)] hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)] disabled:cursor-not-allowed disabled:opacity-40"
-          title={isConfigured ? 'Ouvrir le graph du wiki' : 'Wiki non configuré'}
+          onClick={toggleGraph}
+          className="rounded-[var(--radius-sm)] border px-2 py-1 text-[12px] disabled:cursor-not-allowed disabled:opacity-40"
+          style={{
+            borderColor: graphOpen ? 'var(--fg-secondary)' : 'var(--border)',
+            color: graphOpen ? 'var(--fg-secondary)' : 'var(--fg-muted)',
+            background: graphOpen ? 'var(--bg-tertiary)' : 'transparent'
+          }}
+          title={
+            !isConfigured
+              ? 'Wiki non configuré'
+              : graphOpen
+                ? 'Fermer le graph'
+                : 'Ouvrir le graph du wiki'
+          }
         >
           ⬡
         </button>
@@ -51,21 +70,27 @@ export default function GraphSidebarSection({
         {isConfigured && (
           <>
             <span className="text-[10px] text-[var(--fg-muted)]">
-              {status.wikiCount} nœud{status.wikiCount > 1 ? 's' : ''} wiki connecté{status.wikiCount > 1 ? 's' : ''} par les \`[[liens]]\`.
+              {status.wikiCount} nœud{status.wikiCount > 1 ? 's' : ''} wiki connecté{status.wikiCount > 1 ? 's' : ''} par les `[[liens]]`.
             </span>
             <button
               type="button"
-              onClick={() => setGraphOpen(true)}
+              onClick={toggleGraph}
               disabled={status.wikiCount === 0}
               className="rounded-[var(--radius-sm)] border px-2 py-1 text-[10px] disabled:cursor-not-allowed disabled:opacity-40"
-              style={{ borderColor: 'var(--border)', color: 'var(--fg-secondary)' }}
+              style={{
+                borderColor: graphOpen ? 'var(--fg-secondary)' : 'var(--border)',
+                color: 'var(--fg-secondary)',
+                background: graphOpen ? 'var(--bg-tertiary)' : 'transparent'
+              }}
               title={
                 status.wikiCount === 0
                   ? 'Aucune page à visualiser — lance le Wiki Builder'
-                  : 'Visualiser le graphe des wikilinks'
+                  : graphOpen
+                    ? 'Fermer le graph'
+                    : 'Visualiser le graphe des wikilinks'
               }
             >
-              ⬡ Ouvrir le graph
+              {graphOpen ? '⬡ Fermer le graph' : '⬡ Ouvrir le graph'}
             </button>
           </>
         )}

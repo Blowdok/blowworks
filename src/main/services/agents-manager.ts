@@ -10,7 +10,8 @@ import type {
   AgentUpdateInputT,
   AgentSynthesizerResultT,
   AgentWikiBuilderResultT,
-  AgentWikiBuilderOperationT
+  AgentWikiBuilderOperationT,
+  WikiEntryT
 } from '@shared/ipc-contract.js'
 
 // Gestionnaire d'agents IA (lot 3). Deux agents système sont seedés dans
@@ -267,40 +268,68 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
     throw new Error('Aucune synthèse raw/ à traiter. Lancez le Synthétiseur d’abord.')
   }
 
-  // Input complet du compilateur (pattern claude-memory-compiler) :
-  // SCHEMA.md (spec) + index.md (état maître) + TOUS les articles wiki
-  // existants + TOUS les raw à compiler. L'agent a tout en contexte pour
-  // éviter doublons et maintenir les wikilinks croisés.
+  // Chunking : si on a plus de RAW_PER_BATCH raw, on traite par lots
+  // séquentiels. Évite que le modèle dépasse maxTokens en essayant de
+  // tout produire d'un coup. Entre chaque batch on refetch index +
+  // articles existants pour que le contexte soit à jour (les pages
+  // créées au batch N apparaissent au batch N+1 → évite les doublons).
+  const RAW_PER_BATCH = 3
+  const batches: Array<typeof rawEntries> = []
+  for (let i = 0; i < rawEntries.length; i += RAW_PER_BATCH) {
+    batches.push(rawEntries.slice(i, i + RAW_PER_BATCH))
+  }
+
+  console.log(
+    `[wiki-builder] ${rawEntries.length} raw → ${batches.length} batch(s) de ${RAW_PER_BATCH} max`
+  )
+
+  const allApplied: AgentWikiBuilderOperationT[] = []
+  for (const [i, batch] of batches.entries()) {
+    console.log(`[wiki-builder] batch ${i + 1}/${batches.length} : ${batch.map((e) => e.name).join(', ')}`)
+    const applied = await runWikiBuilderBatch(agent, batch)
+    allApplied.push(...applied)
+  }
+
+  return { operations: allApplied }
+}
+
+// Traite UN batch de raw via le Wiki Builder. Recharge à chaque appel
+// l'état du wiki (schema, index, articles existants) pour que les
+// batches suivants voient les pages créées par les précédents. Coûteux
+// en tokens d'entrée mais c'est le prix de la cohérence inter-batches.
+async function runWikiBuilderBatch(
+  agent: AgentT,
+  batch: WikiEntryT[]
+): Promise<AgentWikiBuilderOperationT[]> {
   const [schema, indexContent, wikiEntries, rawBlocks] = await Promise.all([
     wiki.readSchema(),
     wiki.readIndex(),
     wiki.listWiki(),
     Promise.all(
-      rawEntries.map(async (e) => {
+      batch.map(async (e) => {
         const content = await wiki.readRaw(e.name)
         return `### raw/${e.name}\n\n${content}`
       })
     )
   ])
 
-  // Contenu INTÉGRAL de chaque article existant — oui, c'est coûteux en
-  // tokens quand le wiki grossit, mais c'est ce qui permet à l'agent de
-  // détecter les doublons et d'enrichir au lieu de dupliquer. À revoir
-  // au Sprint 2 (tools function-calling : read_wiki_page à la demande).
+  // Contenu intégral des articles existants pour éviter doublons. Les
+  // articles vraiment gros pourraient être tronqués ici si besoin, mais
+  // pour l'instant on inline tout — le chunking côté raw suffit à
+  // contenir le budget total.
   const existingArticles = await Promise.all(
     wikiEntries.map(async (e) => {
       try {
         const content = await wiki.readWiki(e.name)
-        // Headers sans prefix `wiki/` pour ne pas inciter le modèle à
-        // recopier ce prefix dans ses `filename` d'operations. Le nom
-        // brut `concepts/pagemark.md` est DÉJÀ relatif au dossier wiki.
         return `### ${e.name}\n\n${content}`
       } catch {
         return null
       }
     })
   )
-  const existingArticlesBlock = existingArticles.filter((x): x is string => x !== null).join('\n\n---\n\n') || '(aucun article existant)'
+  const existingArticlesBlock =
+    existingArticles.filter((x): x is string => x !== null).join('\n\n---\n\n') ||
+    '(aucun article existant)'
 
   const userPrompt = [
     '## Contexte du compilateur',
@@ -316,12 +345,12 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
     '### Articles existants (chemins relatifs à wiki/)',
     existingArticlesBlock,
     '',
-    '## Raw sources à compiler',
+    '## Raw sources à compiler (CE batch uniquement)',
     '',
     rawBlocks.join('\n\n---\n\n'),
     '',
     '## Tâche',
-    "Produis le JSON d'opérations selon la spec SCHEMA. N'inline pas de markdown fence autour du JSON. Rappel : `filename` sans prefix `wiki/`."
+    "Produis le JSON d'opérations selon la spec SCHEMA pour CES sources uniquement. N'inline pas de markdown fence autour du JSON. Rappel : `filename` sans prefix `wiki/`."
   ].join('\n\n')
 
   const result = await oneShotChat({
@@ -336,8 +365,6 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
     throw new Error(`Échec Wiki Builder : ${result.error}`)
   }
 
-  // Log systématique de la réponse brute — facilite le diagnostic quand
-  // le modèle produit du JSON invalide (tronqué, fence mal formé, refus).
   console.log(
     `[wiki-builder] réponse brute (${result.content.length} chars) :\n${result.content.slice(0, 2000)}${result.content.length > 2000 ? '\n…[tronqué pour log]' : ''}`
   )
@@ -347,20 +374,12 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
 
   for (const op of parsed.operations) {
     try {
-      // Les modèles ajoutent parfois un prefix `wiki/` au filename malgré
-      // le prompt qui dit que c'est relatif au dossier wiki/. Strip pour
-      // éviter l'arborescence `wiki/wiki/concepts/xxx.md`. Robuste aux
-      // variantes `./wiki/`, `/wiki/` et `wiki\\` (backslash Windows).
       const cleanFilename = stripWikiPrefix(op.filename)
-
       if (op.op === 'create' || op.op === 'update') {
         await wiki.writeWiki(cleanFilename, op.content)
       } else if (op.op === 'rename') {
         if (op.renameFrom) {
-          await wiki.renameWiki(
-            stripWikiPrefix(op.renameFrom),
-            cleanFilename
-          )
+          await wiki.renameWiki(stripWikiPrefix(op.renameFrom), cleanFilename)
         } else {
           continue
         }
@@ -371,9 +390,6 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
     }
   }
 
-  // Met à jour index.md + log.md si fournis par l'agent. Ces 2 écritures
-  // ne peuvent pas être laissées à l'agent lui-même via operations[] car
-  // elles portent une sémantique différente (maintenance vs article).
   if (parsed.indexUpdate && parsed.indexUpdate.trim().length > 0) {
     try {
       await wiki.writeIndex(parsed.indexUpdate)
@@ -382,8 +398,6 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
     }
   }
   if (parsed.logEntry && parsed.logEntry.trim().length > 0) {
-    // L'agent fournit la ligne préformattée. On ajoute un newline final
-    // si manquant pour garantir l'append propre.
     const entry = parsed.logEntry.endsWith('\n') ? parsed.logEntry : parsed.logEntry + '\n'
     try {
       await wiki.appendLog(entry)
@@ -392,7 +406,7 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
     }
   }
 
-  return { operations: applied }
+  return applied
 }
 
 // Parse la réponse JSON du Wiki Builder v2. Structure attendue :
@@ -413,40 +427,58 @@ interface WikiBuilderParsedResponse {
 }
 
 function parseWikiBuilderResponse(raw: string): WikiBuilderParsedResponse {
-  // Strip markdown fences `\`\`\`json ... \`\`\`` ou `\`\`\` ... \`\`\``
-  // avant de chercher l'objet JSON. Certains modèles les ajoutent malgré
-  // l'instruction contraire dans le prompt.
+  // Strip markdown fences avant de chercher l'objet JSON.
   const stripped = stripMarkdownCodeFence(raw)
   const jsonText = extractJsonObject(stripped)
-  if (!jsonText) {
-    // Diagnostic détaillé : longueur de réponse, nb d'accolades ouvrantes
-    // vs fermantes, extrait initial. Aide l'utilisateur à décider s'il
-    // s'agit d'un refus du modèle, d'un JSON tronqué, ou d'un autre bug.
-    const opens = (stripped.match(/\{/g) ?? []).length
-    const closes = (stripped.match(/\}/g) ?? []).length
-    const head = stripped.slice(0, 400).replace(/\n/g, ' ↵ ')
-    const hint =
-      opens === 0
-        ? 'aucune accolade ouvrante — le modèle a refusé la tâche ou renvoyé du texte libre.'
-        : opens > closes
-          ? `JSON probablement tronqué (maxTokens atteint) : ${opens} { pour ${closes} }.`
-          : 'structure JSON incohérente.'
-    throw new Error(
-      `Réponse Wiki Builder invalide : ${hint}\n\n` +
-        `Longueur : ${raw.length} chars. Début de la réponse : "${head}"`
-    )
+
+  // Cas 1 : objet JSON complet trouvé → tente parse strict.
+  if (jsonText) {
+    try {
+      const parsed = JSON.parse(jsonText)
+      return finalizeParsedResponse(parsed)
+    } catch {
+      // tombe dans la récupération tolérante ci-dessous
+    }
   }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(jsonText)
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e)
-    const head = jsonText.slice(0, 300).replace(/\n/g, ' ↵ ')
-    throw new Error(
-      `Réponse Wiki Builder invalide : JSON malformé (${msg}).\n\n` +
-        `Début du bloc JSON extrait : "${head}"`
+
+  // Cas 2 (récupération tolérante) : le JSON global est tronqué/cassé,
+  // on essaie d'extraire les opérations VALIDES depuis le tableau
+  // `operations: [...]` objet par objet. Permet de sauver un build
+  // partiel au lieu de tout perdre quand le modèle dépasse maxTokens.
+  const partialOps = extractPartialOperations(stripped)
+  if (partialOps.length > 0) {
+    console.warn(
+      `[wiki-builder] récupération tolérante : ${partialOps.length} opération(s) valide(s) extraites d'un JSON tronqué`
     )
+    // indexUpdate et logEntry souvent perdus → on les laisse vides, le
+    // runner garde son ancien index et écrit un log par défaut.
+    return {
+      operations: partialOps,
+      indexUpdate: '',
+      logEntry: `## [${new Date().toISOString()}] wiki-build | partiel : ${partialOps.length} ops sauvées d'un JSON tronqué`
+    }
   }
+
+  // Cas 3 : on n'a vraiment rien pu sauver. Diagnostic détaillé.
+  const opens = (stripped.match(/\{/g) ?? []).length
+  const closes = (stripped.match(/\}/g) ?? []).length
+  const head = stripped.slice(0, 400).replace(/\n/g, ' ↵ ')
+  const hint =
+    opens === 0
+      ? 'aucune accolade ouvrante — le modèle a refusé la tâche ou renvoyé du texte libre.'
+      : opens > closes
+        ? `JSON probablement tronqué (maxTokens atteint) : ${opens} { pour ${closes} }, et aucune opération récupérable.`
+        : 'structure JSON incohérente.'
+  throw new Error(
+    `Réponse Wiki Builder invalide : ${hint}\n\n` +
+      `Longueur : ${raw.length} chars. Début de la réponse : "${head}"`
+  )
+}
+
+// Validation finale d'un objet JSON parsé en `WikiBuilderParsedResponse`.
+// Filtre les operations malformées (sans throw) et fournit indexUpdate/
+// logEntry par défaut si manquants.
+function finalizeParsedResponse(parsed: unknown): WikiBuilderParsedResponse {
   if (
     !parsed ||
     typeof parsed !== 'object' ||
@@ -503,6 +535,56 @@ function stripMarkdownCodeFence(s: string): string {
   // → on retire juste les lignes ```… qui restent, le parser extractJsonObject
   //   s'occupera de trouver le {} au milieu.
   return trimmed.replace(/^```[a-zA-Z]*\s*\r?\n/gm, '').replace(/\r?\n```\s*$/gm, '')
+}
+
+// Récupération tolérante : extrait UNE PAR UNE les opérations valides
+// du tableau `operations: [...]` même si le JSON global est tronqué.
+// Approche : trouve le pattern `"operations": [` puis itère object par
+// object en utilisant `extractJsonObject` à chaque position. Garde ceux
+// qui parsent + ont la structure attendue. Skippe le reste.
+function extractPartialOperations(s: string): WikiBuilderOp[] {
+  const opsKeyMatch = s.match(/"operations"\s*:\s*\[/)
+  if (!opsKeyMatch) return []
+  let cursor = (opsKeyMatch.index ?? 0) + opsKeyMatch[0].length
+  const results: WikiBuilderOp[] = []
+  while (cursor < s.length) {
+    // Cherche la prochaine accolade ouvrante
+    const nextOpen = s.indexOf('{', cursor)
+    if (nextOpen === -1) break
+    // Vérifie qu'on n'a pas dépassé le tableau (`]` rencontré avant `{`)
+    const nextClose = s.indexOf(']', cursor)
+    if (nextClose !== -1 && nextClose < nextOpen) break
+
+    const objText = extractJsonObject(s.slice(nextOpen))
+    if (!objText) break // JSON tronqué juste sur cet objet
+
+    try {
+      const parsed = JSON.parse(objText)
+      if (
+        parsed &&
+        typeof parsed === 'object' &&
+        typeof (parsed as { op?: unknown }).op === 'string' &&
+        typeof (parsed as { filename?: unknown }).filename === 'string' &&
+        typeof (parsed as { content?: unknown }).content === 'string'
+      ) {
+        const op = (parsed as { op: string }).op
+        if (op === 'create' || op === 'update' || op === 'rename') {
+          const rf = (parsed as { renameFrom?: unknown }).renameFrom
+          results.push({
+            op: op as WikiBuilderOp['op'],
+            filename: (parsed as { filename: string }).filename,
+            content: (parsed as { content: string }).content,
+            renameFrom: typeof rf === 'string' ? rf : undefined
+          })
+        }
+      }
+    } catch {
+      // objet malformé — skip
+    }
+
+    cursor = nextOpen + objText.length
+  }
+  return results
 }
 
 // Extraction robuste d'un objet JSON depuis une chaîne : on cherche la 1ère

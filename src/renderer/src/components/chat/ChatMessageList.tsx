@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
-import { markdownRemarkPlugins, markdownRehypePlugins } from '../../lib/markdown.js'
+import {
+  markdownRemarkPlugins,
+  markdownRehypePlugins,
+  markdownUrlTransform
+} from '../../lib/markdown.js'
 import type { AIMessageT } from '@shared/ipc-contract.js'
 import CitationsList from './CitationsList.js'
 import CodeBlock from './CodeBlock.js'
@@ -269,6 +273,7 @@ function MessageBubble({
             <ReactMarkdown
               remarkPlugins={markdownRemarkPlugins}
               rehypePlugins={markdownRehypePlugins}
+              urlTransform={markdownUrlTransform}
               components={markdownComponents}
             >
               {linkifyWikiRefs(message.content)}
