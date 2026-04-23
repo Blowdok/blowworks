@@ -64,6 +64,18 @@ export const IPC_CHANNELS = {
     // `will-navigate` (voir `src/main/window.ts`).
     openUrlEvent: 'browser.openUrl'
   },
+  agents: {
+    // CRUD + exécution des agents (lot 3). Les agents system ('synthesizer',
+    // 'wiki_builder') ne peuvent pas être supprimés — seul le champ
+    // `enabled` et `systemPrompt`/`model` sont éditables.
+    list: 'agents.list',
+    get: 'agents.get',
+    create: 'agents.create',
+    update: 'agents.update',
+    delete: 'agents.delete',
+    runSynthesizer: 'agents.runSynthesizer',
+    runWikiBuilder: 'agents.runWikiBuilder'
+  },
   wiki: {
     // Mémoire long-terme partagée entre conversations IA (dossier FS
     // choisi par l'utilisateur). Structure : raw/, wiki/, MEMORY.md.

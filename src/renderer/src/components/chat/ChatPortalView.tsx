@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useEditor } from 'tldraw'
 import { nanoid } from 'nanoid'
 import type { ChatShape } from '../canvas/shapes/ChatShape.js'
+import type { WikiFolderStatusT, WikiEntryT } from '@shared/ipc-contract.js'
 import { useChatStore } from '../../stores/chat-store.js'
 import { useProjectStore } from '../../stores/project-store.js'
 import ChatMessageList from './ChatMessageList.js'
@@ -66,6 +67,10 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
   const [draft, setDraft] = useState('')
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false)
   const [historyDropdownOpen, setHistoryDropdownOpen] = useState(false)
+  const [synthState, setSynthState] = useState<
+    { kind: 'idle' } | { kind: 'running' } | { kind: 'success'; filename: string } | { kind: 'error'; message: string }
+  >({ kind: 'idle' })
+  const [wikiConfigured, setWikiConfigured] = useState<boolean>(false)
 
   const assignedProject = projects.find((p) => p.id === shape.props.projectId) ?? null
   const hasKey = apiKeyStatus.openrouter
@@ -91,6 +96,20 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       void refreshModels()
     }
   }, [hasKey, models.length, modelsLoading, refreshModels])
+
+  // Statut wiki : gouverne les boutons 📚 / Synthétiser (désactivés tant
+  // que le dossier n'est pas configuré). Refetché à chaque ouverture d'un
+  // nouveau ChatShape — le coût est négligeable (1 read SQLite + fs.access).
+  useEffect(() => {
+    void (async () => {
+      try {
+        const s = (await window.blow.wiki.getFolder()) as WikiFolderStatusT
+        setWikiConfigured(s.initialized)
+      } catch {
+        setWikiConfigured(false)
+      }
+    })()
+  }, [])
 
   function setProjectId(projectId: string | null): void {
     editor.updateShape<ChatShape>({
@@ -127,16 +146,108 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     })
   }
 
-  function handleSubmit(): void {
+  function toggleWikiContext(): void {
+    editor.updateShape<ChatShape>({
+      id: shape.id,
+      type: 'chat',
+      props: { wikiContextEnabled: !shape.props.wikiContextEnabled }
+    })
+  }
+
+  // Construit le prompt mémoire injecté comme system message : MEMORY.md
+  // + contenu COMPLET de toutes les pages wiki/*.md, capé à 80 KB pour
+  // éviter de saturer la fenêtre de contexte du modèle. Si le wiki dépasse
+  // cette taille, on inline les pages les plus récentes et on signale à
+  // l'IA qu'il y a davantage de contenu accessible (pour qu'elle demande
+  // à l'utilisateur plutôt que d'inventer).
+  async function buildWikiContext(): Promise<string | null> {
+    if (!wikiConfigured) return null
+    try {
+      const [memory, wikiEntries] = await Promise.all([
+        window.blow.wiki.readMemoryTemplate() as Promise<string | null>,
+        window.blow.wiki.listWiki() as Promise<WikiEntryT[]>
+      ])
+      if (!memory && wikiEntries.length === 0) return null
+
+      // Charge chaque page dans l'ordre (listWiki renvoie déjà trié par
+      // modifiedAt DESC) jusqu'au budget caractères. Au-delà on abandonne.
+      const MAX_CHARS = 80_000
+      const pageBlocks: string[] = []
+      const skipped: string[] = []
+      let used = 0
+      for (const entry of wikiEntries) {
+        try {
+          const content = (await window.blow.wiki.readWiki(entry.name)) as string
+          const block = `#### wiki/${entry.name}\n\n${content.trim()}`
+          if (used + block.length > MAX_CHARS) {
+            skipped.push(entry.name)
+            continue
+          }
+          pageBlocks.push(block)
+          used += block.length
+        } catch {
+          skipped.push(entry.name)
+        }
+      }
+
+      const lines: string[] = [
+        '### Mémoire long-terme partagée',
+        '',
+        'Tu as accès à une mémoire persistante extraite des conversations passées. Utilise-la comme source de vérité pour rester cohérent avec les décisions, contextes et références déjà établis. Cite les pages par leur nom de fichier (`wiki/xxx.md`) quand tu t\'en sers.',
+        '',
+        '#### Conventions (MEMORY.md)',
+        '',
+        memory && memory.trim().length > 0 ? memory : '(MEMORY.md vide)'
+      ]
+      if (pageBlocks.length > 0) {
+        lines.push('', '#### Pages wiki (contenu complet)', '', pageBlocks.join('\n\n---\n\n'))
+      } else {
+        lines.push('', '#### Pages wiki', '', '(aucune page wiki pour le moment)')
+      }
+      if (skipped.length > 0) {
+        lines.push(
+          '',
+          `_Pages non inlinées faute de budget : ${skipped.join(', ')}. Demande à l'utilisateur si tu as besoin de leur contenu._`
+        )
+      }
+      return lines.join('\n')
+    } catch (e) {
+      console.warn('[chat] buildWikiContext failed', e)
+      return null
+    }
+  }
+
+  async function handleSubmit(): Promise<void> {
     const content = draft.trim()
     if (!content || isStreaming || !hasKey) return
     setDraft('')
-    void sendMessage(convId, content, {
+
+    const wikiContext = shape.props.wikiContextEnabled ? await buildWikiContext() : null
+
+    await sendMessage(convId, content, {
       model: shape.props.model,
       temperature: defaults.temperature,
       webSearchEnabled: shape.props.webSearchEnabled && apiKeyStatus.tavily,
+      wikiContext,
       maxTokens: defaults.maxTokens
     })
+  }
+
+  async function handleSynthesize(): Promise<void> {
+    if (!wikiConfigured) return
+    setSynthState({ kind: 'running' })
+    try {
+      const r = (await window.blow.agents.runSynthesizer(convId)) as {
+        filename: string
+        summary: string
+      }
+      setSynthState({ kind: 'success', filename: r.filename })
+      setTimeout(() => setSynthState({ kind: 'idle' }), 4000)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setSynthState({ kind: 'error', message: msg })
+      setTimeout(() => setSynthState({ kind: 'idle' }), 6000)
+    }
   }
 
   function handleCancel(): void {
@@ -332,6 +443,47 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
 
           <button
             type="button"
+            onClick={toggleWikiContext}
+            disabled={!wikiConfigured}
+            className="rounded-[var(--radius-sm)] border px-1.5 py-0.5 text-[10px] disabled:cursor-not-allowed disabled:opacity-40"
+            style={{
+              borderColor: shape.props.wikiContextEnabled
+                ? 'var(--fg-secondary)'
+                : 'var(--border)',
+              color: shape.props.wikiContextEnabled
+                ? 'var(--fg-secondary)'
+                : 'var(--fg-muted)',
+              background: shape.props.wikiContextEnabled ? 'var(--bg-tertiary)' : 'transparent'
+            }}
+            title={
+              !wikiConfigured
+                ? 'Wiki non configuré — Paramètres > Wiki'
+                : shape.props.wikiContextEnabled
+                  ? 'Mémoire wiki injectée dans chaque message (cliquer pour désactiver)'
+                  : 'Injecter la mémoire wiki (MEMORY.md + pages) comme contexte système'
+            }
+          >
+            📚
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void handleSynthesize()}
+            disabled={!wikiConfigured || synthState.kind === 'running' || messages.length === 0}
+            className="rounded-[var(--radius-sm)] border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--fg-muted)] hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)] disabled:cursor-not-allowed disabled:opacity-40"
+            title={
+              !wikiConfigured
+                ? 'Wiki non configuré — Paramètres > Wiki'
+                : messages.length === 0
+                  ? 'Conversation vide — rien à synthétiser'
+                  : 'Synthétiser cette conversation dans raw/'
+            }
+          >
+            {synthState.kind === 'running' ? '⏳' : '✦'}
+          </button>
+
+          <button
+            type="button"
             onClick={() => void handleNewConversation()}
             className="rounded-[var(--radius-sm)] border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--fg-muted)] hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)]"
             title="Nouvelle conversation dans cette shape"
@@ -353,7 +505,7 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       <ChatInput
         value={draft}
         onChange={setDraft}
-        onSubmit={handleSubmit}
+        onSubmit={() => void handleSubmit()}
         onCancel={handleCancel}
         isStreaming={isStreaming}
         disabled={!hasKey || !apiKeyStatus.encryptionAvailable}
@@ -363,6 +515,34 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
         thinkingEnabled={shape.props.thinkingEnabled}
         onToggleThinking={toggleThinking}
       />
+
+      {/* Toast compact de retour agent — flotte au-dessus de la zone de
+          saisie, s'efface seul après succès (4s) ou erreur (6s). */}
+      {synthState.kind !== 'idle' && (
+        <div
+          className="pointer-events-none absolute inset-x-3 bottom-[60px] rounded-[var(--radius-sm)] border px-3 py-1.5 text-[11px] shadow-lg"
+          style={{
+            background: 'var(--bg-secondary)',
+            borderColor:
+              synthState.kind === 'error'
+                ? '#ef4444'
+                : synthState.kind === 'success'
+                  ? 'var(--fg-secondary)'
+                  : 'var(--border)',
+            color:
+              synthState.kind === 'error'
+                ? '#ef4444'
+                : synthState.kind === 'success'
+                  ? 'var(--fg-secondary)'
+                  : 'var(--fg-muted)'
+          }}
+        >
+          {synthState.kind === 'running' && '⏳ Synthèse en cours…'}
+          {synthState.kind === 'success' &&
+            `✓ Synthèse sauvée dans raw/${synthState.filename}`}
+          {synthState.kind === 'error' && `✗ ${synthState.message}`}
+        </div>
+      )}
     </div>
   )
 }

@@ -9,6 +9,8 @@ import { registerSettingsHandlers } from './ipc/settings.js'
 import { registerDialogHandlers } from './ipc/dialog.js'
 import { registerGitHubHandlers } from './ipc/github.js'
 import { registerAIHandlers } from './ipc/ai.js'
+import { registerWikiHandlers } from './ipc/wiki.js'
+import { registerAgentsHandlers } from './ipc/agents.js'
 import { initDatabase } from './services/db.js'
 import { ptyManager } from './services/pty-manager.js'
 import { vscodeServer } from './services/vscode-server.js'
@@ -64,6 +66,8 @@ app.whenReady().then(async () => {
   registerDialogHandlers()
   registerGitHubHandlers()
   registerAIHandlers()
+  registerWikiHandlers()
+  registerAgentsHandlers()
 
   // Démarrage du sidecar openvscode-server en tâche de fond (non bloquant).
   // Démarrage paresseux déclenché à la première demande VSCode.

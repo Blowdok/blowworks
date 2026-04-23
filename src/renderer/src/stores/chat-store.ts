@@ -77,7 +77,14 @@ interface ChatStore {
   sendMessage: (
     conversationId: string,
     content: string,
-    opts: { model: string; temperature: number; webSearchEnabled: boolean; systemPrompt?: string | null; maxTokens?: number }
+    opts: {
+      model: string
+      temperature: number
+      webSearchEnabled: boolean
+      systemPrompt?: string | null
+      wikiContext?: string | null
+      maxTokens?: number
+    }
   ) => Promise<void>
   cancelStream: (conversationId: string) => Promise<void>
 }
@@ -289,6 +296,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       model: opts.model,
       temperature: opts.temperature,
       systemPrompt: opts.systemPrompt ?? null,
+      wikiContext: opts.wikiContext ?? null,
       webSearchEnabled: opts.webSearchEnabled,
       maxTokens: opts.maxTokens
     })) as { requestId: string }

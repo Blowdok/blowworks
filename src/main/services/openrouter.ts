@@ -188,6 +188,11 @@ export interface StreamChatOptions {
   temperature?: number
   maxTokens?: number
   systemPrompt?: string | null
+  // Mémoire wiki partagée (lot 3). Injectée comme message `system` en
+  // étape 1.5 — après le systemPrompt utilisateur, avant les résultats
+  // Tavily — pour que le modèle ait accès à la mémoire long-terme avant
+  // de considérer les résultats du search web courant.
+  wikiContext?: string | null
   webSearchEnabled?: boolean
   webSearchQuery?: string
 }
@@ -264,12 +269,23 @@ export async function streamChat(
     return
   }
 
-  // ── Étape 1 : recherche web optionnelle (Tavily) ────────────────────
+  // ── Étape 1 : system prompt utilisateur ─────────────────────────────
   const messages: ChatCompletionMessage[] = []
   const citations: string[] = []
 
   if (opts.systemPrompt && opts.systemPrompt.trim().length > 0) {
     messages.push({ role: 'system', content: opts.systemPrompt })
+  }
+
+  // ── Étape 1.5 : wikiContext (mémoire long-terme partagée) ──────────
+  // Injecté APRÈS le systemPrompt utilisateur pour que l'instruction
+  // primaire prime, mais AVANT Tavily pour que le search web courant
+  // puisse affiner la mémoire si nécessaire.
+  if (opts.wikiContext && opts.wikiContext.trim().length > 0) {
+    messages.push({
+      role: 'system',
+      content: opts.wikiContext
+    })
   }
 
   if (opts.webSearchEnabled) {
@@ -366,6 +382,39 @@ export async function streamChat(
   } finally {
     activeControllers.delete(opts.requestId)
   }
+}
+
+// Appel one-shot (non-streamé) utilisé par les runners d'agents : on
+// reconstruit simplement streamChat en accumulant les deltas et on
+// retourne le texte complet. Évite la duplication de la logique
+// d'authentification / Tavily / gestion d'erreurs.
+export async function oneShotChat(opts: {
+  model: string
+  systemPrompt: string
+  userPrompt: string
+  temperature?: number
+  maxTokens?: number
+}): Promise<{ content: string; error: string | null }> {
+  const requestId = `oneshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  let assembled = ''
+  let streamError: string | null = null
+
+  await streamChat(
+    {
+      requestId,
+      model: opts.model,
+      systemPrompt: opts.systemPrompt,
+      messages: [{ role: 'user', content: opts.userPrompt }],
+      temperature: opts.temperature,
+      maxTokens: opts.maxTokens
+    },
+    (chunk) => {
+      if (chunk.delta) assembled += chunk.delta
+      if (chunk.error) streamError = chunk.error
+    }
+  )
+
+  return { content: assembled, error: streamError }
 }
 
 export function cancelStream(requestId: string): boolean {

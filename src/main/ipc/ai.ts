@@ -182,6 +182,7 @@ export function registerAIHandlers(): void {
           temperature: input.temperature,
           maxTokens: input.maxTokens,
           systemPrompt: input.systemPrompt ?? conv.system ?? undefined,
+          wikiContext: input.wikiContext ?? undefined,
           webSearchEnabled: input.webSearchEnabled,
           webSearchQuery: input.content
         },

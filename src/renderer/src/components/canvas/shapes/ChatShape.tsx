@@ -32,6 +32,10 @@ type ChatShapeProps = {
   // Toggles d'interaction (persistés dans les props → rechargés au boot).
   webSearchEnabled: boolean
   thinkingEnabled: boolean
+  // Toggle 📚 : injecte la mémoire Wiki (MEMORY.md + titres des pages
+  // wiki/*) comme contexte système dans chaque message envoyé. Off par
+  // défaut — l'utilisateur opt-in par conversation.
+  wikiContextEnabled: boolean
 }
 
 export type ChatShape = TLBaseShape<'chat', ChatShapeProps>
@@ -48,7 +52,8 @@ declare module 'tldraw' {
 // jette un ValidationError (`Expected string, got undefined`) et crashe le
 // canvas.
 const ChatVersions = createShapePropsMigrationIds('chat', {
-  AddConversationId: 1
+  AddConversationId: 1,
+  AddWikiContextEnabled: 2
 })
 
 const chatShapeMigrations = createShapePropsMigrationSequence({
@@ -61,6 +66,15 @@ const chatShapeMigrations = createShapePropsMigrationSequence({
         // retombe sur shape.id via le fallback `?? shape.id`.
         if ((props as { conversationId?: unknown }).conversationId === undefined) {
           ;(props as { conversationId: string | null }).conversationId = null
+        }
+      }
+    },
+    {
+      id: ChatVersions.AddWikiContextEnabled,
+      up: (props) => {
+        // Toggle 📚 Wiki — off par défaut sur les shapes préexistantes.
+        if ((props as { wikiContextEnabled?: unknown }).wikiContextEnabled === undefined) {
+          ;(props as { wikiContextEnabled: boolean }).wikiContextEnabled = false
         }
       }
     }
@@ -76,7 +90,8 @@ export class ChatShapeUtil extends BaseBoxShapeUtil<ChatShape> {
     conversationId: T.string.nullable(),
     model: T.string,
     webSearchEnabled: T.boolean,
-    thinkingEnabled: T.boolean
+    thinkingEnabled: T.boolean,
+    wikiContextEnabled: T.boolean
   }
   static override migrations = chatShapeMigrations
 
@@ -91,7 +106,8 @@ export class ChatShapeUtil extends BaseBoxShapeUtil<ChatShape> {
       // si le user crée une shape manuellement via API tldraw.
       model: 'anthropic/claude-sonnet-4-6',
       webSearchEnabled: false,
-      thinkingEnabled: false
+      thinkingEnabled: false,
+      wikiContextEnabled: false
     }
   }
 
@@ -155,5 +171,6 @@ export const ChatPortalContent = memo(
     prev.shape.props.conversationId === next.shape.props.conversationId &&
     prev.shape.props.model === next.shape.props.model &&
     prev.shape.props.webSearchEnabled === next.shape.props.webSearchEnabled &&
-    prev.shape.props.thinkingEnabled === next.shape.props.thinkingEnabled
+    prev.shape.props.thinkingEnabled === next.shape.props.thinkingEnabled &&
+    prev.shape.props.wikiContextEnabled === next.shape.props.wikiContextEnabled
 )

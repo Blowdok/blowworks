@@ -102,5 +102,66 @@ function runMigrations(db: Database.Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_ai_messages_conv ON ai_messages(conversation_id);
+
+    -- Agents IA configurables (lot 3). Deux agents système seedés au
+    -- 1er boot : 'synthesizer' et 'wiki_builder'. Les agents 'custom'
+    -- sont créés par l'utilisateur depuis Settings > Agents. Les system
+    -- agents ne peuvent pas être supprimés (garde-fou côté service),
+    -- seulement édités (model, systemPrompt, enabled).
+    CREATE TABLE IF NOT EXISTS agents (
+      id             TEXT PRIMARY KEY,
+      kind           TEXT NOT NULL,
+      name           TEXT NOT NULL,
+      description    TEXT NOT NULL DEFAULT '',
+      model          TEXT NOT NULL,
+      system_prompt  TEXT NOT NULL,
+      enabled        INTEGER NOT NULL DEFAULT 1,
+      created_at     INTEGER NOT NULL,
+      updated_at     INTEGER NOT NULL
+    );
   `)
+
+  seedSystemAgents(db)
+}
+
+// Seed des deux agents système obligatoires. Idempotent : n'insère que si
+// la ligne correspondante n'existe pas encore (clé primaire fixe pour les
+// agents système → `agent.synthesizer`, `agent.wiki_builder`).
+function seedSystemAgents(db: Database.Database): void {
+  const now = Date.now()
+  const insert = db.prepare(`
+    INSERT INTO agents (id, kind, name, description, model, system_prompt,
+                         enabled, created_at, updated_at)
+    VALUES (@id, @kind, @name, @description, @model, @system_prompt,
+            @enabled, @created_at, @updated_at)
+    ON CONFLICT(id) DO NOTHING
+  `)
+
+  insert.run({
+    id: 'agent.synthesizer',
+    kind: 'synthesizer',
+    name: 'Synthétiseur',
+    description:
+      'Condense une conversation en une synthèse courte destinée à la mémoire long-terme.',
+    model: 'anthropic/claude-sonnet-4-6',
+    system_prompt:
+      "Tu es l'agent Synthétiseur de BlowWorks. Ton rôle est de lire une conversation entre un utilisateur et une IA, puis d'en extraire l'essentiel dans une note Markdown courte (200 à 500 mots) destinée à être stockée comme mémoire long-terme.\n\nStructure ta réponse ainsi :\n1. Un titre H1 descriptif.\n2. Un paragraphe \"Contexte\" (2-3 phrases).\n3. Une section \"Points clés\" sous forme de liste à puces.\n4. Une section \"Décisions / Conclusions\" si applicable.\n5. Une section \"Questions ouvertes\" si applicable.\n\nNe recopie PAS la conversation. Capture les faits saillants, décisions et références. Écris au présent, en français.",
+    enabled: 1,
+    created_at: now,
+    updated_at: now
+  })
+
+  insert.run({
+    id: 'agent.wiki_builder',
+    kind: 'wiki_builder',
+    name: 'Wiki Builder',
+    description:
+      'Analyse les synthèses brutes du dossier raw/ et les refactor en pages structurées reliées par des wiki-links.',
+    model: 'anthropic/claude-sonnet-4-6',
+    system_prompt:
+      "Tu es l'agent Wiki Builder de BlowWorks. Tu reçois en entrée une liste de synthèses brutes (raw/) et la liste des pages wiki existantes. Ton rôle est de produire une liste d'opérations JSON qui fait évoluer le wiki vers une représentation cohérente et bien structurée.\n\nConventions :\n- Une page wiki = un concept (projet, personne, décision, référence technique).\n- Nom des pages : kebab-case.md.\n- Liens inter-pages : [[nom-page]] (sans l'extension).\n- Fusionne les doublons, renomme si besoin.\n\nRetourne UNIQUEMENT un JSON valide de la forme :\n{\n  \"operations\": [\n    { \"op\": \"create\" | \"update\", \"filename\": \"nom.md\", \"content\": \"...\" }\n  ]\n}\n\nPas de commentaires hors du JSON. Contenu des pages en français, au présent.",
+    enabled: 1,
+    created_at: now,
+    updated_at: now
+  })
 }

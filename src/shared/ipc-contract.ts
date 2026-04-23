@@ -172,6 +172,10 @@ export const AISendMessageInput = z.object({
   model: z.string().min(1),
   temperature: z.number().min(0).max(2).default(0.7),
   systemPrompt: z.string().nullable().optional(),
+  // Contexte wiki (mémoire long-terme) à injecter en « étape 1.5 » entre le
+  // systemPrompt utilisateur et les résultats Tavily. Construit côté renderer
+  // quand le toggle 📚 est actif, à partir de MEMORY.md + titres de pages wiki.
+  wikiContext: z.string().max(200_000).nullable().optional(),
   webSearchEnabled: z.boolean().default(false),
   maxTokens: z.number().int().positive().optional()
 })
@@ -237,6 +241,73 @@ export const AIDefaultsSchema = z.object({
   maxTokens: z.number().int().positive().default(4096)
 })
 export type AIDefaultsT = z.infer<typeof AIDefaultsSchema>
+
+// ──────────────────────────────────────────────────────────── Agents IA
+
+// Un agent = une unité d'exécution one-shot (vs ChatShape = interaction
+// multi-tours). `kind` distingue les 2 agents système ('synthesizer',
+// 'wiki_builder') des agents libres ('custom') que l'utilisateur créera.
+export const AgentKindSchema = z.enum(['synthesizer', 'wiki_builder', 'custom'])
+export type AgentKindT = z.infer<typeof AgentKindSchema>
+
+export const AgentSchema = z.object({
+  id: z.string().min(1),
+  kind: AgentKindSchema,
+  name: z.string().min(1).max(120),
+  description: z.string().max(500).default(''),
+  model: z.string().min(1),
+  systemPrompt: z.string().min(1).max(50_000),
+  enabled: z.boolean(),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative()
+})
+export type AgentT = z.infer<typeof AgentSchema>
+
+export const AgentCreateInput = z.object({
+  name: z.string().min(1).max(120),
+  description: z.string().max(500).optional(),
+  model: z.string().min(1),
+  systemPrompt: z.string().min(1).max(50_000),
+  enabled: z.boolean().optional()
+})
+export type AgentCreateInputT = z.infer<typeof AgentCreateInput>
+
+export const AgentUpdateInput = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1).max(120).optional(),
+  description: z.string().max(500).optional(),
+  model: z.string().min(1).optional(),
+  systemPrompt: z.string().min(1).max(50_000).optional(),
+  enabled: z.boolean().optional()
+})
+export type AgentUpdateInputT = z.infer<typeof AgentUpdateInput>
+
+// Input pour runSynthesizer : cible une conversation à synthétiser.
+export const AgentRunSynthesizerInput = z.object({
+  conversationId: z.string().min(1)
+})
+export type AgentRunSynthesizerInputT = z.infer<typeof AgentRunSynthesizerInput>
+
+// Résultat d'un run Synthétiseur : chemin de la note écrite + contenu
+// pour feedback UI.
+export const AgentSynthesizerResultSchema = z.object({
+  filename: z.string().min(1),
+  summary: z.string()
+})
+export type AgentSynthesizerResultT = z.infer<typeof AgentSynthesizerResultSchema>
+
+// Résultat d'un run Wiki Builder : opérations appliquées.
+export const AgentWikiBuilderOperationSchema = z.object({
+  op: z.enum(['create', 'update']),
+  filename: z.string().min(1),
+  bytes: z.number().int().nonnegative()
+})
+export type AgentWikiBuilderOperationT = z.infer<typeof AgentWikiBuilderOperationSchema>
+
+export const AgentWikiBuilderResultSchema = z.object({
+  operations: z.array(AgentWikiBuilderOperationSchema)
+})
+export type AgentWikiBuilderResultT = z.infer<typeof AgentWikiBuilderResultSchema>
 
 // ──────────────────────────────────────────────────────────── Wiki (mémoire FS)
 

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useChatStore } from '../stores/chat-store.js'
 import ModelSelector from './chat/ModelSelector.js'
+import WikiSettingsTab from './settings/WikiSettingsTab.js'
+import AgentsSettingsTab from './settings/AgentsSettingsTab.js'
 
 // Modale Paramètres plein écran : sidebar verticale à gauche + panneau
 // de réglages à droite. Rendue via `createPortal(document.body)` — même
@@ -13,18 +15,30 @@ import ModelSelector from './chat/ModelSelector.js'
 //   - IA · Recherche web Tavily (clé API)
 //   - Placeholders grisés : Agents, MCP, Presets (lots 3/4)
 
+type Tab = 'openrouter' | 'tavily' | 'defaults' | 'wiki' | 'agents'
+
 interface SettingsModalProps {
   open: boolean
   onClose: () => void
+  initialTab?: Tab
 }
-
-type Tab = 'openrouter' | 'tavily' | 'defaults'
 
 export default function SettingsModal({
   open,
-  onClose
+  onClose,
+  initialTab
 }: SettingsModalProps): React.ReactElement | null {
-  const [tab, setTab] = useState<Tab>('openrouter')
+  const [tab, setTab] = useState<Tab>(initialTab ?? 'openrouter')
+
+  // Si `initialTab` change pendant que la modale est ouverte (ex: user
+  // clique "Configurer le wiki" depuis la sidebar alors que Settings était
+  // déjà ouvert sur OpenRouter), on switche sur le tab demandé sans avoir
+  // à fermer/rouvrir. Pattern render-reset pour éviter setState-in-effect.
+  const [lastInitialTab, setLastInitialTab] = useState(initialTab)
+  if (initialTab !== lastInitialTab) {
+    setLastInitialTab(initialTab)
+    if (initialTab) setTab(initialTab)
+  }
 
   // Échap = fermer. Ctrl+W aussi (reflexe app-desktop).
   useEffect(() => {
@@ -53,13 +67,18 @@ export default function SettingsModal({
       aria-modal="true"
       aria-labelledby="settings-modal-title"
     >
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} aria-hidden />
+      {/* Plein écran : pas de backdrop, pas de margin. La modale occupe
+          tout le viewport pour que les dropdowns internes (ModelSelector,
+          history) aient toute la place nécessaire. Ferme via la croix ou
+          Échap — le clic-dehors-pour-fermer n'a plus lieu d'être.
+          `onPointerDown stop` : empêche que les listeners globaux de tldraw
+          (canvas en dessous) captent des pointer events qui pourraient
+          interférer avec les handlers React de la modale. */}
       <div
-        className="relative m-auto flex h-[80vh] w-[min(1000px,90vw)] overflow-hidden rounded-[var(--radius-md)] border text-[var(--fg-primary)] shadow-2xl"
-        style={{
-          background: 'var(--bg-secondary)',
-          borderColor: 'var(--border)'
-        }}
+        className="flex h-full w-full overflow-hidden text-[var(--fg-primary)]"
+        style={{ background: 'var(--bg-secondary)' }}
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Sidebar onglets */}
@@ -67,22 +86,31 @@ export default function SettingsModal({
           className="flex w-56 shrink-0 flex-col border-r"
           style={{ borderColor: 'var(--border)', background: 'var(--bg-primary)' }}
         >
-          <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: 'var(--border)' }}>
+          <div className="flex items-center gap-2 border-b px-3 py-3" style={{ borderColor: 'var(--border)' }}>
+            {/* Bouton retour (remplace l'ancienne croix × qui ne réagissait
+                plus à cause des listeners globaux de tldraw). Placé en
+                TÊTE de rangée + stopPropagation explicite pour garantir
+                qu'il capte toujours le clic avant tout handler ancêtre. */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation()
+                onClose()
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+              className="flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--fg-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+              title="Retour (Échap)"
+              aria-label="Retour"
+            >
+              <span aria-hidden>←</span>
+              <span>Retour</span>
+            </button>
             <h2
               id="settings-modal-title"
-              className="text-[11px] font-semibold uppercase tracking-widest text-[var(--fg-muted)]"
+              className="flex-1 text-[11px] font-semibold uppercase tracking-widest text-[var(--fg-muted)]"
             >
               Paramètres
             </h2>
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-[var(--radius-sm)] px-1.5 py-0.5 text-[12px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
-              title="Fermer (Échap)"
-              aria-label="Fermer"
-            >
-              ×
-            </button>
           </div>
           <div className="flex flex-col gap-0.5 p-2">
             <TabButton active={tab === 'openrouter'} onClick={() => setTab('openrouter')}>
@@ -94,12 +122,15 @@ export default function SettingsModal({
             <TabButton active={tab === 'defaults'} onClick={() => setTab('defaults')}>
               Modèle par défaut
             </TabButton>
+            <TabButton active={tab === 'wiki'} onClick={() => setTab('wiki')}>
+              Wiki
+            </TabButton>
+            <TabButton active={tab === 'agents'} onClick={() => setTab('agents')}>
+              Agents
+            </TabButton>
             <div className="mt-3 border-t px-2 pt-3 text-[10px] uppercase tracking-widest text-[var(--fg-muted)]" style={{ borderColor: 'var(--border)' }}>
               À venir
             </div>
-            <TabButton active={false} onClick={() => {}} disabled>
-              Agents
-            </TabButton>
             <TabButton active={false} onClick={() => {}} disabled>
               Presets
             </TabButton>
@@ -117,6 +148,8 @@ export default function SettingsModal({
               remonte le DefaultsTab avec un état local frais, sans avoir
               besoin d'un useEffect + setState (bloqué par le lint). */}
           {tab === 'defaults' && <DefaultsTab />}
+          {tab === 'wiki' && <WikiSettingsTab />}
+          {tab === 'agents' && <AgentsSettingsTab />}
         </section>
       </div>
     </div>,

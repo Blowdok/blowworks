@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState, useEffect } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState, useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import type { AIModelT } from '@shared/ipc-contract.js'
 
 interface ModelSelectorProps {
@@ -21,7 +22,10 @@ export default function ModelSelector({
 }: ModelSelectorProps): React.ReactElement {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
+  const [dropdownPos, setDropdownPos] = useState<{ top: number; left: number } | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  const buttonRef = useRef<HTMLButtonElement | null>(null)
+  const dropdownRef = useRef<HTMLDivElement | null>(null)
 
   const current = models.find((m) => m.id === currentModelId)
   const label = current ? current.name : currentModelId
@@ -50,19 +54,56 @@ export default function ModelSelector({
     setQuery('')
   }
 
-  // Fermeture au clic extérieur. On stoppe la propagation vers tldraw
-  // sur tout le dropdown pour ne pas bubbler un pointerdown qui ferait
-  // perdre la sélection de la ChatShape courante.
+  // Fermeture au clic extérieur. Le dropdown étant porté vers document.body
+  // (cf. createPortal plus bas), le test doit couvrir button + dropdown
+  // séparément au lieu d'un simple `contains` sur un ancêtre commun.
   const rootRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     if (!open) return
     const onDocClick = (e: MouseEvent): void => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
-        closeDropdown()
-      }
+      const target = e.target as Node
+      if (rootRef.current?.contains(target)) return
+      if (dropdownRef.current?.contains(target)) return
+      closeDropdown()
     }
     document.addEventListener('pointerdown', onDocClick)
     return () => document.removeEventListener('pointerdown', onDocClick)
+  }, [open])
+
+  // Reset du dropdownPos à la fermeture : pattern render-reset pour
+  // éviter `react-hooks/set-state-in-effect` qui bloque setDropdownPos(null)
+  // dans l'effet ci-dessous.
+  const [lastOpen, setLastOpen] = useState(open)
+  if (lastOpen !== open) {
+    setLastOpen(open)
+    if (!open && dropdownPos !== null) setDropdownPos(null)
+  }
+
+  // Positionne le dropdown juste sous le bouton, aligné à droite. Recalculé
+  // à l'ouverture ET au scroll/resize de la fenêtre — important car le
+  // dropdown est portalisé (position fixe) et ne suit plus son ancêtre.
+  useLayoutEffect(() => {
+    if (!open) return
+    function updatePos(): void {
+      const btn = buttonRef.current
+      if (!btn) return
+      const r = btn.getBoundingClientRect()
+      const DROPDOWN_WIDTH = 360
+      // Aligne le bord GAUCHE du dropdown avec le bord gauche du bouton :
+      // le dropdown s'étend donc vers la droite (comportement formulaire
+      // standard). Clamp au viewport pour éviter que le bord droit ne
+      // sorte de l'écran si le bouton est à l'extrême droite.
+      const left = Math.max(8, Math.min(r.left, window.innerWidth - DROPDOWN_WIDTH - 8))
+      const top = r.bottom + 4
+      setDropdownPos({ top, left })
+    }
+    updatePos()
+    window.addEventListener('resize', updatePos)
+    window.addEventListener('scroll', updatePos, true)
+    return () => {
+      window.removeEventListener('resize', updatePos)
+      window.removeEventListener('scroll', updatePos, true)
+    }
   }, [open])
 
   return (
@@ -73,6 +114,7 @@ export default function ModelSelector({
       onPointerDown={(e) => e.stopPropagation()}
     >
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="flex items-center gap-1 rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--fg-secondary)] hover:bg-[var(--bg-tertiary)]"
@@ -81,14 +123,20 @@ export default function ModelSelector({
         <span className="max-w-[180px] truncate">{label}</span>
         <span className="text-[9px]">▾</span>
       </button>
-      {open && (
+      {open && dropdownPos && createPortal(
         <div
-          className="absolute right-0 top-7 z-20 flex w-[360px] flex-col overflow-hidden rounded-[var(--radius-md)] border shadow-2xl"
+          ref={dropdownRef}
+          className="flex w-[360px] flex-col overflow-hidden rounded-[var(--radius-md)] border shadow-2xl"
           style={{
+            position: 'fixed',
+            top: dropdownPos.top,
+            left: dropdownPos.left,
+            zIndex: 10000,
             background: 'var(--bg-secondary)',
             borderColor: 'var(--border)',
             maxHeight: '50vh'
           }}
+          onPointerDown={(e) => e.stopPropagation()}
         >
           <div className="flex items-center gap-2 border-b border-[var(--border)] p-2">
             <input
@@ -150,7 +198,8 @@ export default function ModelSelector({
               )
             })}
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

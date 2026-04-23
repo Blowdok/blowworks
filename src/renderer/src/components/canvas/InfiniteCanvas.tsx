@@ -236,7 +236,8 @@ export async function spawnChatShape(editor: Editor): Promise<void> {
       conversationId: id,
       model: defaults.model,
       webSearchEnabled: false,
-      thinkingEnabled: false
+      thinkingEnabled: false,
+      wikiContextEnabled: false
     }
   })
   editor.setSelectedShapes([id])

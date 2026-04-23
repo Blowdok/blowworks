@@ -120,6 +120,7 @@ const api = {
       model: string
       temperature?: number
       systemPrompt?: string | null
+      wikiContext?: string | null
       webSearchEnabled?: boolean
       maxTokens?: number
     }) => ipcRenderer.invoke(IPC_CHANNELS.ai.sendMessage, input),
@@ -151,6 +152,46 @@ const api = {
       ipcRenderer.on(IPC_CHANNELS.browser.openUrlEvent, listener)
       return () => ipcRenderer.off(IPC_CHANNELS.browser.openUrlEvent, listener)
     }
+  },
+  agents: {
+    list: () => ipcRenderer.invoke(IPC_CHANNELS.agents.list),
+    get: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.agents.get, { id }),
+    create: (input: {
+      name: string
+      description?: string
+      model: string
+      systemPrompt: string
+      enabled?: boolean
+    }) => ipcRenderer.invoke(IPC_CHANNELS.agents.create, input),
+    update: (input: {
+      id: string
+      name?: string
+      description?: string
+      model?: string
+      systemPrompt?: string
+      enabled?: boolean
+    }) => ipcRenderer.invoke(IPC_CHANNELS.agents.update, input),
+    delete: (id: string) => ipcRenderer.invoke(IPC_CHANNELS.agents.delete, { id }),
+    runSynthesizer: (conversationId: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.agents.runSynthesizer, { conversationId }),
+    runWikiBuilder: () => ipcRenderer.invoke(IPC_CHANNELS.agents.runWikiBuilder)
+  },
+  wiki: {
+    getFolder: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.getFolder),
+    chooseFolder: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.chooseFolder),
+    listRaw: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.listRaw),
+    listWiki: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.listWiki),
+    readRaw: (name: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.wiki.readRaw, { name }),
+    readWiki: (name: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.wiki.readWiki, { name }),
+    readMemoryTemplate: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.readMemoryTemplate),
+    writeRaw: (name: string, content: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.wiki.writeRaw, { name, content }),
+    writeWiki: (name: string, content: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.wiki.writeWiki, { name, content }),
+    openFolderInExplorer: () =>
+      ipcRenderer.invoke(IPC_CHANNELS.wiki.openFolderInExplorer)
   }
 }
 

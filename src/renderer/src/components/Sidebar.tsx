@@ -11,6 +11,8 @@ import {
 import ConfirmDialog from './ConfirmDialog.js'
 import GitHubAccount from './GitHubAccount.js'
 import SettingsModal from './SettingsModal.js'
+import MemorySidebarSection from './MemorySidebarSection.js'
+import GraphSidebarSection from './GraphSidebarSection.js'
 
 // Barre latérale gauche : liste des projets + création + glissement caméra
 // vers la zone déterministe de chaque projet. Chaque projet occupe sa
@@ -38,6 +40,9 @@ export default function Sidebar() {
     name: string
   } | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsInitialTab, setSettingsInitialTab] = useState<
+    'openrouter' | 'wiki' | undefined
+  >(undefined)
 
   // Compteurs d'iframes par projet, recalculés à chaque mutation du store
   // tldraw (création/suppression/assignation d'une shape portail). Sans
@@ -251,15 +256,36 @@ export default function Sidebar() {
         })}
       </ul>
 
-      <footer className="flex flex-col gap-2 border-t border-[var(--border)] px-3 py-2">
-        {/* Bouton Paramètres — placé AU-DESSUS du widget GitHub pour
-            rester à portée de main quand la sidebar est collapsed, sans
-            surcharger le Header. Adapte son layout au mode compact
-            (icône seule centrée) vs étendu (icône + libellé à gauche). */}
+      {/* Section Mémoire — séparée de la liste des projets par une
+          border-t nette (cohérent avec le header Projets qui a border-b).
+          Reste en dessous de la liste scrollable, avant le footer. */}
+      <section className="shrink-0 border-t border-[var(--border)] py-2">
+        <MemorySidebarSection
+          collapsed={collapsed}
+          onOpenWikiSettings={() => {
+            setSettingsInitialTab('wiki')
+            setSettingsOpen(true)
+          }}
+        />
+      </section>
+
+      {/* Section Graph — placeholder pour le futur graphe neuronal
+          construit à partir des wiki-links du wiki. Désactivée pour
+          l'instant. Séparée par border-t comme les autres sections. */}
+      <section className="shrink-0 border-t border-[var(--border)] py-2">
+        <GraphSidebarSection collapsed={collapsed} />
+      </section>
+
+      {/* Footer : Paramètres + avatar GitHub + version uniquement. Les
+          sections fonctionnelles (Projets, Mémoire) vivent au-dessus. */}
+      <footer className="flex shrink-0 flex-col gap-2 border-t border-[var(--border)] px-3 py-2">
         <button
           type="button"
-          onClick={() => setSettingsOpen(true)}
-          className={`flex items-center rounded-[var(--radius-sm)] py-1.5 text-sm text-[var(--fg-muted)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)] ${
+          onClick={() => {
+            setSettingsInitialTab(undefined)
+            setSettingsOpen(true)
+          }}
+          className={`flex w-full items-center rounded-[var(--radius-sm)] py-1.5 text-sm text-[var(--fg-muted)] transition-colors hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)] ${
             collapsed ? 'justify-center px-2' : 'gap-2 px-2'
           }`}
           title="Paramètres"
@@ -276,7 +302,11 @@ export default function Sidebar() {
         )}
       </footer>
 
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        initialTab={settingsInitialTab}
+      />
 
       <ConfirmDialog
         open={projectToDelete !== null}
