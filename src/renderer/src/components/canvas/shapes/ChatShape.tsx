@@ -3,6 +3,8 @@ import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
+  createShapePropsMigrationIds,
+  createShapePropsMigrationSequence,
   type TLBaseShape,
   type RecordProps
 } from 'tldraw'
@@ -10,13 +12,20 @@ import ChatPortalView from '../../chat/ChatPortalView.js'
 
 // Shape "Chat" : conversation IA (OpenRouter) persistée en SQLite, rendue
 // hors-tldraw via `ShapePortalManager` — exactement comme TerminalShape
-// et VSCodeShape. L'id de la shape == id de la conversation (ai_conversations.id),
-// ce qui supprime tout mapping à maintenir.
+// et VSCodeShape.
+//
+// `conversationId` décorrèle la shape de la conversation active : le bouton
+// "+ new" du header créera une nouvelle conversation et la plugguera sur la
+// même shape (pas de shape dupliquée sur le canvas). Si absent (ancienne
+// shape restaurée d'un snapshot), fallback au shape.id côté ChatPortalView.
 
 type ChatShapeProps = {
   w: number
   h: number
   projectId: string | null
+  // Id de la conversation affichée. Nullable pour rétrocompat avec les
+  // shapes créées avant le découplage (shape.id == conversationId jadis).
+  conversationId: string | null
   // Dénormalisé depuis la conversation pour affichage rapide sans attendre
   // le chargement SQLite. La source de vérité reste `ai_conversations`.
   model: string
@@ -34,22 +43,49 @@ declare module 'tldraw' {
   }
 }
 
+// Migrations de props — ajoutées quand la shape est chargée depuis un
+// snapshot tldraw antérieur à l'ajout d'une prop. Sans migration, l'hydrate
+// jette un ValidationError (`Expected string, got undefined`) et crashe le
+// canvas.
+const ChatVersions = createShapePropsMigrationIds('chat', {
+  AddConversationId: 1
+})
+
+const chatShapeMigrations = createShapePropsMigrationSequence({
+  sequence: [
+    {
+      id: ChatVersions.AddConversationId,
+      up: (props) => {
+        // Les anciennes shapes avaient shape.id === conversationId. On
+        // préserve ce couplage en bootstrapant sur null — ChatPortalView
+        // retombe sur shape.id via le fallback `?? shape.id`.
+        if ((props as { conversationId?: unknown }).conversationId === undefined) {
+          ;(props as { conversationId: string | null }).conversationId = null
+        }
+      }
+    }
+  ]
+})
+
 export class ChatShapeUtil extends BaseBoxShapeUtil<ChatShape> {
   static override type = 'chat' as const
   static override props: RecordProps<ChatShape> = {
     w: T.number,
     h: T.number,
     projectId: T.string.nullable(),
+    conversationId: T.string.nullable(),
     model: T.string,
     webSearchEnabled: T.boolean,
     thinkingEnabled: T.boolean
   }
+  static override migrations = chatShapeMigrations
 
   override getDefaultProps(): ChatShape['props'] {
     return {
       w: 560,
       h: 480,
       projectId: null,
+      conversationId: null,
       // Le défaut sera écrasé au spawn par `spawnChatShape` qui lit le
       // modèle par défaut de `useChatStore.defaults`. Valeur ici = fallback
       // si le user crée une shape manuellement via API tldraw.
@@ -116,6 +152,7 @@ export const ChatPortalContent = memo(
     prev.shape.props.w === next.shape.props.w &&
     prev.shape.props.h === next.shape.props.h &&
     prev.shape.props.projectId === next.shape.props.projectId &&
+    prev.shape.props.conversationId === next.shape.props.conversationId &&
     prev.shape.props.model === next.shape.props.model &&
     prev.shape.props.webSearchEnabled === next.shape.props.webSearchEnabled &&
     prev.shape.props.thinkingEnabled === next.shape.props.thinkingEnabled

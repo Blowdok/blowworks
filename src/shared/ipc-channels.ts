@@ -63,5 +63,22 @@ export const IPC_CHANNELS = {
     // nouvelle BrowserShape. Émis depuis `setWindowOpenHandler` et
     // `will-navigate` (voir `src/main/window.ts`).
     openUrlEvent: 'browser.openUrl'
+  },
+  wiki: {
+    // Mémoire long-terme partagée entre conversations IA (dossier FS
+    // choisi par l'utilisateur). Structure : raw/, wiki/, MEMORY.md.
+    // Tous les handlers vérifient `wiki.folderPath` en settings et
+    // échouent proprement (no-op silencieux ou erreur explicite) si
+    // pas configuré — onboarding paresseux dans l'onglet Wiki Settings.
+    getFolder: 'wiki.getFolder',
+    chooseFolder: 'wiki.chooseFolder',
+    listRaw: 'wiki.listRaw',
+    listWiki: 'wiki.listWiki',
+    readRaw: 'wiki.readRaw',
+    readWiki: 'wiki.readWiki',
+    readMemoryTemplate: 'wiki.readMemoryTemplate',
+    writeRaw: 'wiki.writeRaw',
+    writeWiki: 'wiki.writeWiki',
+    openFolderInExplorer: 'wiki.openFolderInExplorer'
   }
 } as const

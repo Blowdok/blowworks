@@ -1,6 +1,7 @@
 import { getDb } from './db.js'
 import type {
   AIConversationT,
+  AIConversationSummaryT,
   AIMessageT,
   AIRoleT,
   AICreateConversationInputT,
@@ -72,11 +73,26 @@ export function getConversation(id: string): AIConversationT | null {
   return row ? rowToConversation(row) : null
 }
 
-export function listConversations(): AIConversationT[] {
+// Liste toutes les conversations avec un COUNT(*) de messages agrégé — le
+// dropdown historique a besoin du volume par conv sans faire N requêtes.
+// LEFT JOIN pour que les conversations vides (0 message) soient incluses.
+export function listConversations(): AIConversationSummaryT[] {
   const rows = getDb()
-    .prepare('SELECT * FROM ai_conversations ORDER BY updated_at DESC')
-    .all() as ConversationRow[]
-  return rows.map(rowToConversation)
+    .prepare(
+      `SELECT c.*, COALESCE(m.cnt, 0) AS messages_count
+         FROM ai_conversations c
+         LEFT JOIN (
+           SELECT conversation_id, COUNT(*) AS cnt
+             FROM ai_messages
+            GROUP BY conversation_id
+         ) m ON m.conversation_id = c.id
+        ORDER BY c.updated_at DESC`
+    )
+    .all() as (ConversationRow & { messages_count: number })[]
+  return rows.map((row) => ({
+    ...rowToConversation(row),
+    messagesCount: row.messages_count
+  }))
 }
 
 // Mise à jour partielle : seuls les champs fournis sont touchés. `updated_at`

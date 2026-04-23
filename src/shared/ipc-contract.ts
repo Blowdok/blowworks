@@ -133,6 +133,14 @@ export const AIConversationSchema = z.object({
 })
 export type AIConversationT = z.infer<typeof AIConversationSchema>
 
+// Résumé de conversation retourné par `ai.listConversations`. Enrichi d'un
+// `messagesCount` pour que le dropdown historique puisse afficher le volume
+// sans avoir à charger chaque conversation individuellement.
+export const AIConversationSummarySchema = AIConversationSchema.extend({
+  messagesCount: z.number().int().nonnegative()
+})
+export type AIConversationSummaryT = z.infer<typeof AIConversationSummarySchema>
+
 // Entrée pour créer une conversation côté main (id généré par le renderer
 // depuis shape.id → 1:1 avec la ChatShape). `system` facultatif.
 export const AICreateConversationInput = z.object({
@@ -229,5 +237,50 @@ export const AIDefaultsSchema = z.object({
   maxTokens: z.number().int().positive().default(4096)
 })
 export type AIDefaultsT = z.infer<typeof AIDefaultsSchema>
+
+// ──────────────────────────────────────────────────────────── Wiki (mémoire FS)
+
+// Statut du dossier wiki : soit pas configuré du tout (`folderPath: null`),
+// soit configuré et initialisé (structure raw/ wiki/ MEMORY.md en place).
+// `initialized` peut être false si l'utilisateur a supprimé manuellement
+// le dossier — les handlers list/read/write retestent et peuvent re-init.
+export const WikiFolderStatusSchema = z.object({
+  folderPath: z.string().nullable(),
+  initialized: z.boolean(),
+  rawCount: z.number().int().nonnegative(),
+  wikiCount: z.number().int().nonnegative()
+})
+export type WikiFolderStatusT = z.infer<typeof WikiFolderStatusSchema>
+
+// Item listé dans raw/ ou wiki/. Pas le contenu, juste métadata pour UI.
+export const WikiEntrySchema = z.object({
+  name: z.string().min(1),
+  size: z.number().int().nonnegative(),
+  modifiedAt: z.number().int().nonnegative()
+})
+export type WikiEntryT = z.infer<typeof WikiEntrySchema>
+
+// Validation stricte du nom de fichier wiki : .md uniquement, pas de slash,
+// pas de `..`, caractère ASCII printable + accents + tiret + underscore.
+// Prévient toute tentative d'évasion hors du dossier configuré (path traversal).
+export const WikiFilenameSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .regex(
+    /^[\w\-À-ſ][\w\-À-ſ. ]*\.md$/u,
+    'Nom de fichier invalide : lettres/chiffres/espace/tiret, extension .md'
+  )
+
+export const WikiReadInput = z.object({
+  name: WikiFilenameSchema
+})
+export type WikiReadInputT = z.infer<typeof WikiReadInput>
+
+export const WikiWriteInput = z.object({
+  name: WikiFilenameSchema,
+  content: z.string().max(5_000_000) // 5 MiB de contenu max — largement suffisant pour du markdown
+})
+export type WikiWriteInputT = z.infer<typeof WikiWriteInput>
 
 // IPC_CHANNELS : voir `./ipc-channels.ts` (réexporté en haut du fichier).

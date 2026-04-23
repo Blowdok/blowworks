@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type {
   AIConversationT,
+  AIConversationSummaryT,
   AIMessageT,
   AIModelT,
   AIApiKeyStatusT,
@@ -40,12 +41,17 @@ interface ChatStore {
   models: AIModelT[]
   modelsLoading: boolean
   conversations: Map<string, ChatConversation>
+  // Index de TOUTES les conversations (métadata + messagesCount) alimenté
+  // par `ai.listConversations`. Utilisé par le dropdown historique — pas
+  // de chargement des messages tant que la conv n'est pas sélectionnée.
+  allConversations: Map<string, AIConversationSummaryT>
   activeStreams: Map<string, StreamState>
 
   hydrate: () => Promise<void>
   refreshApiKeyStatus: () => Promise<void>
   refreshModels: (forceRefresh?: boolean) => Promise<void>
   refreshDefaults: () => Promise<void>
+  refreshAllConversations: () => Promise<void>
 
   // Conversation lifecycle
   ensureConversation: (
@@ -62,6 +68,10 @@ interface ChatStore {
     projectId?: string | null
   }) => Promise<void>
   removeConversation: (id: string) => void
+  // Supprime une conversation par son id (sans toucher aux shapes). Utilisé
+  // par le dropdown historique quand l'utilisateur supprime une conv autre
+  // que celle actuellement active dans la shape.
+  deleteConversationById: (conversationId: string) => Promise<void>
 
   // Messages & streaming
   sendMessage: (
@@ -91,6 +101,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   models: [],
   modelsLoading: false,
   conversations: new Map(),
+  allConversations: new Map(),
   activeStreams: new Map(),
 
   hydrate: async () => {
@@ -104,10 +115,26 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     ])
     set({ apiKeyStatus: status, defaults, hydrated: true })
 
+    // Charge l'index complet des conversations (métadata seulement) pour
+    // alimenter le dropdown historique de chaque ChatShape. Pas bloquant —
+    // si la DB n'a encore aucune conv, la map reste vide.
+    void get().refreshAllConversations()
+
     // Lazy-load des modèles : n'appelle OpenRouter que si la clé existe,
     // pour éviter un 401 bruyant au boot d'une instance fraîche.
     if (status.openrouter) {
       void get().refreshModels()
+    }
+  },
+
+  refreshAllConversations: async () => {
+    try {
+      const list = (await window.blow.ai.listConversations()) as AIConversationSummaryT[]
+      const map = new Map<string, AIConversationSummaryT>()
+      for (const c of list) map.set(c.id, c)
+      set({ allConversations: map })
+    } catch (e) {
+      console.warn('[chat-store] échec listConversations', e)
     }
   },
 
@@ -147,7 +174,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (fetched) {
       const convs = new Map(get().conversations)
       convs.set(id, fetched)
-      set({ conversations: convs })
+      const allConvs = new Map(get().allConversations)
+      allConvs.set(id, {
+        ...fetched.conversation,
+        messagesCount: fetched.messages.length
+      })
+      set({ conversations: convs, allConversations: allConvs })
       return fetched.conversation
     }
 
@@ -161,7 +193,9 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     })) as AIConversationT
     const convs = new Map(get().conversations)
     convs.set(id, { conversation, messages: [] })
-    set({ conversations: convs })
+    const allConvs = new Map(get().allConversations)
+    allConvs.set(id, { ...conversation, messagesCount: 0 })
+    set({ conversations: convs, allConversations: allConvs })
     return conversation
   },
 
@@ -184,8 +218,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const current = convs.get(input.id)
     if (current) {
       convs.set(input.id, { ...current, conversation: updated })
-      set({ conversations: convs })
     }
+    const allConvs = new Map(get().allConversations)
+    const summary = allConvs.get(input.id)
+    if (summary) {
+      allConvs.set(input.id, { ...summary, ...updated })
+    }
+    set({ conversations: convs, allConversations: allConvs })
   },
 
   removeConversation: (id) => {
@@ -193,10 +232,30 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     convs.delete(id)
     const streams = new Map(get().activeStreams)
     streams.delete(id)
-    set({ conversations: convs, activeStreams: streams })
+    const allConvs = new Map(get().allConversations)
+    allConvs.delete(id)
+    set({ conversations: convs, activeStreams: streams, allConversations: allConvs })
     // Hard-delete côté DB : best-effort, si ça échoue l'utilisateur
     // ne voit rien (la ChatShape a déjà disparu du canvas).
     void window.blow.ai.deleteConversation(id).catch(() => {})
+  },
+
+  deleteConversationById: async (conversationId) => {
+    // Supprime côté DB et nettoie les caches locaux. Utilisé par le
+    // dropdown historique quand l'utilisateur vire une conv non active.
+    try {
+      await window.blow.ai.deleteConversation(conversationId)
+    } catch (e) {
+      console.warn('[chat-store] échec deleteConversation', e)
+      return
+    }
+    const convs = new Map(get().conversations)
+    convs.delete(conversationId)
+    const streams = new Map(get().activeStreams)
+    streams.delete(conversationId)
+    const allConvs = new Map(get().allConversations)
+    allConvs.delete(conversationId)
+    set({ conversations: convs, activeStreams: streams, allConversations: allConvs })
   },
 
   sendMessage: async (conversationId, content, opts) => {
@@ -296,7 +355,19 @@ function installChunkListener(
         if (fetched) convs.set(conversationId, fetched)
         const newStreams = new Map(useChatStore.getState().activeStreams)
         newStreams.delete(conversationId)
-        useChatStore.setState({ conversations: convs, activeStreams: newStreams })
+        // Met à jour l'index dropdown avec le nouveau count/updatedAt/title.
+        const allConvs = new Map(useChatStore.getState().allConversations)
+        if (fetched) {
+          allConvs.set(conversationId, {
+            ...fetched.conversation,
+            messagesCount: fetched.messages.length
+          })
+        }
+        useChatStore.setState({
+          conversations: convs,
+          activeStreams: newStreams,
+          allConversations: allConvs
+        })
       })().catch((e) => {
         console.warn('[chat-store] refetch conversation failed', e)
       })

@@ -230,6 +230,10 @@ export async function spawnChatShape(editor: Editor): Promise<void> {
       w: 560,
       h: 480,
       projectId: null,
+      // Bind explicite shape ⇄ conversation initiale. Le bouton « + new »
+      // du header fera muter cette prop pour plugger une autre conv sur la
+      // même shape (cf. ChatPortalView.handleNewConversation).
+      conversationId: id,
       model: defaults.model,
       webSearchEnabled: false,
       thinkingEnabled: false

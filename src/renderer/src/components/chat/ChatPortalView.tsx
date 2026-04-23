@@ -1,24 +1,34 @@
-import { useEffect, useState, useRef } from 'react'
-import { useEditor, createShapeId, type TLShapeId } from 'tldraw'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEditor } from 'tldraw'
+import { nanoid } from 'nanoid'
 import type { ChatShape } from '../canvas/shapes/ChatShape.js'
 import { useChatStore } from '../../stores/chat-store.js'
 import { useProjectStore } from '../../stores/project-store.js'
 import ChatMessageList from './ChatMessageList.js'
 import ChatInput from './ChatInput.js'
 import ModelSelector from './ModelSelector.js'
+import ConversationHistoryDropdown from './ConversationHistoryDropdown.js'
 import {
   useShapeBorderState,
   getShapeBorderStyle
 } from '../../lib/use-shape-border-state.js'
 
 // Vue complète du portail d'une ChatShape :
-//   ┌ header : titre + sélecteur modèle + projet + boutons "+ Nouveau", "⋯"
+//   ┌ header : titre + modèle + projet + ⏱ historique + « + new »
 //   ├ historique scrollable (ChatMessageList + streaming bubble)
 //   └ zone de saisie (ChatInput)
 //
 // Le composant est monté dans le portail HORS tldraw (cf. ShapePortalManager)
 // et hérite de `pointer-events: none` sur le conteneur root — on réactive
 // explicitement sur chaque élément interactif (pattern TerminalShape).
+//
+// Découplage shape ⇄ conversation :
+// La conversation active est `shape.props.conversationId`. Le bouton « + new »
+// crée une NOUVELLE conversation et la plugge sur la MÊME shape (pas de shape
+// dupliquée). Le bouton ⏱ ouvre la liste de toutes les conversations DB pour
+// permettre de switcher. Si `conversationId` est `null` (ancienne shape
+// restaurée d'un snapshot antérieur au découplage), on tombe sur `shape.id`
+// en rétrocompat — les deux valeurs coïncidaient pour les premières shapes.
 
 interface ChatPortalViewProps {
   shape: ChatShape
@@ -28,8 +38,17 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
   const editor = useEditor()
   const projects = useProjectStore((s) => s.projects)
 
-  const conversation = useChatStore((s) => s.conversations.get(shape.id))
-  const activeStream = useChatStore((s) => s.activeStreams.get(shape.id))
+  // Résout l'id de conversation actif. Si les props ne le portent pas encore
+  // (shape héritée d'avant le découplage), on retombe sur shape.id comme
+  // avant — les anciens couples (shape, conv) avaient exactement ce id.
+  const convId = useMemo(
+    () => shape.props.conversationId ?? shape.id,
+    [shape.props.conversationId, shape.id]
+  )
+
+  const conversation = useChatStore((s) => s.conversations.get(convId))
+  const activeStream = useChatStore((s) => s.activeStreams.get(convId))
+  const allConversations = useChatStore((s) => s.allConversations)
   const models = useChatStore((s) => s.models)
   const modelsLoading = useChatStore((s) => s.modelsLoading)
   const apiKeyStatus = useChatStore((s) => s.apiKeyStatus)
@@ -38,28 +57,32 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
   const sendMessage = useChatStore((s) => s.sendMessage)
   const cancelStream = useChatStore((s) => s.cancelStream)
   const ensureConversation = useChatStore((s) => s.ensureConversation)
+  const loadConversation = useChatStore((s) => s.loadConversation)
   const updateStoreConversation = useChatStore((s) => s.updateConversation)
+  const refreshAllConversations = useChatStore((s) => s.refreshAllConversations)
+  const deleteConversationById = useChatStore((s) => s.deleteConversationById)
   const refreshModels = useChatStore((s) => s.refreshModels)
 
   const [draft, setDraft] = useState('')
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false)
+  const [historyDropdownOpen, setHistoryDropdownOpen] = useState(false)
 
   const assignedProject = projects.find((p) => p.id === shape.props.projectId) ?? null
   const hasKey = apiKeyStatus.openrouter
   const isStreaming = activeStream !== undefined
 
-  // Charge la conversation au mount. Si elle n'existe pas côté DB (cas
-  // rare : restauration d'un snapshot tldraw dont la DB a été vidée),
-  // on la recrée à partir des props de la shape.
-  const hydratedRef = useRef(false)
+  // Hydratation paresseuse : un flag par convId dans un ref (Map) — pour que
+  // switcher la shape vers une conversation déjà vue ne retente pas un
+  // create, mais load aussi la nouvelle quand on vient d'y switcher.
+  const hydratedMapRef = useRef<Set<string>>(new Set())
   useEffect(() => {
-    if (hydratedRef.current) return
-    hydratedRef.current = true
-    void ensureConversation(shape.id, {
+    if (hydratedMapRef.current.has(convId)) return
+    hydratedMapRef.current.add(convId)
+    void ensureConversation(convId, {
       model: shape.props.model,
       projectId: shape.props.projectId
     })
-  }, [shape.id, shape.props.model, shape.props.projectId, ensureConversation])
+  }, [convId, shape.props.model, shape.props.projectId, ensureConversation])
 
   // Si le user n'a pas encore chargé la liste des modèles (clé API
   // ajoutée après le boot), on la récupère dès qu'elle devient dispo.
@@ -75,7 +98,7 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       type: 'chat',
       props: { projectId }
     })
-    void updateStoreConversation({ id: shape.id, projectId })
+    void updateStoreConversation({ id: convId, projectId })
     setProjectDropdownOpen(false)
   }
 
@@ -85,7 +108,7 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       type: 'chat',
       props: { model: modelId }
     })
-    void updateStoreConversation({ id: shape.id, model: modelId })
+    void updateStoreConversation({ id: convId, model: modelId })
   }
 
   function toggleWebSearch(): void {
@@ -108,7 +131,7 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     const content = draft.trim()
     if (!content || isStreaming || !hasKey) return
     setDraft('')
-    void sendMessage(shape.id, content, {
+    void sendMessage(convId, content, {
       model: shape.props.model,
       temperature: defaults.temperature,
       webSearchEnabled: shape.props.webSearchEnabled && apiKeyStatus.tavily,
@@ -117,13 +140,14 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
   }
 
   function handleCancel(): void {
-    void cancelStream(shape.id)
+    void cancelStream(convId)
   }
 
-  // "Nouveau" : spawn une nouvelle ChatShape décalée de 32px en bas-droite
-  // de la shape courante (évite superposition). Hérite du modèle courant.
+  // Bouton « + new » : crée une nouvelle conversation SQLite et plugge son id
+  // sur la shape courante — pas de nouvelle shape spawnée. L'utilisateur
+  // récupère sa conv précédente via le dropdown historique ⏱.
   async function handleNewConversation(): Promise<void> {
-    const newId = createShapeId()
+    const newId = nanoid()
     try {
       await window.blow.ai.createConversation({
         id: newId,
@@ -135,21 +159,52 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       console.error('[chat] échec création nouvelle conversation', e)
       return
     }
-    editor.createShape<ChatShape>({
-      id: newId as TLShapeId,
+    editor.updateShape<ChatShape>({
+      id: shape.id,
       type: 'chat',
-      x: shape.x + shape.props.w + 48,
-      y: shape.y,
-      props: {
-        w: shape.props.w,
-        h: shape.props.h,
-        projectId: shape.props.projectId,
-        model: shape.props.model,
-        webSearchEnabled: shape.props.webSearchEnabled,
-        thinkingEnabled: shape.props.thinkingEnabled
-      }
+      props: { conversationId: newId }
     })
-    editor.setSelectedShapes([newId as TLShapeId])
+    void refreshAllConversations()
+  }
+
+  // Dropdown historique : switch la shape vers une conv existante. On charge
+  // ses messages si pas déjà cachés, puis on update les props — le hook
+  // hydratedMapRef évitera un double create côté ensureConversation.
+  async function handleSelectConversation(targetId: string): Promise<void> {
+    if (targetId === convId) {
+      setHistoryDropdownOpen(false)
+      return
+    }
+    await loadConversation(targetId)
+    hydratedMapRef.current.add(targetId)
+    editor.updateShape<ChatShape>({
+      id: shape.id,
+      type: 'chat',
+      props: { conversationId: targetId }
+    })
+    setHistoryDropdownOpen(false)
+  }
+
+  // Suppression d'une conv depuis le dropdown. Si c'est la conv active, on
+  // fallback sur une conv voisine ou on recrée une conv vide pour que la
+  // shape n'ait jamais un pointeur cassé.
+  async function handleDeleteConversation(targetId: string): Promise<void> {
+    const wasActive = targetId === convId
+    await deleteConversationById(targetId)
+    if (!wasActive) return
+
+    // Cherche une autre conv à afficher (la plus récente restante).
+    const remaining = Array.from(allConversations.values())
+      .filter((c) => c.id !== targetId)
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+
+    if (remaining.length > 0) {
+      await handleSelectConversation(remaining[0].id)
+      return
+    }
+
+    // Plus rien en DB : on recrée une conv vierge pour cette shape.
+    await handleNewConversation()
   }
 
   const disabledReason = !apiKeyStatus.encryptionAvailable
@@ -160,12 +215,6 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
 
   const title = conversation?.conversation.title || 'Nouvelle conversation'
   const messages = conversation?.messages ?? []
-
-  // Citations : affichées dans la StreamingBubble pendant le stream (cf.
-  // ChatMessageList). Elles ne sont pas persistées en DB au lot 1 (viendra
-  // au lot 3) — donc dès que la conv est rechargée depuis la DB (au `done`),
-  // elles disparaissent. Comportement acceptable : l'utilisateur a vu les
-  // sources pendant le live.
 
   // Surface unifiée Chat ⇄ canvas tldraw : #101011 partout (wrapper, header,
   // zone de saisie) → couture visuelle éliminée. La bordure du wrapper est
@@ -193,8 +242,7 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     >
       {/* Header 28px — pattern TerminalShape : boutons interactifs en
           pointer-events auto, tout le reste laisse tldraw recevoir le
-          pointerdown pour drag. Aucune bordure basse visible : on reste
-          dans la teinte unifiée #101011. */}
+          pointerdown pour drag. */}
       <div
         data-shape-header
         className="relative flex h-7 shrink-0 items-center justify-between gap-2 px-2 text-[11px]"
@@ -272,11 +320,21 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
             )}
           </div>
 
+          <ConversationHistoryDropdown
+            open={historyDropdownOpen}
+            onToggle={() => setHistoryDropdownOpen((v) => !v)}
+            onClose={() => setHistoryDropdownOpen(false)}
+            currentConversationId={convId}
+            conversations={allConversations}
+            onSelect={(id) => void handleSelectConversation(id)}
+            onDelete={(id) => void handleDeleteConversation(id)}
+          />
+
           <button
             type="button"
             onClick={() => void handleNewConversation()}
             className="rounded-[var(--radius-sm)] border border-[var(--border)] px-1.5 py-0.5 text-[10px] text-[var(--fg-muted)] hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)]"
-            title="Nouvelle conversation (dupliquer la config courante)"
+            title="Nouvelle conversation dans cette shape"
           >
             + new
           </button>
