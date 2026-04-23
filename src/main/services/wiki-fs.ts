@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { shell } from 'electron'
 import { getDb } from './db.js'
@@ -37,6 +38,12 @@ const SCHEMA_FILENAME = 'SCHEMA.md'
 const LEGACY_SCHEMA_FILENAME = 'MEMORY.md' // migration auto au 1er boot v2
 const INDEX_FILENAME = 'index.md' // vit DANS wiki/
 const LOG_FILENAME = 'log.md' // vit à la racine du wikiFolder
+// Fichier d'état de la compilation incrémentale (pattern claude-memory-
+// compiler `state.json`). Mappe `<raw-name> → { hash, compiledAt }` pour
+// que le Wiki Builder saute les raw dont le contenu n'a pas changé
+// depuis la dernière compilation. Prefix `.` = masqué par convention
+// Unix, mais reste visible dans l'explorateur Windows — acceptable.
+const COMPILE_STATE_FILENAME = '.compile-state.json'
 
 // Template bootstrap du SCHEMA.md — généré à l'init si absent. Édité par
 // l'utilisateur ensuite (jamais écrasé par la suite). Injecté IN EXTENSO
@@ -322,8 +329,19 @@ async function listMarkdownFiles(dir: string): Promise<WikiEntryT[]> {
       const relChild = rel ? `${rel}/${name}` : name
       let stat
       try {
-        stat = await fs.stat(absChild)
+        // `lstat` au lieu de `stat` : n'suit PAS les symlinks. Essentiel
+        // pour éviter une boucle infinie si l'utilisateur a un lien
+        // circulaire dans son dossier wiki (ex: `wiki/foo -> ../wiki/`).
+        // Les symlinks eux-mêmes sont skippés — on ne walk que les vrais
+        // dossiers et on ne liste que les vrais fichiers .md.
+        stat = await fs.lstat(absChild)
       } catch {
+        continue
+      }
+      if (stat.isSymbolicLink()) {
+        // Skip silencieux : on ne traverse pas les liens pour rester
+        // prévisible et éviter les surprises (lien vers fichier externe
+        // = même risque de hang + accès hors sandbox).
         continue
       }
       if (stat.isDirectory()) {
@@ -490,6 +508,60 @@ export async function deleteWiki(name: string): Promise<void> {
 export async function openFolderInExplorer(): Promise<string> {
   const folder = ensureConfigured()
   return shell.openPath(folder)
+}
+
+// ──────────────────────────────────────────────────────────── Compile state (Sprint 4)
+
+export interface CompileStateEntry {
+  hash: string
+  compiledAt: number
+}
+
+export interface CompileState {
+  version: number
+  ingested: Record<string, CompileStateEntry>
+}
+
+const EMPTY_COMPILE_STATE: CompileState = { version: 1, ingested: {} }
+
+// Hash SHA-256 d'un fichier raw — normalisé sur son contenu UTF-8.
+// Utilisé pour détecter si un raw a changé depuis sa dernière
+// compilation : même contenu → même hash → skip l'envoi au LLM.
+export function computeRawHash(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex')
+}
+
+// Lit l'état de compilation du wiki depuis `.compile-state.json`.
+// Retourne un état vide si le fichier est absent ou corrompu (la
+// prochaine compilation recréera l'état complet — no harm).
+export async function readCompileState(): Promise<CompileState> {
+  const folder = getConfiguredFolder()
+  if (!folder) return { ...EMPTY_COMPILE_STATE }
+  try {
+    const text = await fs.readFile(path.join(folder, COMPILE_STATE_FILENAME), 'utf8')
+    const parsed = JSON.parse(text) as Partial<CompileState>
+    if (parsed && typeof parsed === 'object' && parsed.ingested && typeof parsed.ingested === 'object') {
+      return {
+        version: typeof parsed.version === 'number' ? parsed.version : 1,
+        ingested: parsed.ingested as Record<string, CompileStateEntry>
+      }
+    }
+  } catch {
+    // Fichier absent ou corrompu : on repart d'un état vide.
+  }
+  return { ...EMPTY_COMPILE_STATE }
+}
+
+// Écrit l'état de compilation. Le Wiki Builder appelle ça après chaque
+// batch réussi pour marquer les raw comme "déjà compilés". Atomique
+// via writeFile (better-sqlite3 equivalent : le FS NTFS/ext4 garantit
+// que writeFile est atomique jusqu'à la taille d'un bloc de secteur,
+// >64 KB est découpé mais une corruption partielle sera détectée par
+// `readCompileState` qui tombe sur un JSON invalide → état vide).
+export async function writeCompileState(state: CompileState): Promise<void> {
+  const folder = ensureConfigured()
+  const text = JSON.stringify(state, null, 2)
+  await fs.writeFile(path.join(folder, COMPILE_STATE_FILENAME), text, 'utf8')
 }
 
 // Ouvre directement le sous-dossier `raw/` dans l'explorateur — utile

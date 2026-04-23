@@ -145,6 +145,16 @@ export default function WikiPageViewer(): React.ReactElement | null {
                   href={href}
                   onClick={(e) => {
                     e.preventDefault()
+                    // Garde dirty : si le draft contient des modifs non
+                    // sauvegardées, on demande confirmation AVANT de
+                    // naviguer. Sans ce guard, le render-reset écrase
+                    // silencieusement le draft au changement de pageName.
+                    if (dirty) {
+                      const ok = window.confirm(
+                        `Modifications non sauvegardées sur "${pageName}". Quitter sans enregistrer ?`
+                      )
+                      if (!ok) return
+                    }
                     openWikiPage(target)
                   }}
                   style={{ color: 'var(--fg-secondary)', cursor: 'pointer' }}

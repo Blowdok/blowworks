@@ -1,3 +1,5 @@
+import { useState } from 'react'
+import type { LintReportT } from '@shared/ipc-contract.js'
 import { useWikiStore } from '../stores/wiki-store.js'
 
 // Section « Mémoire » de la Sidebar de l'app — permet de reconstruire le
@@ -25,8 +27,36 @@ export default function MemorySidebarSection({
   const setSidebarMode = useWikiStore((s) => s.setSidebarMode)
   const refreshStatus = useWikiStore((s) => s.refresh)
 
+  const [linting, setLinting] = useState(false)
+  const [lintResult, setLintResult] = useState<
+    { kind: 'ok' | 'issues' | 'error'; message: string } | null
+  >(null)
+
   async function handleBuild(): Promise<void> {
     await runWikiBuilder()
+  }
+
+  async function handleLint(): Promise<void> {
+    setLinting(true)
+    setLintResult(null)
+    try {
+      const report = (await window.blow.agents.runLint()) as LintReportT
+      const highCount = report.issues.filter((i) => i.severity === 'high').length
+      setLintResult({
+        kind: report.issues.length === 0 ? 'ok' : 'issues',
+        message:
+          report.issues.length === 0
+            ? report.summary
+            : `${report.issues.length} issue${report.issues.length > 1 ? 's' : ''} (${highCount} critique${highCount > 1 ? 's' : ''}) → audit/`
+      })
+      setTimeout(() => setLintResult(null), 8000)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setLintResult({ kind: 'error', message: msg })
+      setTimeout(() => setLintResult(null), 8000)
+    } finally {
+      setLinting(false)
+    }
   }
 
   async function handleImportToRaw(): Promise<void> {
@@ -146,6 +176,31 @@ export default function MemorySidebarSection({
           >
             📂 Importer dans raw
           </button>
+          <button
+            type="button"
+            onClick={() => void handleLint()}
+            disabled={linting || building || status.wikiCount === 0}
+            className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--fg-muted)] hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)] disabled:cursor-not-allowed disabled:opacity-40"
+            title="Audit du wiki (orphelins, liens brisés, contradictions). Rapport écrit dans audit/."
+          >
+            {linting ? '⏳ Lint…' : '🩺 Health check'}
+          </button>
+          {lintResult && (
+            <div
+              className="text-[9px]"
+              style={{
+                color:
+                  lintResult.kind === 'error'
+                    ? '#f87171'
+                    : lintResult.kind === 'issues'
+                      ? '#f59e0b'
+                      : 'var(--fg-secondary)'
+              }}
+            >
+              {lintResult.kind === 'ok' ? '✓ ' : lintResult.kind === 'error' ? '✗ ' : '⚠ '}
+              {lintResult.message}
+            </div>
+          )}
           {building && (
             <div className="text-[9px] text-[var(--fg-muted)]">
               Le modèle traite {status.rawCount} synthèse{status.rawCount > 1 ? 's' : ''} — peut durer plusieurs minutes. Timeout à 5 min.

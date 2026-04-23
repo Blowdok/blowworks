@@ -288,6 +288,19 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   },
 
   sendMessage: async (conversationId, content, opts) => {
+    // Garde re-entrancy : un stream tourne déjà pour cette conversation.
+    // Sans ce guard, un 2e appel pendant le 1er écraserait l'entrée
+    // activeStreams → le renderer perd la trace du 1er (qui continue
+    // pourtant côté main, d'où double facturation API). Le bouton Send
+    // est déjà disabled côté ChatInput pendant isStreaming, mais ce
+    // guard protège contre les appels programmatiques (raccourcis
+    // clavier, tests, futurs handlers automatiques).
+    if (get().activeStreams.has(conversationId)) {
+      console.warn(
+        `[chat-store] sendMessage ignoré : stream déjà actif pour ${conversationId}`
+      )
+      return
+    }
     // Optimistic append du message user côté renderer AVANT l'IPC :
     // le textarea est déjà vide, l'utilisateur doit voir sa ligne dans
     // l'historique immédiatement. Le main va commit la même chose —

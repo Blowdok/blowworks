@@ -284,7 +284,7 @@ export type AIDefaultsT = z.infer<typeof AIDefaultsSchema>
 // Un agent = une unité d'exécution one-shot (vs ChatShape = interaction
 // multi-tours). `kind` distingue les 2 agents système ('synthesizer',
 // 'wiki_builder') des agents libres ('custom') que l'utilisateur créera.
-export const AgentKindSchema = z.enum(['synthesizer', 'wiki_builder', 'custom'])
+export const AgentKindSchema = z.enum(['synthesizer', 'wiki_builder', 'lint', 'custom'])
 export type AgentKindT = z.infer<typeof AgentKindSchema>
 
 // Bornes max tokens : 128 min (quelque chose de significatif), 200k max
@@ -377,6 +377,32 @@ export const AgentWikiBuilderResultSchema = z.object({
   operations: z.array(AgentWikiBuilderOperationSchema)
 })
 export type AgentWikiBuilderResultT = z.infer<typeof AgentWikiBuilderResultSchema>
+
+// Résultat du lint (Sprint 4) — utilisé par le bouton Health check.
+export const LintIssueSchema = z.object({
+  kind: z.enum([
+    'orphan',
+    'broken-ref',
+    'ghost-concept',
+    'stale',
+    'sparse',
+    'orphan-source',
+    'contradiction',
+    'inconsistency'
+  ]),
+  severity: z.enum(['low', 'medium', 'high']),
+  pages: z.array(z.string()),
+  description: z.string()
+})
+export type LintIssueT = z.infer<typeof LintIssueSchema>
+
+export const LintReportSchema = z.object({
+  runAt: z.number().int().nonnegative(),
+  scanned: z.number().int().nonnegative(),
+  issues: z.array(LintIssueSchema),
+  summary: z.string()
+})
+export type LintReportT = z.infer<typeof LintReportSchema>
 
 // ──────────────────────────────────────────────────────────── Wiki (mémoire FS)
 

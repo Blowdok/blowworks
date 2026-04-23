@@ -3,6 +3,7 @@ import { getDb } from './db.js'
 import { listMessages, getConversation } from './ai-conversations.js'
 import { oneShotChat } from './openrouter.js'
 import * as wiki from './wiki-fs.js'
+import { runWikiLint, type LintReport } from './wiki-lint.js'
 import type {
   AgentT,
   AgentKindT,
@@ -119,7 +120,8 @@ export function updateAgent(input: AgentUpdateInputT): AgentT | null {
     .prepare(
       `UPDATE agents
          SET name = ?, description = ?, model = ?, system_prompt = ?,
-             temperature = ?, max_tokens = ?, enabled = ?, updated_at = ?
+             temperature = ?, max_tokens = ?, enabled = ?,
+             customized = 1, updated_at = ?
        WHERE id = ?`
     )
     .run(
@@ -263,31 +265,75 @@ export async function runWikiBuilder(): Promise<AgentWikiBuilderResultT> {
     )
   }
 
-  const rawEntries = await wiki.listRaw()
-  if (rawEntries.length === 0) {
+  const allRawEntries = await wiki.listRaw()
+  if (allRawEntries.length === 0) {
     throw new Error('Aucune synthèse raw/ à traiter. Lancez le Synthétiseur d’abord.')
   }
 
-  // Chunking : si on a plus de RAW_PER_BATCH raw, on traite par lots
-  // séquentiels. Évite que le modèle dépasse maxTokens en essayant de
-  // tout produire d'un coup. Entre chaque batch on refetch index +
-  // articles existants pour que le contexte soit à jour (les pages
-  // créées au batch N apparaissent au batch N+1 → évite les doublons).
+  // Incremental build (Sprint 4) : on lit l'état de compilation et on
+  // filtre les raw dont le hash SHA-256 est identique à la dernière
+  // compilation. Divise les coûts API par 3-5 sur un gros wiki où
+  // seul 1-2 fichier(s) ont changé depuis la dernière run. L'utilisateur
+  // peut forcer une recompile complète en supprimant .compile-state.json.
+  const state = await wiki.readCompileState()
+  const rawWithHashes = await Promise.all(
+    allRawEntries.map(async (entry) => {
+      const content = await wiki.readRaw(entry.name)
+      const hash = wiki.computeRawHash(content)
+      return { entry, content, hash }
+    })
+  )
+  const rawToCompile = rawWithHashes.filter(
+    ({ entry, hash }) => state.ingested[entry.name]?.hash !== hash
+  )
+
+  if (rawToCompile.length === 0) {
+    console.log('[wiki-builder] incremental : tous les raw ont déjà leur hash dans state, rien à faire')
+    await wiki.appendLog(
+      `## [${new Date().toISOString()}] wiki-build | no-op (${allRawEntries.length} raw inchangés)\n`
+    )
+    return { operations: [] }
+  }
+  console.log(
+    `[wiki-builder] incremental : ${rawToCompile.length}/${allRawEntries.length} raw à compiler`
+  )
+
+  // Chunking : si on a plus de RAW_PER_BATCH raw (APRÈS filtrage
+  // incremental), on traite par lots séquentiels. Évite que le modèle
+  // dépasse maxTokens en essayant de tout produire d'un coup. Entre
+  // chaque batch on refetch index + articles existants pour que le
+  // contexte soit à jour (les pages créées au batch N apparaissent au
+  // batch N+1 → évite les doublons).
   const RAW_PER_BATCH = 3
-  const batches: Array<typeof rawEntries> = []
-  for (let i = 0; i < rawEntries.length; i += RAW_PER_BATCH) {
-    batches.push(rawEntries.slice(i, i + RAW_PER_BATCH))
+  const batches: Array<typeof rawToCompile> = []
+  for (let i = 0; i < rawToCompile.length; i += RAW_PER_BATCH) {
+    batches.push(rawToCompile.slice(i, i + RAW_PER_BATCH))
   }
 
   console.log(
-    `[wiki-builder] ${rawEntries.length} raw → ${batches.length} batch(s) de ${RAW_PER_BATCH} max`
+    `[wiki-builder] ${rawToCompile.length} raw → ${batches.length} batch(s) de ${RAW_PER_BATCH} max`
   )
 
   const allApplied: AgentWikiBuilderOperationT[] = []
+  const now = Date.now()
   for (const [i, batch] of batches.entries()) {
-    console.log(`[wiki-builder] batch ${i + 1}/${batches.length} : ${batch.map((e) => e.name).join(', ')}`)
-    const applied = await runWikiBuilderBatch(agent, batch)
+    console.log(`[wiki-builder] batch ${i + 1}/${batches.length} : ${batch.map((b) => b.entry.name).join(', ')}`)
+    const applied = await runWikiBuilderBatch(
+      agent,
+      batch.map((b) => b.entry)
+    )
     allApplied.push(...applied)
+    // Mise à jour de l'état incremental APRÈS succès du batch.
+    // En cas d'erreur partielle sur un batch, les batches précédents
+    // restent marqués compilés — pas de double travail au retry.
+    for (const { entry, hash } of batch) {
+      state.ingested[entry.name] = { hash, compiledAt: now }
+    }
+    try {
+      await wiki.writeCompileState(state)
+    } catch (e) {
+      console.warn('[wiki-builder] writeCompileState échoué :', e)
+    }
   }
 
   return { operations: allApplied }
@@ -619,6 +665,17 @@ function extractJsonObject(s: string): string | null {
     }
   }
   return null
+}
+
+// ──────────────────────────────────────────────────────────── Lint (Sprint 4)
+
+// Exécute l'agent Lint. Passe l'agent (pour model/temperature/maxTokens
+// du check contradictions) à `runWikiLint`, qui tolère `null` si l'agent
+// n'existe pas ou est désactivé (auquel cas seuls les 6 checks
+// déterministes tournent — gratuits, utiles même sans LLM).
+export async function runLint(): Promise<LintReport> {
+  const agent = getAgentByKind('lint')
+  return runWikiLint(agent && agent.enabled ? agent : null)
 }
 
 // ──────────────────────────────────────────────────────────── File-back (Sprint 3)

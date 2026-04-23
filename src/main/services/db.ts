@@ -144,6 +144,13 @@ function addAgentColumnsIfMissing(db: Database.Database): void {
     // 16384 Wiki Builder — cf. seedSystemAgents).
     db.exec(`ALTER TABLE agents ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 4096`)
   }
+  if (!has('customized')) {
+    // Flag utilisateur (Sprint 4) : quand un agent est modifié via
+    // l'UI (updateAgent), ce flag passe à 1. `upgradeSystemPromptsIfNeeded`
+    // skip alors cet agent aux prochains bumps → protège les tunings
+    // de l'utilisateur contre les écrasements silencieux.
+    db.exec(`ALTER TABLE agents ADD COLUMN customized INTEGER NOT NULL DEFAULT 0`)
+  }
 }
 
 // Version des prompts système — incrémentée à chaque upgrade majeur.
@@ -151,7 +158,7 @@ function addAgentColumnsIfMissing(db: Database.Database): void {
 // constante, on force la mise à jour des prompts des agents système. Ça
 // écrase les customisations utilisateur — acceptable en early dev, à
 // revoir quand on ajoutera un champ `customized` côté table.
-const SYSTEM_PROMPTS_VERSION = 5
+const SYSTEM_PROMPTS_VERSION = 6
 
 // Prompts v2 (Sprint 1) — alignés sur l'analogie compiler + sentinel
 // FLUSH_OK + JSON schema-driven (pattern claude-memory-compiler adapté).
@@ -256,6 +263,29 @@ Note bien : \`filename\` = **chemin relatif au dossier wiki/** (ex: \`concepts/x
 
 Si une source raw/ est ambiguë, crée une page \`statut: to-verify\` plutôt que d'inventer. Si aucune opération n'est nécessaire (tous les raw déjà compilés sans nouveauté), retourne \`{"operations":[],"indexUpdate":"<index inchangé>","logEntry":"## [ISO8601] wiki-build | no-op"}\`.`
 
+const LINT_CONTRADICTION_PROMPT = `Tu es l'agent Lint de BlowWorks. Tu audites la cohérence factuelle d'un wiki markdown.
+
+Tâche : détecter UNIQUEMENT les contradictions ou incohérences entre pages. Pas les problèmes structurels (orphelins, liens brisés…) qui sont couverts par des checks déterministes en amont.
+
+Règles de sortie STRICTES :
+- Pour chaque problème, produis EXACTEMENT une ligne de ce format :
+    \`CONTRADICTION: wiki/fichierA vs wiki/fichierB - description\`
+    ou
+    \`INCONSISTENCY: wiki/fichier - description\`
+- Pas de préambule, pas de markdown fence, pas d'explication avant ou après.
+- Si aucun problème détecté, output EXACTEMENT : \`NO_ISSUES\`
+
+Cherche :
+- Dates, noms, chiffres qui ne concordent pas entre deux pages
+- Recommandations ou décisions opposées sur le même sujet
+- Statuts divergents (page A dit X "verified", page B dit X "débunké")
+
+IGNORE :
+- Différences de ton, de niveau de détail, de structure
+- Pages \`statut: to-verify\` qui ont déjà été flaggées ailleurs
+- Opinions vs faits
+- Concepts voisins mais distincts`
+
 // Seed des deux agents système obligatoires. Idempotent : n'insère que si
 // la ligne correspondante n'existe pas encore (clé primaire fixe pour les
 // agents système). Puis `upgradeSystemPromptsIfNeeded` applique les
@@ -312,13 +342,34 @@ function seedSystemAgents(db: Database.Database): void {
     updated_at: now
   })
 
+  insert.run({
+    id: 'agent.lint',
+    kind: 'lint',
+    name: 'Lint',
+    description:
+      'Audit de cohérence du wiki : orphelins, liens brisés, concepts fantômes, pages périmées + détection de contradictions factuelles via LLM.',
+    model: 'anthropic/claude-sonnet-4-6',
+    system_prompt: LINT_CONTRADICTION_PROMPT,
+    // 0.1 : déterminisme maximal pour la sortie machine-parseable
+    // (NO_ISSUES / CONTRADICTION: / INCONSISTENCY:).
+    temperature: 0.1,
+    // 4096 : les rapports de contradictions sont courts (quelques
+    // lignes par issue). Si le wiki devient énorme (>100 pages),
+    // l'utilisateur peut augmenter à 8192 via Settings > Agents.
+    max_tokens: 4096,
+    enabled: 1,
+    created_at: now,
+    updated_at: now
+  })
+
   upgradeSystemPromptsIfNeeded(db, now)
 }
 
 // Migration one-shot : force la mise à jour des prompts système si la
-// version installée est inférieure à SYSTEM_PROMPTS_VERSION. Écrase les
-// customisations utilisateur. Simple et efficace tant qu'on est en
-// early dev — à remplacer par un système "customized flag" plus tard.
+// version installée est inférieure à SYSTEM_PROMPTS_VERSION. Sprint 4 :
+// respecte désormais le flag `customized` — n'écrase un agent QUE si
+// l'utilisateur ne l'a jamais édité (customized=0). Protège les tunings
+// utilisateur aux futurs bumps de prompts système.
 function upgradeSystemPromptsIfNeeded(db: Database.Database, now: number): void {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get('agents.promptsVersion') as
     | { value: string }
@@ -326,17 +377,15 @@ function upgradeSystemPromptsIfNeeded(db: Database.Database, now: number): void 
   const installed = row ? parseInt(row.value, 10) : 0
   if (installed >= SYSTEM_PROMPTS_VERSION) return
 
+  // `WHERE customized = 0` : skip les agents édités à la main par l'user.
   const update = db.prepare(
-    `UPDATE agents SET system_prompt = ?, updated_at = ? WHERE id = ?`
+    `UPDATE agents SET system_prompt = ?, updated_at = ? WHERE id = ? AND customized = 0`
   )
   update.run(SYNTHESIZER_PROMPT_V2, now, 'agent.synthesizer')
   update.run(WIKI_BUILDER_PROMPT_V2, now, 'agent.wiki_builder')
 
-  // À chaque bump majeur du prompt, on bump aussi temperature/maxTokens
-  // aux nouveaux defaults — sinon les installations existantes restent
-  // sur les anciennes valeurs (16 384) qui causent les troncatures.
   const updateTuning = db.prepare(
-    `UPDATE agents SET temperature = ?, max_tokens = ?, updated_at = ? WHERE id = ?`
+    `UPDATE agents SET temperature = ?, max_tokens = ?, updated_at = ? WHERE id = ? AND customized = 0`
   )
   updateTuning.run(0.3, 4096, now, 'agent.synthesizer')
   updateTuning.run(0.2, 24576, now, 'agent.wiki_builder')

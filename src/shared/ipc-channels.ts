@@ -81,7 +81,9 @@ export const IPC_CHANNELS = {
     runWikiBuilder: 'agents.runWikiBuilder',
     // File-back (Sprint 3) : transforme un message assistant en page
     // wiki qa/ réutilisable. Payload: { conversationId, messageId }.
-    runFileBackResponse: 'agents.runFileBackResponse'
+    runFileBackResponse: 'agents.runFileBackResponse',
+    // Lint (Sprint 4) : audit de cohérence du wiki.
+    runLint: 'agents.runLint'
   },
   wiki: {
     // Mémoire long-terme partagée entre conversations IA (dossier FS

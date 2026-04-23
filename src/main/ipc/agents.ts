@@ -47,4 +47,6 @@ export function registerAgentsHandlers(): void {
     const { conversationId, messageId } = AgentRunFileBackInput.parse(raw)
     return agents.runFileBackResponse(conversationId, messageId)
   })
+
+  ipcMain.handle(IPC_CHANNELS.agents.runLint, () => agents.runLint())
 }
