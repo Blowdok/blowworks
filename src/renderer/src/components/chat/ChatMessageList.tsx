@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
-import { Copy, Check } from 'lucide-react'
+import { Copy, Check, ChevronDown } from 'lucide-react'
 import {
   markdownRemarkPlugins,
   markdownRehypePlugins,
@@ -50,6 +50,10 @@ export default function ChatMessageList({
 }: ChatMessageListProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const isAtBottomRef = useRef(true)
+  // État miroir du ref ci-dessus, utilisé pour afficher le bouton
+  // flottant "descendre" quand l'utilisateur a remonté. Le ref reste
+  // pour l'auto-scroll (pas de re-render) ; ce state re-render le bouton.
+  const [showScrollDown, setShowScrollDown] = useState(false)
   // Map des timelines persistantes (post-stream) indexée par messageId.
   // Utilisée par chaque MessageBubble assistant pour reconstituer le
   // déroulé entrelacé des actions IA après la fin du streaming.
@@ -58,17 +62,32 @@ export default function ChatMessageList({
   // Observe le scroll pour détecter si l'utilisateur est proche du bas
   // (tolérance 48 px). Seuls les auto-scrolls valident cet état ; un
   // scroll manuel vers le haut met le flag à false jusqu'au prochain
-  // retour en bas.
+  // retour en bas. Le state `showScrollDown` suit le même signal pour
+  // afficher le bouton de retour en bas quand l'utilisateur a remonté.
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
     const onScroll = (): void => {
       const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      isAtBottomRef.current = distanceFromBottom < 48
+      const atBottom = distanceFromBottom < 48
+      isAtBottomRef.current = atBottom
+      // Setter stable : React bail out si la valeur ne change pas, donc
+      // pas de re-render à chaque pixel de scroll.
+      setShowScrollDown(!atBottom)
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
+
+  // Scroll programmatique vers le bas déclenché par le bouton flottant.
+  // Smooth pour une transition visuellement agréable ; le handler de
+  // scroll ci-dessus mettra à jour isAtBottomRef + showScrollDown dès
+  // que l'animation atteint la zone de 48 px du bas.
+  function scrollToBottom(): void {
+    const el = containerRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }
 
   // Auto-scroll déclenché par nouveaux messages OU chunks de streaming.
   // Exige que l'utilisateur soit déjà en bas — sinon on le laisse lire.
@@ -111,9 +130,10 @@ export default function ChatMessageList({
   const hasMessages = messages.length > 0 || (streamingSegments && streamingSegments.length > 0)
 
   return (
+    <div className="relative flex min-h-0 flex-1 flex-col">
     <div
       ref={containerRef}
-      className="hide-scrollbar flex-1 overflow-y-auto px-6 py-3 text-sm"
+      className="hide-scrollbar min-h-0 flex-1 overflow-y-auto px-6 py-3 text-sm"
       style={{
         color: 'var(--fg-primary)',
         // Le scroll vit DANS le portail, pas dans le canvas tldraw.
@@ -174,6 +194,29 @@ export default function ChatMessageList({
           />
         )}
       </div>
+    </div>
+      {/* Bouton flottant "descendre" : visible uniquement quand l'user
+          a remonté hors de la zone de 48 px du bas. Clic = scroll smooth
+          jusqu'en bas, qui fait aussi reprendre l'auto-scroll sur les
+          chunks suivants (isAtBottomRef repasse à true quand on atteint
+          le fond). */}
+      {showScrollDown && (
+        <button
+          type="button"
+          onClick={scrollToBottom}
+          aria-label="Descendre à la fin de la conversation"
+          title="Descendre"
+          className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border shadow-lg backdrop-blur transition-colors hover:bg-[var(--bg-tertiary)]"
+          style={{
+            borderColor: 'var(--border)',
+            background: 'var(--bg-secondary)',
+            color: 'var(--fg-secondary)',
+            padding: '6px'
+          }}
+        >
+          <ChevronDown size={18} />
+        </button>
+      )}
     </div>
   )
 }
