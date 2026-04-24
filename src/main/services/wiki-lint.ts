@@ -289,29 +289,6 @@ export async function findSafeFixableIssues(): Promise<LintIssue[]> {
 
 // ──────────────────────────────────────────────────────────── Check 7 (LLM)
 
-const CONTRADICTION_PROMPT = `Tu es l'agent Lint de BlowWorks. Tu audites la cohérence factuelle d'un wiki markdown.
-
-Tâche : détecter UNIQUEMENT les contradictions ou incohérences entre pages. Pas les problèmes structurels (orphelins, liens brisés…) qui sont couverts par des checks déterministes en amont.
-
-Règles de sortie STRICTES :
-- Pour chaque problème, produis EXACTEMENT une ligne de ce format :
-    \`CONTRADICTION: wiki/fichierA vs wiki/fichierB - description\`
-    ou
-    \`INCONSISTENCY: wiki/fichier - description\`
-- Pas de préambule, pas de markdown fence, pas d'explication avant ou après.
-- Si aucun problème détecté, output EXACTEMENT : \`NO_ISSUES\`
-
-Cherche :
-- Dates, noms, chiffres qui ne concordent pas entre deux pages
-- Recommandations ou décisions opposées sur le même sujet
-- Statuts divergents (page A dit X "verified", page B dit X "débunké")
-
-IGNORE :
-- Différences de ton, de niveau de détail, de structure
-- Pages \`statut: to-verify\` qui ont déjà été flaggées ailleurs
-- Opinions vs faits
-- Concepts voisins mais distincts`
-
 async function runContradictionCheck(
   agent: AgentT,
   pages: Array<{ name: string; content: string }>
@@ -324,7 +301,7 @@ async function runContradictionCheck(
 
   const result = await oneShotChat({
     model: agent.model,
-    systemPrompt: agent.systemPrompt || CONTRADICTION_PROMPT,
+    systemPrompt: agent.systemPrompt,
     userPrompt,
     temperature: agent.temperature,
     maxTokens: agent.maxTokens

@@ -798,41 +798,9 @@ export async function runResearcher(): Promise<ResearchResult> {
 // une réponse assistant, on récupère la question précédente + la réponse,
 // et on demande à un LLM de produire une page wiki structurée dédiée.
 //
-// Pas d'agent configurable pour Sprint 3 — un prompt en dur avec le modèle
-// par défaut du Wiki Builder. Si besoin d'édition ultérieure, on ajoutera
-// un 3e agent système ("QA Filer") comme pour synthesizer/wiki_builder.
-
-const QA_FILER_PROMPT = `Tu es l'agent QA Filer de BlowWorks.
-
-Tu reçois UN échange question/réponse entre un utilisateur et une IA. Ton rôle : le transformer en UNE page wiki \`qa/*.md\` structurée et autonome, destinée à être réutilisée comme source de vérité pour de futures conversations.
-
-## Règles
-
-- Nom de fichier : kebab-case, préfixe \`qa/\`, ex: \`qa/pourquoi-supabase-pour-pagemark.md\`.
-- Frontmatter YAML obligatoire :
-  ---
-  titre: "Question canonique reformulée"
-  type: qa
-  statut: verified
-  importance: standard
-  tags: [#qa]
-  liens_forts: []
-  sources: []
-  source_knowledge: mixed
-  créé: <date ISO>
-  modifié: <date ISO>
-  ---
-- Structure : # Titre / > Résumé (1-2 lignes) / ## Question / ## Réponse / ## Contexte et limites.
-- Si la réponse contient des faits factuels datés ou chiffrés sans source explicite, marque-les \`(à-vérifier)\` dans le corps.
-- Pas de markdown fence autour du JSON que tu retournes.
-
-## Format de sortie — JSON strict
-
-{
-  "filename": "qa/xxx.md",
-  "content": "contenu markdown complet avec frontmatter YAML",
-  "logEntry": "## [ISO] file-back | résumé 1 ligne"
-}`
+// Configurable via Settings > Agents depuis le Sprint 5 : le prompt / model /
+// temperature / maxTokens sont lus depuis l'entrée `agent.file_back` de la
+// table agents (seedée avec FILE_BACK_PROMPT_V1 en db.ts).
 
 export async function runFileBackResponse(
   conversationId: string,
@@ -860,12 +828,16 @@ export async function runFileBackResponse(
     throw new Error("Aucune question utilisateur trouvée avant cette réponse.")
   }
 
-  // Utilise le modèle + la température du Wiki Builder comme référence —
-  // c'est le même type de tâche (structure markdown + JSON strict).
-  const wikiBuilder = getAgentByKind('wiki_builder')
-  const model = wikiBuilder?.model ?? 'anthropic/claude-sonnet-4-6'
-  const temperature = wikiBuilder?.temperature ?? 0.2
-  const maxTokens = wikiBuilder?.maxTokens ?? 4096
+  // Configuration lue depuis la DB (Sprint 5 — agent file_back seedé).
+  // Fallback sur le Wiki Builder si, pour une raison étrange, l'agent
+  // file_back a été supprimé ou est désactivé — la feature doit rester
+  // utilisable même si l'user a trafiqué la DB.
+  const fileBack = getAgentByKind('file_back')
+  const fallback = getAgentByKind('wiki_builder')
+  const agent = fileBack && fileBack.enabled ? fileBack : fallback
+  if (!agent) {
+    throw new Error('Agent QA Filer introuvable. Relancez BlowWorks pour re-seed la DB.')
+  }
 
   const userPrompt = [
     "## Échange à filer",
@@ -883,11 +855,11 @@ export async function runFileBackResponse(
   ].join('\n\n')
 
   const result = await oneShotChat({
-    model,
-    systemPrompt: QA_FILER_PROMPT,
+    model: agent.model,
+    systemPrompt: agent.systemPrompt,
     userPrompt,
-    temperature,
-    maxTokens
+    temperature: agent.temperature,
+    maxTokens: agent.maxTokens
   })
   if (result.error) {
     throw new Error(`Échec QA Filer : ${result.error}`)

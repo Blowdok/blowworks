@@ -176,7 +176,7 @@ function addAgentColumnsIfMissing(db: Database.Database): void {
 // constante, on force la mise à jour des prompts des agents système. Ça
 // écrase les customisations utilisateur — acceptable en early dev, à
 // revoir quand on ajoutera un champ `customized` côté table.
-const SYSTEM_PROMPTS_VERSION = 8
+const SYSTEM_PROMPTS_VERSION = 9
 
 // Prompts v2 (Sprint 1) — alignés sur l'analogie compiler + sentinel
 // FLUSH_OK + JSON schema-driven (pattern claude-memory-compiler adapté).
@@ -336,6 +336,38 @@ Tu reçois en phase 2 le wiki intégral + les résultats de N recherches web (Ta
 
 Si aucune page ne mérite d'être actualisée : \`{"operations":[],"logEntry":"..."}\`.`
 
+const FILE_BACK_PROMPT_V1 = `Tu es l'agent QA Filer de BlowWorks.
+
+Tu reçois UN échange question/réponse entre un utilisateur et une IA. Ton rôle : le transformer en UNE page wiki \`qa/*.md\` structurée et autonome, destinée à être réutilisée comme source de vérité pour de futures conversations.
+
+## Règles
+
+- Nom de fichier : kebab-case, préfixe \`qa/\`, ex: \`qa/pourquoi-supabase-pour-pagemark.md\`.
+- Frontmatter YAML obligatoire :
+  ---
+  titre: "Question canonique reformulée"
+  type: qa
+  statut: verified
+  importance: standard
+  tags: [#qa]
+  liens_forts: []
+  sources: []
+  source_knowledge: mixed
+  créé: <date ISO>
+  modifié: <date ISO>
+  ---
+- Structure : # Titre / > Résumé (1-2 lignes) / ## Question / ## Réponse / ## Contexte et limites.
+- Si la réponse contient des faits factuels datés ou chiffrés sans source explicite, marque-les \`(à-vérifier)\` dans le corps.
+- Pas de markdown fence autour du JSON que tu retournes.
+
+## Format de sortie — JSON strict
+
+{
+  "filename": "qa/xxx.md",
+  "content": "contenu markdown complet avec frontmatter YAML",
+  "logEntry": "## [ISO] file-back | résumé 1 ligne"
+}`
+
 // Seed des deux agents système obligatoires. Idempotent : n'insère que si
 // la ligne correspondante n'existe pas encore (clé primaire fixe pour les
 // agents système). Puis `upgradeSystemPromptsIfNeeded` applique les
@@ -437,6 +469,23 @@ function seedSystemAgents(db: Database.Database): void {
     updated_at: now
   })
 
+  insert.run({
+    id: 'agent.file_back',
+    kind: 'file_back',
+    name: 'QA Filer',
+    description:
+      "Transforme un échange question/réponse du chat en page wiki qa/*.md réutilisable (bouton 📥 sous chaque réponse assistant). Pattern Karpathy « file answers back ».",
+    // Même modèle/tuning que le Wiki Builder — tâche similaire : markdown
+    // structuré + JSON strict. L'utilisateur peut changer dans Settings.
+    model: 'anthropic/claude-sonnet-4-6',
+    system_prompt: FILE_BACK_PROMPT_V1,
+    temperature: 0.2,
+    max_tokens: 4096,
+    enabled: 1,
+    created_at: now,
+    updated_at: now
+  })
+
   upgradeSystemPromptsIfNeeded(db, now)
 }
 
@@ -460,6 +509,7 @@ function upgradeSystemPromptsIfNeeded(db: Database.Database, now: number): void 
   update.run(WIKI_BUILDER_PROMPT_V2, now, 'agent.wiki_builder')
   update.run(LINT_CONTRADICTION_PROMPT, now, 'agent.lint')
   update.run(RESEARCHER_PROMPT_V1, now, 'agent.researcher')
+  update.run(FILE_BACK_PROMPT_V1, now, 'agent.file_back')
 
   const updateTuning = db.prepare(
     `UPDATE agents SET temperature = ?, max_tokens = ?, updated_at = ? WHERE id = ? AND customized = 0`
@@ -467,6 +517,7 @@ function upgradeSystemPromptsIfNeeded(db: Database.Database, now: number): void 
   updateTuning.run(0.3, 4096, now, 'agent.synthesizer')
   updateTuning.run(0.2, 24576, now, 'agent.wiki_builder')
   updateTuning.run(0.2, 16384, now, 'agent.researcher')
+  updateTuning.run(0.2, 4096, now, 'agent.file_back')
 
   db.prepare(
     `INSERT INTO settings (key, value) VALUES ('agents.promptsVersion', ?)

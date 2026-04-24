@@ -304,6 +304,7 @@ export const AgentKindSchema = z.enum([
   'wiki_builder',
   'lint',
   'researcher',
+  'file_back',
   'custom'
 ])
 export type AgentKindT = z.infer<typeof AgentKindSchema>

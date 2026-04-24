@@ -75,35 +75,6 @@ Tu reçois l'inventaire d'un wiki markdown (titres, frontmatter, corps). Ta tâc
 
 Limite à ${MAX_QUERIES} queries max (priorité aux pages "to-verify" + pages les plus critiques). Si aucune vérification nécessaire, retourne \`{"queries":[]}\`.`
 
-const PHASE2_PROMPT = `Tu es l'agent Researcher de BlowWorks. Tu as reçu :
-1. Le wiki existant (intégral)
-2. Les résultats de recherches web ciblées sur les points à vérifier
-
-Ta tâche : produire des \`operations\` de type \`update\` pour actualiser les pages concernées UNIQUEMENT quand les sources web contredisent / précisent l'info actuelle.
-
-## Règles
-
-- \`op\` : toujours \`"update"\` (ni \`create\`, ni \`rename\`, ni \`delete\` — un researcher n'altère pas la structure).
-- \`filename\` : chemin relatif au dossier wiki/ (ex: \`concepts/next-js.md\`), PAS de prefix \`wiki/\`.
-- Le \`content\` doit être la page COMPLÈTE mise à jour (frontmatter + corps), pas un diff.
-- Frontmatter mis à jour :
-  - \`statut: verified\` si l'info est désormais confirmée par une source web.
-  - \`modifié: <date ISO du jour>\`
-  - \`sources: [...]\` → **ajoute** les URLs consultées en gardant les sources existantes. Format préféré : tableau inline de strings.
-- Dans le corps : mentionne l'info mise à jour avec citation courte "(source: domaine.com, vérifié YYYY-MM-DD)".
-- Si une recherche n'a rien apporté de concluant, NE PAS toucher à la page.
-- Conserve le reste du contenu et du style intacts — tu es un FACT-CHECKER, pas un rewriter.
-
-## Format de sortie — JSON strict
-{
-  "operations": [
-    { "op": "update", "filename": "concepts/next-js.md", "content": "<page complète>", "reason": "version 15 confirmée via next.js/blog" }
-  ],
-  "logEntry": "## [ISO8601] researcher | N pages actualisées via M recherches"
-}
-
-Pas de markdown fence, pas de préambule.`
-
 export async function researchAndUpdate(agent: AgentT): Promise<ResearchResult> {
   if (!Tavily.hasTavilyKey()) {
     throw new Error(
@@ -177,7 +148,7 @@ export async function researchAndUpdate(agent: AgentT): Promise<ResearchResult> 
   // ── Phase 2b : synthèse LLM avec résultats ─────────────────────────
   const phase2 = await oneShotChat({
     model: agent.model,
-    systemPrompt: agent.systemPrompt && agent.systemPrompt.trim().length > 0 ? agent.systemPrompt : PHASE2_PROMPT,
+    systemPrompt: agent.systemPrompt,
     userPrompt: buildPhase2Prompt(wikiBlock, outcomes),
     temperature: agent.temperature,
     maxTokens: agent.maxTokens
