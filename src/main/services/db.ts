@@ -122,7 +122,25 @@ function runMigrations(db: Database.Database): void {
   `)
 
   addAgentColumnsIfMissing(db)
+  addMessageColumnsIfMissing(db)
   seedSystemAgents(db)
+}
+
+// Migration ALTER TABLE conditionnelle pour la table `ai_messages`.
+// Pattern identique à addAgentColumnsIfMissing — on lit pragma_table_info
+// et on ajoute ce qui manque pour un schéma d'install antérieur.
+function addMessageColumnsIfMissing(db: Database.Database): void {
+  const cols = db
+    .prepare(`SELECT name FROM pragma_table_info('ai_messages')`)
+    .all() as Array<{ name: string }>
+  const has = (n: string): boolean => cols.some((c) => c.name === n)
+
+  if (!has('segments_json')) {
+    // Timeline des actions IA (segments texte + tool_calls) sérialisée
+    // en JSON. NULL pour les messages purement textuels (pas de tool_call).
+    // Ajouté au Sprint 5 (refactor timeline entrelacée + persistance).
+    db.exec(`ALTER TABLE ai_messages ADD COLUMN segments_json TEXT`)
+  }
 }
 
 // Migrations ALTER TABLE conditionnelles pour la table `agents`. Ajoute

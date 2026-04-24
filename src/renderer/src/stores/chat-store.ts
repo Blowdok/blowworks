@@ -96,6 +96,46 @@ export function segmentsToText(segments: Segment[]): string {
     .join('')
 }
 
+// Parse la colonne `segmentsJson` d'un message et retourne les segments
+// typés. Tolérant : si le JSON est corrompu ou a un shape inattendu,
+// retourne null plutôt que de throw (on tombera en fallback markdown
+// plain via `message.content`).
+function parseSegmentsJson(json: string | null | undefined): Segment[] | null {
+  if (!json) return null
+  try {
+    const parsed = JSON.parse(json)
+    if (!Array.isArray(parsed)) return null
+    // Validation light : on garde les entries qui ont le bon kind.
+    return parsed.filter(
+      (s: unknown): s is Segment =>
+        typeof s === 'object' &&
+        s !== null &&
+        'kind' in s &&
+        ((s as { kind: string }).kind === 'text' || (s as { kind: string }).kind === 'tool')
+    )
+  } catch {
+    return null
+  }
+}
+
+// Parcourt une liste de messages fraîchement fetchés depuis la DB et
+// retourne une NOUVELLE Map messageSegments enrichie avec les timelines
+// décodées depuis `segmentsJson`. Merge (pas écrase) pour préserver les
+// entries des autres conversations déjà hydratées en session.
+function hydrateSegmentsFromMessages(
+  previous: Map<string, Segment[]>,
+  messages: { id: string; segmentsJson?: string | null }[]
+): Map<string, Segment[]> {
+  const next = new Map(previous)
+  for (const m of messages) {
+    const segments = parseSegmentsJson(m.segmentsJson)
+    if (segments && segments.length > 0) {
+      next.set(m.id, segments)
+    }
+  }
+  return next
+}
+
 export interface ChatConversation {
   conversation: AIConversationT
   messages: AIMessageT[]
@@ -264,7 +304,13 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         ...fetched.conversation,
         messagesCount: fetched.messages.length
       })
-      set({ conversations: convs, allConversations: allConvs })
+      // Hydrate la Map des segments depuis la colonne DB. Rétablit les
+      // timelines entrelacées persistées lors de précédents streams.
+      const segmentsMap = hydrateSegmentsFromMessages(
+        get().messageSegments,
+        fetched.messages
+      )
+      set({ conversations: convs, allConversations: allConvs, messageSegments: segmentsMap })
       return fetched.conversation
     }
 
@@ -292,7 +338,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     if (!fetched) return null
     const convs = new Map(get().conversations)
     convs.set(id, fetched)
-    set({ conversations: convs })
+    const segmentsMap = hydrateSegmentsFromMessages(get().messageSegments, fetched.messages)
+    set({ conversations: convs, messageSegments: segmentsMap })
     return fetched
   },
 
@@ -575,19 +622,38 @@ function installChunkListener(
             messagesCount: fetched.messages.length
           })
         }
+        // Hydrate d'abord les segments persistés en DB (messages passés
+        // de cette conversation qui auraient déjà des timelines).
+        let segmentsMap = fetched
+          ? hydrateSegmentsFromMessages(
+              useChatStore.getState().messageSegments,
+              fetched.messages
+            )
+          : new Map(useChatStore.getState().messageSegments)
+
         // Attache la timeline capturée au dernier message assistant pour
-        // qu'elle reste visible après la fin du stream (sinon le rendu
-        // entrelacé du StreamingBubble disparaîtrait au démontage).
-        // On ne persiste que les timelines qui ont au moins un segment
-        // tool — sinon le message est purement textuel et son content
-        // suffit (rendu markdown classique via MessageBubble).
+        // qu'elle reste visible après la fin du stream. On la persiste
+        // aussi en DB via `ai.saveMessageSegments` → l'historique est
+        // conservé après un reload de l'app. On ne persiste que les
+        // timelines qui ont au moins un segment tool — sinon le message
+        // est purement textuel et son content suffit.
         const hasToolSegment = finalSegments.some((s) => s.kind === 'tool')
-        const segmentsMap = new Map(useChatStore.getState().messageSegments)
         if (fetched && hasToolSegment) {
           const lastAssistant = [...fetched.messages]
             .reverse()
             .find((m) => m.role === 'assistant')
-          if (lastAssistant) segmentsMap.set(lastAssistant.id, finalSegments)
+          if (lastAssistant) {
+            segmentsMap = new Map(segmentsMap)
+            segmentsMap.set(lastAssistant.id, finalSegments)
+            // Fire-and-forget : la persistance DB peut prendre quelques ms,
+            // pas besoin de bloquer l'UI. Si ça échoue, on log mais la
+            // copie mémoire reste valide pour la session courante.
+            void window.blow.ai
+              .saveMessageSegments(lastAssistant.id, JSON.stringify(finalSegments))
+              .catch((e: unknown) => {
+                console.warn('[chat-store] persist segments failed', e)
+              })
+          }
         }
         useChatStore.setState({
           conversations: convs,

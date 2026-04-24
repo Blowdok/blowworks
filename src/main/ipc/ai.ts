@@ -21,6 +21,7 @@ import {
   deleteConversation,
   appendMessage,
   listMessages,
+  updateMessageSegments,
   generateTitleFromFirstMessage
 } from '../services/ai-conversations.js'
 import * as OpenRouter from '../services/openrouter.js'
@@ -287,5 +288,19 @@ export function registerAIHandlers(): void {
     const { toolCallId, approved } = AIConfirmToolCallInput.parse(raw)
     const ok = resolveToolConfirmation(toolCallId, approved)
     return { ok }
+  })
+
+  // Persiste la timeline entrelacée d'un message assistant (Sprint 5).
+  // Appelé par le renderer au done du stream avec le JSON des segments.
+  // `null` = efface la timeline (message purement textuel rétroactivement).
+  ipcMain.handle(IPC_CHANNELS.ai.saveMessageSegments, (_evt, raw) => {
+    const { messageId, segmentsJson } = z
+      .object({
+        messageId: z.string().min(1),
+        segmentsJson: z.string().max(5_000_000).nullable()
+      })
+      .parse(raw)
+    updateMessageSegments(messageId, segmentsJson)
+    return { ok: true }
   })
 }

@@ -147,6 +147,7 @@ interface MessageRow {
   tokens_in: number | null
   tokens_out: number | null
   created_at: number
+  segments_json: string | null
 }
 
 function rowToMessage(row: MessageRow): AIMessageT {
@@ -158,8 +159,22 @@ function rowToMessage(row: MessageRow): AIMessageT {
     model: row.model,
     tokensIn: row.tokens_in,
     tokensOut: row.tokens_out,
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    segmentsJson: row.segments_json
   }
+}
+
+// Persiste la timeline entrelacée (segments texte + actions IA) d'un
+// message assistant. Appelé côté renderer à la fin du stream via IPC.
+// Le JSON est opaque pour la DB — c'est au renderer de le sérialiser /
+// désérialiser. Permet de récupérer l'historique visuel après reload.
+export function updateMessageSegments(
+  messageId: string,
+  segmentsJson: string | null
+): void {
+  getDb()
+    .prepare('UPDATE ai_messages SET segments_json = ? WHERE id = ?')
+    .run(segmentsJson, messageId)
 }
 
 export interface AppendMessageInput {

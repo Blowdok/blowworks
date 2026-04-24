@@ -60,7 +60,11 @@ export const IPC_CHANNELS = {
     // Réveil d'un await côté main après que l'utilisateur a tranché
     // un dialog de confirmation tool (write/rename/delete). Le payload
     // est `{ toolCallId, approved }`.
-    confirmToolCall: 'ai.confirmToolCall'
+    confirmToolCall: 'ai.confirmToolCall',
+    // Persiste la timeline entrelacée d'un message assistant après fin
+    // de stream. Appelé une seule fois par message (juste après que le
+    // refetch a révélé son id). Payload `{ messageId, segmentsJson }`.
+    saveMessageSegments: 'ai.saveMessageSegments'
   },
   browser: {
     // Push main → renderer : demander l'ouverture d'une URL dans une

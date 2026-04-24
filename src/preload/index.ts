@@ -130,6 +130,8 @@ const api = {
     // Réveil d'un await de confirmation tool côté main.
     confirmToolCall: (toolCallId: string, approved: boolean) =>
       ipcRenderer.invoke(IPC_CHANNELS.ai.confirmToolCall, { toolCallId, approved }),
+    saveMessageSegments: (messageId: string, segmentsJson: string | null) =>
+      ipcRenderer.invoke(IPC_CHANNELS.ai.saveMessageSegments, { messageId, segmentsJson }),
     onChunk: (
       cb: (payload: {
         requestId: string

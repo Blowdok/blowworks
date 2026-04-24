@@ -117,7 +117,11 @@ export const AIMessageSchema = z.object({
   model: z.string().nullable().optional(),
   tokensIn: z.number().int().nullable().optional(),
   tokensOut: z.number().int().nullable().optional(),
-  createdAt: z.number().int().nonnegative()
+  createdAt: z.number().int().nonnegative(),
+  // Timeline entrelacée (texte + actions IA) sérialisée en JSON. Null
+  // pour les messages purement textuels (sans tool_call). Le renderer
+  // désérialise pour reconstruire l'historique visuel après un reload.
+  segmentsJson: z.string().nullable().optional()
 })
 export type AIMessageT = z.infer<typeof AIMessageSchema>
 
