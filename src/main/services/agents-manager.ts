@@ -407,7 +407,19 @@ async function runWikiBuilderBatch(
   const safeIssues = await findSafeFixableIssues().catch(() => [] as LintIssue[])
   const correctionsBlock = buildCorrectionsBlock(safeIssues)
 
-  const buildPrompt = (articlesBlock: string, compact: boolean): string => {
+  // Mode de dégradation :
+  //   - 'full'    : articles intégraux inlinés
+  //   - 'compact' : frontmatter + 1er paragraphe par article (~400 chars)
+  //   - 'minimal' : juste la liste des noms d'articles (pas de contenu)
+  type DegradationMode = 'full' | 'compact' | 'minimal'
+  const buildPrompt = (articlesBlock: string, mode: DegradationMode): string => {
+    const articlesHeader =
+      mode === 'full'
+        ? '### Articles existants (chemins relatifs à wiki/)'
+        : mode === 'compact'
+          ? '### Articles existants — APERÇU COMPACT (frontmatter + 1er paragraphe seulement, pour tenir dans le contexte)'
+          : '### Articles existants — INVENTAIRE MINIMAL (noms seulement, wiki très dense)'
+
     const parts = [
       '## Contexte du compilateur',
       '',
@@ -419,9 +431,7 @@ async function runWikiBuilderBatch(
       '### index.md (état maître, vit dans wiki/index.md)',
       indexContent ?? '(index.md absent — à créer)',
       '',
-      compact
-        ? '### Articles existants — APERÇU COMPACT (frontmatter + 1er paragraphe seulement, pour tenir dans le contexte)'
-        : '### Articles existants (chemins relatifs à wiki/)',
+      articlesHeader,
       articlesBlock,
       '',
       '## Raw sources à compiler (CE batch uniquement)',
@@ -434,30 +444,71 @@ async function runWikiBuilderBatch(
       '## Tâche',
       "Produis le JSON d'opérations selon la spec SCHEMA pour CES sources uniquement. N'inline pas de markdown fence autour du JSON. Rappel : `filename` sans prefix `wiki/`."
     )
-    if (compact) {
+    if (mode === 'compact') {
       parts.push(
         '',
-        "_Note : le contexte est en mode compact car le wiki est dense. Si tu as besoin du contenu complet d'un article existant pour le mettre à jour, produis un `update` avec le contenu que tu veux appliquer — tu ne peux pas relire le corps intégral ici._"
+        "_Note : contexte en mode compact (wiki dense). Si tu as besoin du contenu complet d'un article existant pour le mettre à jour, produis un `update` avec le contenu que tu veux appliquer — tu ne peux pas relire le corps intégral ici._"
+      )
+    } else if (mode === 'minimal') {
+      parts.push(
+        '',
+        "_Note : contexte en mode MINIMAL (wiki très dense). Tu vois juste la LISTE DES NOMS de pages existantes, pas leur contenu. Pour les `[[wikilinks]]`, utilise uniquement les noms de la liste. En cas de doute sur une page existante, PRÉFÈRE update vs create — si ton `filename` existe dans la liste, c'est un update. Si tu dois vraiment mettre à jour un article que tu ne peux pas relire, écris-le de zéro en respectant le SCHEMA — accepté comme compromis._"
       )
     }
     return parts.join('\n\n')
   }
 
-  // Budget input : on cible ~140k tokens d'input pour laisser 24k de sortie
-  // sous le plafond 200k des modèles Claude. Approximation ~4 chars/token.
-  // Si le prompt full dépasse, on bascule en compact (titre + frontmatter +
-  // 1er paragraphe de chaque article existant).
-  const BUDGET_INPUT_CHARS = 140_000 * 4
-  let userPrompt = buildPrompt(fullArticlesBlock, false)
+  // Budget input : on cible ~120k tokens d'input pour laisser 24k de sortie
+  // sous le plafond 200k des modèles Claude (prompt V3 long + raw + tools
+  // mangent leur part — marge ~56k pour couvrir tout ça sans déborder).
+  // Approximation ~4 chars/token.
+  //
+  // Dégradation en 3 niveaux :
+  //   1. full     — articles intégraux. Idéal, détection de doublon fine.
+  //   2. compact  — frontmatter YAML + 1er paragraphe par article (~400 chars).
+  //   3. minimal  — juste `### chemin/nom.md` (titre seul, 0 contenu) —
+  //                 dernière ligne de défense avant crash. L'IA connaît
+  //                 les noms mais ne peut plus détecter les doublons de
+  //                 contenu. Acceptable pour un wiki géant, rare sinon.
+  const BUDGET_INPUT_CHARS = 120_000 * 4
+  let userPrompt = buildPrompt(fullArticlesBlock, 'full')
+  let degradation: DegradationMode = 'full'
+
   if (userPrompt.length > BUDGET_INPUT_CHARS) {
     const compactArticlesBlock =
       validArticles.map((a) => `### ${a.name}\n\n${extractArticleDigest(a.content)}`).join('\n\n---\n\n') ||
       '(aucun article existant)'
-    userPrompt = buildPrompt(compactArticlesBlock, true)
+    userPrompt = buildPrompt(compactArticlesBlock, 'compact')
+    degradation = 'compact'
     console.log(
-      `[wiki-builder] prompt full trop gros (${fullArticlesBlock.length} chars d'articles) → bascule en mode compact (${compactArticlesBlock.length} chars)`
+      `[wiki-builder] full trop gros (${fullArticlesBlock.length} chars d'articles) → compact (${compactArticlesBlock.length} chars, prompt total ${userPrompt.length})`
+    )
+
+    // Même le compact déborde : bascule en minimal (titres seuls).
+    if (userPrompt.length > BUDGET_INPUT_CHARS) {
+      const minimalArticlesBlock =
+        validArticles.map((a) => `- ${a.name}`).join('\n') || '(aucun article existant)'
+      userPrompt = buildPrompt(minimalArticlesBlock, 'minimal')
+      degradation = 'minimal'
+      console.log(
+        `[wiki-builder] compact trop gros (${userPrompt.length} chars) → minimal (${minimalArticlesBlock.length} chars, prompt total ${userPrompt.length})`
+      )
+    }
+  }
+
+  // Dernière garde : si même le minimal dépasse le budget (cas pathologique
+  // du raw lui-même > 120k chars), on abort avec un message actionnable
+  // plutôt que de laisser OpenRouter retourner un HTTP 400 cryptique.
+  if (userPrompt.length > BUDGET_INPUT_CHARS) {
+    throw new Error(
+      `Prompt Wiki Builder trop gros même en mode minimal (${userPrompt.length} chars / budget ${BUDGET_INPUT_CHARS}). ` +
+        `Cause probable : un raw/ de taille anormale. Réduis la taille du raw à compiler, ou scinde-le en plusieurs fichiers.`
     )
   }
+
+  console.log(
+    `[wiki-builder] envoi OpenRouter — mode=${degradation}, input=${userPrompt.length} chars (~${Math.round(userPrompt.length / 4)} tokens)`
+  )
 
   const result = await oneShotChat({
     model: agent.model,
