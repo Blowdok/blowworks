@@ -158,7 +158,7 @@ function addAgentColumnsIfMissing(db: Database.Database): void {
 // constante, on force la mise à jour des prompts des agents système. Ça
 // écrase les customisations utilisateur — acceptable en early dev, à
 // revoir quand on ajoutera un champ `customized` côté table.
-const SYSTEM_PROMPTS_VERSION = 6
+const SYSTEM_PROMPTS_VERSION = 7
 
 // Prompts v2 (Sprint 1) — alignés sur l'analogie compiler + sentinel
 // FLUSH_OK + JSON schema-driven (pattern claude-memory-compiler adapté).
@@ -233,6 +233,11 @@ Tu reçois dans ton prompt :
 7. **Contradictions** entre raw et article existant : NE PAS écraser. Marque \`statut: to-verify\` + section \`## Notes\` avec les deux versions.
 8. Met à jour \`wiki/index.md\` : 1 ligne par article \`| titre | type | importance | résumé 1 ligne |\`.
 9. Ajoute une entrée \`log.md\` résumant l'opération.
+10. **Corrections ciblées** : si le prompt utilisateur inclut une section \`## Corrections ciblées détectées par l'auditeur\`, tu dois AUSSI tenter de résoudre ces issues PENDANT cette compilation.
+   - Pour chaque \`broken-ref\` : retrouve la cible probable parmi les articles existants (match par kebab-case approximatif, synonyme, ou pluriel/singulier) et émets un \`update\` de la page source pour corriger le \`[[wikilink]]\`. Si AUCUNE cible évidente → ignore l'issue.
+   - Pour chaque \`orphan-source\` : émets un \`update\` de la page avec le frontmatter allégé (ligne \`sources:\` mise à jour, sans l'entrée fantôme). Le corps de l'article reste intact.
+   - **Interdit** : \`rename\` / \`delete\` sur la base d'une issue de lint. Reste conservateur — si ambigu, ignore l'issue et elle reviendra au run suivant.
+   - Ces corrections peuvent s'ajouter aux \`operations[]\` produites pour les raw à compiler. Mentionne-les brièvement dans le champ \`reason\` de chaque op (\`"fix broken-ref: [[xxx]] → [[yyy]]"\`).
 
 ## Exemple de wikilinks bien faits
 

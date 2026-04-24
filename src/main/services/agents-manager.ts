@@ -3,7 +3,7 @@ import { getDb } from './db.js'
 import { listMessages, getConversation } from './ai-conversations.js'
 import { oneShotChat } from './openrouter.js'
 import * as wiki from './wiki-fs.js'
-import { runWikiLint, type LintReport } from './wiki-lint.js'
+import { runWikiLint, findSafeFixableIssues, type LintReport, type LintIssue } from './wiki-lint.js'
 import type {
   AgentT,
   AgentKindT,
@@ -377,7 +377,16 @@ async function runWikiBuilderBatch(
     existingArticles.filter((x): x is string => x !== null).join('\n\n---\n\n') ||
     '(aucun article existant)'
 
-  const userPrompt = [
+  // Lint-fix léger intégré : on récupère les issues "safe" (broken-ref +
+  // orphan-source) et on les passe au WB pour qu'il les corrige PENDANT
+  // cette compilation. Gratuit et rapide — pas d'appel LLM ici, juste
+  // un re-run des 2 checks déterministes de wiki-lint. Max 30 issues
+  // injectées pour borner la taille du prompt ; le reste attend le run
+  // suivant (WB converge vers 0 issue sur quelques compilations).
+  const safeIssues = await findSafeFixableIssues().catch(() => [] as LintIssue[])
+  const correctionsBlock = buildCorrectionsBlock(safeIssues)
+
+  const userPromptParts = [
     '## Contexte du compilateur',
     '',
     '**IMPORTANT** : tous les `filename` que tu produis dans `operations[]` sont relatifs au dossier `wiki/`. Écris `concepts/pagemark.md`, PAS `wiki/concepts/pagemark.md`. Le runner ajoute le prefix automatiquement — si tu le mets aussi, tu créeras une arborescence `wiki/wiki/...`.',
@@ -393,11 +402,15 @@ async function runWikiBuilderBatch(
     '',
     '## Raw sources à compiler (CE batch uniquement)',
     '',
-    rawBlocks.join('\n\n---\n\n'),
+    rawBlocks.join('\n\n---\n\n')
+  ]
+  if (correctionsBlock) userPromptParts.push('', correctionsBlock)
+  userPromptParts.push(
     '',
     '## Tâche',
     "Produis le JSON d'opérations selon la spec SCHEMA pour CES sources uniquement. N'inline pas de markdown fence autour du JSON. Rappel : `filename` sans prefix `wiki/`."
-  ].join('\n\n')
+  )
+  const userPrompt = userPromptParts.join('\n\n')
 
   const result = await oneShotChat({
     model: agent.model,
@@ -665,6 +678,38 @@ function extractJsonObject(s: string): string | null {
     }
   }
   return null
+}
+
+// Construit la section `## Corrections ciblées` du prompt WB à partir de la
+// liste d'issues "safe". Retourne une chaîne vide si aucune issue — le
+// caller omet alors la section du prompt. Plafonne à MAX_INJECTED issues
+// pour garder la taille du prompt bornée (le WB converge naturellement
+// vers 0 sur 2-3 compilations successives si le raw est stable).
+function buildCorrectionsBlock(issues: LintIssue[]): string {
+  if (issues.length === 0) return ''
+  const MAX_INJECTED = 30
+  const head = issues.slice(0, MAX_INJECTED)
+  const overflow = issues.length - MAX_INJECTED
+  const lines = [
+    "## Corrections ciblées détectées par l'auditeur",
+    '',
+    "L'auditeur (`wiki-lint`) a identifié ces issues dans le wiki existant. **Tente** de les corriger PENDANT cette compilation si tu as assez de contexte pour le faire sans ambiguïté :",
+    '',
+    "- `broken-ref` : remplace le wikilink dans la page source par la cible correcte (parmi les articles existants) via un `update`. Si aucune cible évidente n'existe, laisse en l'état — ne crée pas une page stub.",
+    "- `orphan-source` : retire l'entrée manquante du tableau `sources:` dans le frontmatter de la page, via un `update`.",
+    '',
+    'Tu restes **conservateur** : jamais de `rename`/`delete` sur la base d\'un lint seul. Si une issue te semble ambiguë, ignore-la — un futur run s\'en occupera.',
+    '',
+    '### Issues',
+    '',
+    ...head.map(
+      (iss) => `- **${iss.kind}** sur \`${iss.pages.join(' / ')}\` — ${iss.description}`
+    )
+  ]
+  if (overflow > 0) {
+    lines.push('', `_(${overflow} issue${overflow > 1 ? 's' : ''} similaire${overflow > 1 ? 's' : ''} en plus — seront traitées au prochain run.)_`)
+  }
+  return lines.join('\n')
 }
 
 // ──────────────────────────────────────────────────────────── Lint (Sprint 4)

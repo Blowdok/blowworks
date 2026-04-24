@@ -227,6 +227,66 @@ export async function runWikiLint(agent: AgentT | null): Promise<LintReport> {
   return report
 }
 
+// ──────────────────────────────────────────────────────────── Safe-fixable subset
+
+// Ré-exécute uniquement les 2 checks "safe à auto-fix" (broken-ref et
+// orphan-source) pour injection dans le prompt du Wiki Builder. Gratuit
+// (pas d'appel LLM), <200 ms. Le WB tente de corriger ces issues pendant
+// une reconstruction standard — pas de nouvel agent à orchestrer.
+//
+// Pourquoi SEULEMENT ces 2 types :
+//   - `broken-ref` : wikilink `[[xxx]]` sans cible. Correction mécanique
+//     (remplacer par la bonne cible si identifiable, sinon laisser).
+//   - `orphan-source` : entrée `sources: [raw/xxx]` dans un frontmatter
+//     alors que le raw a été supprimé. Correction : retirer l'entrée.
+//
+// Les autres issues (orphan, ghost-concept, stale, sparse, contradictions)
+// demandent un jugement éditorial → risque de suppression/fusion agressive.
+// On les laisse à l'humain (ou à un futur agent `lint_fixer` dédié).
+export async function findSafeFixableIssues(): Promise<LintIssue[]> {
+  const status = await wiki.getWikiStatus()
+  if (!status.initialized) return []
+
+  const graph = await buildWikiGraphData()
+  const issues: LintIssue[] = []
+
+  // Check broken-ref : wikilinks sans cible résolue.
+  for (const edge of graph.edges) {
+    if (edge.target === null) {
+      issues.push({
+        kind: 'broken-ref',
+        severity: 'high',
+        pages: [edge.source],
+        description: `Wikilink brisé : [[${edge.targetSlug}]] ne résout vers aucune page existante.`
+      })
+    }
+  }
+
+  // Check orphan-source : raw/ disparus mais toujours listés en frontmatter.
+  const [wikiEntries, rawEntries] = await Promise.all([wiki.listWiki(), wiki.listRaw()])
+  const rawSet = new Set(rawEntries.map((e) => `raw/${e.name}`))
+  for (const entry of wikiEntries) {
+    try {
+      const content = await wiki.readWiki(entry.name)
+      const fm = parseFrontmatterLite(content)
+      for (const src of fm.sources ?? []) {
+        if (!rawSet.has(src)) {
+          issues.push({
+            kind: 'orphan-source',
+            severity: 'medium',
+            pages: [entry.name],
+            description: `La source \`${src}\` référencée dans le frontmatter n'existe plus dans raw/.`
+          })
+        }
+      }
+    } catch {
+      /* skip la page illisible */
+    }
+  }
+
+  return issues
+}
+
 // ──────────────────────────────────────────────────────────── Check 7 (LLM)
 
 const CONTRADICTION_PROMPT = `Tu es l'agent Lint de BlowWorks. Tu audites la cohérence factuelle d'un wiki markdown.
