@@ -138,6 +138,7 @@ const api = {
         requestId: string
         conversationId: string
         delta?: string
+        reasoningDelta?: string
         done?: boolean
         error?: string
         usage?: { promptTokens: number; completionTokens: number }

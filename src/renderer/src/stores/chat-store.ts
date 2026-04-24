@@ -33,14 +33,19 @@ export interface ToolTrace {
   error?: string
 }
 
-// Segment de timeline entrelacée : soit un bloc de texte (delta streamé),
-// soit une action IA (tool call). Construit en ordre CHRONOLOGIQUE au
-// fur et à mesure de la boucle agent — permet de reproduire le déroulé
-// exact du raisonnement du modèle ("Je vais chercher..." → action →
-// "Parfait, laisse-moi lire..." → action → réponse finale).
+// Segment de timeline entrelacée : bloc de texte (delta streamé), action
+// IA (tool call) ou raisonnement (chain-of-thought). Construit en ordre
+// CHRONOLOGIQUE au fur et à mesure du stream — permet de reproduire le
+// déroulé exact du modèle ("Je vais chercher..." → action → "Parfait,
+// laisse-moi lire..." → action → réponse finale), avec un bloc pliable
+// de reasoning intercalé pour les modèles qui le supportent.
+//
+// `reasoning.done` : `false` pendant le stream (shimmer actif côté UI),
+// `true` au done du stream ou quand un autre type de segment suit.
 export type Segment =
   | { kind: 'text'; content: string }
   | { kind: 'tool'; trace: ToolTrace }
+  | { kind: 'reasoning'; content: string; done: boolean }
 
 export interface StreamState {
   requestId: string
@@ -86,6 +91,40 @@ export function upsertToolSegment(
   return next
 }
 
+// Append un delta de reasoning. Si le DERNIER segment est `reasoning`
+// et pas encore `done`, on prolonge son content — le reasoning est un
+// flux continu tant que le modèle n'a pas commencé à produire du texte
+// ou appelé un tool. Dès qu'un autre type de segment arrive, le bloc
+// reasoning passe automatiquement à `done: true` via closeOpenReasoning
+// (appelé côté chunk listener avant d'ajouter texte ou tool).
+export function appendReasoningDelta(segments: Segment[], delta: string): Segment[] {
+  if (delta.length === 0) return segments
+  const last = segments[segments.length - 1]
+  if (last && last.kind === 'reasoning' && !last.done) {
+    return [
+      ...segments.slice(0, -1),
+      { kind: 'reasoning', content: last.content + delta, done: false }
+    ]
+  }
+  return [...segments, { kind: 'reasoning', content: delta, done: false }]
+}
+
+// Marque tous les segments `reasoning` encore ouverts comme terminés.
+// Appelé (a) à la fin du stream, (b) juste avant d'ajouter un segment
+// texte ou tool après un reasoning — pour que la shimmer UI s'arrête
+// et que le bloc puisse se replier automatiquement.
+export function closeOpenReasoning(segments: Segment[]): Segment[] {
+  let changed = false
+  const next = segments.map((s) => {
+    if (s.kind === 'reasoning' && !s.done) {
+      changed = true
+      return { ...s, done: true }
+    }
+    return s
+  })
+  return changed ? next : segments
+}
+
 // Helper de lecture : concatène tous les segments 'text' pour obtenir
 // le contenu markdown complet du message (utile pour le `content` à
 // poster en DB ou pour debug). Ignore les segments 'tool'.
@@ -105,14 +144,26 @@ function parseSegmentsJson(json: string | null | undefined): Segment[] | null {
   try {
     const parsed = JSON.parse(json)
     if (!Array.isArray(parsed)) return null
-    // Validation light : on garde les entries qui ont le bon kind.
-    return parsed.filter(
-      (s: unknown): s is Segment =>
-        typeof s === 'object' &&
-        s !== null &&
-        'kind' in s &&
-        ((s as { kind: string }).kind === 'text' || (s as { kind: string }).kind === 'tool')
-    )
+    // Validation light : on garde les entries qui ont un kind connu.
+    return parsed
+      .filter(
+        (s: unknown): s is Segment =>
+          typeof s === 'object' &&
+          s !== null &&
+          'kind' in s &&
+          ((s as { kind: string }).kind === 'text' ||
+            (s as { kind: string }).kind === 'tool' ||
+            (s as { kind: string }).kind === 'reasoning')
+      )
+      .map((s) => {
+        // Sécurité : si un segment `reasoning` persisté manque son flag
+        // `done`, on le force à true (sinon la shimmer tournerait sur
+        // des messages rechargés depuis la DB).
+        if (s.kind === 'reasoning' && typeof (s as { done?: unknown }).done !== 'boolean') {
+          return { ...(s as Segment), done: true } as Segment
+        }
+        return s
+      })
   } catch {
     return null
   }
@@ -522,23 +573,36 @@ function installChunkListener(
   }
 
   window.blow.ai.onChunk((payload) => {
-    const { conversationId, delta, done, error, citations, toolCall, toolResult, toolConfirmNeeded } = payload
+    const { conversationId, delta, reasoningDelta, done, error, citations, toolCall, toolResult, toolConfirmNeeded } = payload
 
     // Timeline entrelacée : un delta texte prolonge le dernier segment
-    // 'text', un toolCall crée un nouveau segment 'tool'. L'ordre de
-    // réception des chunks est chronologique → les segments reflètent
-    // exactement le déroulé du raisonnement du modèle (texte → action
-    // → texte → action → réponse finale).
+    // 'text', un toolCall crée un nouveau segment 'tool', un reasoningDelta
+    // prolonge le dernier segment 'reasoning' (s'il n'est pas encore done).
+    // L'ordre de réception des chunks est chronologique → les segments
+    // reflètent le déroulé exact du modèle (reasoning → texte → action →
+    // texte → action → réponse finale).
+    //
+    // Règle de fermeture : dès qu'un texte ou un tool arrive, on clôt le
+    // reasoning en cours (closeOpenReasoning) pour que l'UI arrête la
+    // shimmer et puisse replier le bloc.
+    if (reasoningDelta) {
+      patchStream(conversationId, (prev) => ({
+        ...prev,
+        segments: appendReasoningDelta(prev.segments, reasoningDelta)
+      }))
+    }
+
     if (delta) {
       patchStream(conversationId, (prev) => ({
         ...prev,
-        segments: appendTextDelta(prev.segments, delta)
+        segments: appendTextDelta(closeOpenReasoning(prev.segments), delta)
       }))
     }
 
     if (toolCall) {
       patchStream(conversationId, (prev) => {
-        const existing = prev.segments.find(
+        const closed = closeOpenReasoning(prev.segments)
+        const existing = closed.find(
           (s): s is Extract<Segment, { kind: 'tool' }> =>
             s.kind === 'tool' && s.trace.id === toolCall.id
         )
@@ -550,7 +614,7 @@ function installChunkListener(
               arguments: toolCall.arguments,
               status: 'running'
             }
-        return { ...prev, segments: upsertToolSegment(prev.segments, trace) }
+        return { ...prev, segments: upsertToolSegment(closed, trace) }
       })
     }
 
@@ -600,11 +664,13 @@ function installChunkListener(
     if (done) {
       const streams = new Map(useChatStore.getState().activeStreams)
       const current = streams.get(conversationId)
-      // Capture les segments AVANT le delete : on en a besoin dans la closure
-      // async ci-dessous pour les attacher au dernier message assistant.
-      const finalSegments = current ? [...current.segments] : []
+      // Capture les segments AVANT le delete. Tout reasoning encore
+      // ouvert est forcé à done:true — la réponse est finie, la shimmer
+      // doit s'arrêter même si le modèle n'a pas envoyé de texte après
+      // le reasoning (cas rare mais possible).
+      const finalSegments = current ? closeOpenReasoning(current.segments) : []
       if (current && error) {
-        streams.set(conversationId, { ...current, error, citations })
+        streams.set(conversationId, { ...current, segments: finalSegments, error, citations })
         useChatStore.setState({ activeStreams: streams })
       }
       void (async () => {
@@ -637,9 +703,11 @@ function installChunkListener(
         // qu'elle reste visible après la fin du stream. On la persiste
         // aussi en DB via `ai.saveMessageSegments` → l'historique est
         // conservé après un reload de l'app. On ne persiste que les
-        // timelines qui ont au moins un segment tool — sinon le message
-        // est purement textuel et son content suffit.
-        const hasToolSegment = finalSegments.some((s) => s.kind === 'tool')
+        // timelines qui ont au moins un segment tool OU reasoning —
+        // sinon le message est purement textuel et son content suffit.
+        const hasToolSegment = finalSegments.some(
+          (s) => s.kind === 'tool' || s.kind === 'reasoning'
+        )
         if (fetched && hasToolSegment) {
           const lastAssistant = [...fetched.messages]
             .reverse()
