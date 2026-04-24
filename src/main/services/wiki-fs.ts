@@ -573,6 +573,117 @@ export async function openRawInExplorer(): Promise<string> {
   return shell.openPath(path.join(folder, RAW_DIR))
 }
 
+// Scan récursif de TOUT le dossier wiki (pas juste wiki/*.md). Retourne
+// les entrées sous forme de chemins relatifs à la racine du wiki folder
+// (ex: `SCHEMA.md`, `wiki/concepts/xxx.md`, `raw/import-xxx.md`,
+// `audit/lint-xxx.md`). Utilisé par l'explorateur de la sidebar pour
+// afficher l'ensemble des fichiers créés dans la mémoire, pas juste
+// les articles wiki/.
+//
+// On accepte ici plusieurs extensions (pas seulement .md) car les
+// dossiers `audit/`, `raw/` et la racine contiennent aussi `log.md`,
+// `SCHEMA.md` qui ont du sens à afficher.
+// Les fichiers/dossiers cachés (commençant par `.`) sont toujours skippés
+// — `.compile-state.json` est un fichier interne de build, pas du contenu
+// wiki, il n'a rien à faire dans l'explorateur (pattern nexusvault_v4).
+// Idem pour les dossiers lourds qu'un user pourrait pointer par erreur
+// (node_modules, .git, dist, etc.).
+const ALL_FILES_EXTENSIONS = new Set(['.md', '.markdown', '.txt'])
+const IGNORED_DIRS = new Set([
+  'node_modules',
+  'dist',
+  'build',
+  '.git',
+  '.next',
+  '.cache',
+  'coverage'
+])
+
+export async function listAllFiles(): Promise<WikiEntryT[]> {
+  const folder = getConfiguredFolder()
+  if (!folder) return []
+  const out: WikiEntryT[] = []
+  async function walk(abs: string, rel: string): Promise<void> {
+    let names: string[]
+    try {
+      names = await fs.readdir(abs)
+    } catch {
+      return
+    }
+    for (const name of names) {
+      // Skip TOUS les fichiers/dossiers cachés (dotfiles). `.compile-state.json`
+      // est interne au build incrémental, pas du contenu user.
+      if (name.startsWith('.')) continue
+      if (IGNORED_DIRS.has(name)) continue
+      const absChild = path.join(abs, name)
+      const relChild = rel ? `${rel}/${name}` : name
+      let stat
+      try {
+        stat = await fs.lstat(absChild)
+      } catch {
+        continue
+      }
+      if (stat.isSymbolicLink()) continue
+      if (stat.isDirectory()) {
+        await walk(absChild, relChild)
+      } else if (stat.isFile()) {
+        const ext = path.extname(name).toLowerCase()
+        if (ALL_FILES_EXTENSIONS.has(ext)) {
+          out.push({ name: relChild, size: stat.size, modifiedAt: stat.mtimeMs })
+        }
+      }
+    }
+  }
+  await walk(folder, '')
+  out.sort((a, b) => b.modifiedAt - a.modifiedAt)
+  return out
+}
+
+// Lit un fichier texte arbitraire dans le dossier wiki (sandbox strict).
+// Contrairement à `readWiki` qui force le préfixe `wiki/`, ce helper
+// prend un chemin relatif au dossier wiki folder (ex. `SCHEMA.md`,
+// `raw/foo.md`, `wiki/concepts/bar.md`) et retourne le contenu texte.
+// Utilisé par le viewer intégré quand l'utilisateur clique dans
+// l'explorateur sur un fichier hors `wiki/` (SCHEMA, log, raw, audit).
+export async function readFile(relPath: string): Promise<string> {
+  const folder = ensureConfigured()
+  const target = path.resolve(folder, relPath)
+  const root = path.resolve(folder)
+  if (!target.startsWith(root + path.sep) && target !== root) {
+    throw new Error(`Chemin hors dossier wiki : ${relPath}`)
+  }
+  return fs.readFile(target, 'utf8')
+}
+
+// Écrit un fichier texte arbitraire dans le dossier wiki. Utilisé par
+// le viewer intégré pour enregistrer les éditions sur SCHEMA.md, log.md
+// ou tout fichier hors `wiki/`. Crée les dossiers parents si absents.
+export async function writeFile(relPath: string, content: string): Promise<void> {
+  const folder = ensureConfigured()
+  const target = path.resolve(folder, relPath)
+  const root = path.resolve(folder)
+  if (!target.startsWith(root + path.sep) && target !== root) {
+    throw new Error(`Chemin hors dossier wiki : ${relPath}`)
+  }
+  await fs.mkdir(path.dirname(target), { recursive: true })
+  await fs.writeFile(target, content, 'utf8')
+}
+
+// Ouvre n'importe quel fichier du wiki folder dans l'application par
+// défaut de l'OS (Notepad/VSCode installé pour .md, navigateur pour
+// .html, etc.). Sandbox strict : le chemin doit être dans le dossier
+// wiki configuré, sinon erreur.
+export async function openFileInOS(relPath: string): Promise<{ ok: boolean; error: string | null }> {
+  const folder = ensureConfigured()
+  const target = path.resolve(folder, relPath)
+  const root = path.resolve(folder)
+  if (!target.startsWith(root + path.sep) && target !== root) {
+    return { ok: false, error: `Chemin hors dossier wiki : ${relPath}` }
+  }
+  const err = await shell.openPath(target)
+  return { ok: err === '', error: err || null }
+}
+
 // ──────────────────────────────────────────────────────────── Import manuel
 
 // Importe un fichier externe dans `raw/` après normalisation du nom et

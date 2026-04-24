@@ -6,15 +6,18 @@ import {
   markdownRehypePlugins,
   markdownUrlTransform
 } from '../lib/markdown.js'
+import { applyMagneticSnap } from '../lib/magnetic-snap.js'
 import type { WikiGraphDataT, WikiGraphNodeT } from '@shared/ipc-contract.js'
 import { useWikiStore } from '../stores/wiki-store.js'
 import { linkifyWikiRefs } from './WikiPageViewer.js'
 
-// Visualisation force-directed du graphe du wiki — panneau plein cadre
-// qui remplace le canvas. Simulation physique continue (pas 300 iters
-// fixes — elle tourne TANT QUE le panneau est ouvert pour un rendu
-// vivant), hover qui met en évidence les arêtes connectées, flèches
-// directionnelles, ghost nodes pour les wikilinks orphelins.
+// Visualisation force-directed du graphe du wiki — side panel à gauche
+// du canvas (default 50%, redimensionnable avec snap magnétique au
+// centre). Laisse les shapes utilisateur visibles à droite. Simulation
+// physique continue (pas 300 iters fixes — elle tourne TANT QUE le
+// panneau est ouvert pour un rendu vivant), hover qui met en évidence
+// les arêtes connectées, flèches directionnelles, ghost nodes pour les
+// wikilinks orphelins.
 //
 // Algorithme : Fruchterman-Reingold simplifié + gravité + amortissement.
 //   - Répulsion coulombienne entre tous les nœuds
@@ -53,6 +56,7 @@ export default function WikiGraphModal({
   onClose
 }: WikiGraphModalProps): React.ReactElement | null {
   const openWikiPage = useWikiStore((s) => s.openWikiPage)
+  const setLeftPanelWidthFraction = useWikiStore((s) => s.setLeftPanelWidthFraction)
   const [data, setData] = useState<WikiGraphDataT | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -64,6 +68,30 @@ export default function WikiGraphModal({
   // wikilinks : met à jour cette valeur SANS fermer le graph.
   const [previewPageName, setPreviewPageName] = useState<string | null>(null)
 
+  // Largeur du side panel en fraction (0..1) de la zone canvas. Snap
+  // magnétique à 50% via `applyMagneticSnap` — l'user peut dépasser
+  // mais le panel "colle" au centre.
+  const [widthFraction, setWidthFraction] = useState(0.5)
+  const [resizing, setResizing] = useState(false)
+  const [snapped, setSnapped] = useState(true)
+  // Mode compact : sous 70% de largeur, les filtres par type vont dans
+  // un menu "⋯" pour ne pas écraser le header. Au-delà, layout normal.
+  const compactMode = widthFraction < 0.7
+  const [filtersMenuOpen, setFiltersMenuOpen] = useState(false)
+  // Recherche en compact : input caché derrière une icône 🔍, ouvert
+  // dans un mini-popover sous le bouton (n'élargit pas le header).
+  const [searchOpen, setSearchOpen] = useState(false)
+  // Si on quitte le mode compact (étendu au-delà du seuil), on ferme
+  // les menus déroulants qui n'ont plus de sens. Pattern render-reset.
+  const [lastCompact, setLastCompact] = useState(compactMode)
+  if (lastCompact !== compactMode) {
+    setLastCompact(compactMode)
+    if (!compactMode) {
+      setFiltersMenuOpen(false)
+      setSearchOpen(false)
+    }
+  }
+
   // Reset à l'ouverture (render-reset pour éviter setState-in-effect).
   const [lastOpen, setLastOpen] = useState(open)
   if (lastOpen !== open) {
@@ -73,6 +101,13 @@ export default function WikiGraphModal({
       setError(null)
     }
   }
+
+  // Publie la largeur courante au store dès que le graph est ouvert.
+  useEffect(() => {
+    if (!open) return
+    setLeftPanelWidthFraction(widthFraction)
+    return () => setLeftPanelWidthFraction(null)
+  }, [open, widthFraction, setLeftPanelWidthFraction])
 
   useEffect(() => {
     if (!open) return
@@ -121,87 +156,242 @@ export default function WikiGraphModal({
 
   const mountTarget = document.getElementById('canvas-overlay-root') ?? document.body
 
+  // Drag handle resize, snap magnétique au centre. Même logique que
+  // WikiPageViewer.startResize (mutualisable mais inliné pour rester
+  // local — le handle a son propre styling).
+  function startResize(e: React.PointerEvent): void {
+    e.preventDefault()
+    e.stopPropagation()
+    setResizing(true)
+    const container = mountTarget
+    let localSnapped = snapped
+    function onMove(ev: PointerEvent): void {
+      const rect = container.getBoundingClientRect()
+      const frac = (ev.clientX - rect.left) / rect.width
+      const clamped = Math.max(0.08, Math.min(0.95, frac))
+      const result = applyMagneticSnap(clamped, localSnapped)
+      localSnapped = result.snapped
+      setWidthFraction(result.frac)
+      setSnapped(result.snapped)
+    }
+    function onUp(): void {
+      setResizing(false)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }
+
   return createPortal(
     <div
-      className="pointer-events-auto absolute inset-0 flex flex-col"
+      className="pointer-events-auto absolute bottom-0 left-0 top-0 flex flex-col border-r shadow-2xl"
       role="dialog"
       aria-modal="false"
-      style={{ background: 'var(--bg-primary)' }}
+      style={{
+        width: `${widthFraction * 100}%`,
+        background: 'var(--bg-primary)',
+        borderColor: 'var(--border)'
+      }}
     >
+      {/* Handle de resize : barre verticale à droite avec snap visuel cyan. */}
+      <div
+        onPointerDown={startResize}
+        className="absolute bottom-0 right-0 top-0 z-10 w-[5px] cursor-col-resize hover:bg-[var(--fg-secondary)]"
+        style={{
+          background:
+            snapped && resizing ? '#22d3ee' : resizing ? 'var(--fg-secondary)' : 'transparent',
+          boxShadow: snapped && resizing ? '0 0 8px #22d3ee' : undefined,
+          transition: resizing ? 'none' : 'background 120ms ease-out',
+          transform: 'translateX(2px)'
+        }}
+        title={snapped ? 'Aimanté à 50% — tirer pour décoller' : 'Glisser pour redimensionner'}
+      />
       <header
-        className="flex shrink-0 items-center gap-3 border-b px-3 py-2"
+        className="relative flex shrink-0 items-center gap-2 border-b px-3 py-2"
         style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}
       >
-        <h2 className="text-[13px] font-semibold uppercase tracking-widest text-[var(--fg-muted)]">
-          Graphe du wiki
+        <h2 className="shrink-0 text-[13px] font-semibold uppercase tracking-widest text-[var(--fg-muted)]">
+          Graphe
         </h2>
         {data && (
-          <span className="text-[10px] text-[var(--fg-muted)]">
+          <span className="shrink-0 truncate text-[10px] text-[var(--fg-muted)]">
             {data.nodes.length} nœuds · {data.edges.length} liens
           </span>
         )}
 
-        {/* Recherche */}
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Rechercher un nœud…"
-          className="ml-4 w-60 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-tertiary)] px-2 py-1 text-[11px] text-[var(--fg-primary)] outline-none focus:border-[var(--fg-secondary)]"
-        />
+        {/* Recherche en mode large : input inline. En mode compact,
+            l'input est caché — remplacé par une icône loupe à côté de ⋯. */}
+        {!compactMode && (
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Rechercher…"
+            className="ml-2 w-60 min-w-0 shrink rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-tertiary)] px-2 py-1 text-[11px] text-[var(--fg-primary)] outline-none focus:border-[var(--fg-secondary)]"
+          />
+        )}
 
-        {/* Filtre par type */}
-        <div className="ml-2 flex items-center gap-1">
-          {ALL_TYPES.map((t) => {
-            const active = typeFilter.has(t)
-            return (
-              <button
-                key={t}
-                type="button"
-                onClick={() => toggleType(t)}
-                className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] transition-opacity"
-                style={{
-                  background: active ? 'var(--bg-tertiary)' : 'transparent',
-                  color: active ? 'var(--fg-primary)' : 'var(--fg-muted)',
-                  opacity: active ? 1 : 0.5,
-                  border: `1px solid ${active ? TYPE_COLORS[t] : 'var(--border)'}`
-                }}
-                title={`${active ? 'Masquer' : 'Afficher'} les ${t}`}
-              >
-                <span
-                  className="inline-block h-2 w-2 rounded-full"
-                  style={{ background: TYPE_COLORS[t] }}
-                />
-                {t}
-              </button>
-            )
-          })}
-          <button
-            type="button"
-            onClick={() => setShowOrphans((v) => !v)}
-            className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] transition-opacity"
-            style={{
-              background: showOrphans ? 'var(--bg-tertiary)' : 'transparent',
-              color: showOrphans ? 'var(--fg-primary)' : 'var(--fg-muted)',
-              opacity: showOrphans ? 1 : 0.5,
-              border: `1px dashed ${showOrphans ? '#ef4444' : 'var(--border)'}`
-            }}
-            title="Afficher les wikilinks brisés comme ghost nodes"
-          >
-            <span className="inline-block h-2 w-2 rounded-full border border-[#ef4444]" />
-            orphelins
-          </button>
-        </div>
+        {/* Spacer flex pour que les icônes restent collées à droite. */}
+        {compactMode && <div className="min-w-0 flex-1" />}
+
+        {/* Compact : icône loupe (toggle popover) + ⋯ filtres. */}
+        {compactMode ? (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                setSearchOpen((v) => !v)
+                setFiltersMenuOpen(false)
+              }}
+              className="shrink-0 rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[12px] leading-none text-[var(--fg-muted)] hover:text-[var(--fg-primary)]"
+              title="Rechercher un nœud"
+              aria-label="Rechercher"
+              aria-expanded={searchOpen}
+              style={{ background: search ? 'var(--bg-tertiary)' : 'transparent' }}
+            >
+              🔍
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setFiltersMenuOpen((v) => !v)
+                setSearchOpen(false)
+              }}
+              className="shrink-0 rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[12px] leading-none text-[var(--fg-muted)] hover:text-[var(--fg-primary)]"
+              title="Filtres par type"
+              aria-label="Filtres"
+              aria-expanded={filtersMenuOpen}
+            >
+              ⋯
+            </button>
+          </>
+        ) : (
+          <div className="ml-2 flex flex-wrap items-center gap-1">
+            {ALL_TYPES.map((t) => {
+              const active = typeFilter.has(t)
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => toggleType(t)}
+                  className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] transition-opacity"
+                  style={{
+                    background: active ? 'var(--bg-tertiary)' : 'transparent',
+                    color: active ? 'var(--fg-primary)' : 'var(--fg-muted)',
+                    opacity: active ? 1 : 0.5,
+                    border: `1px solid ${active ? TYPE_COLORS[t] : 'var(--border)'}`
+                  }}
+                  title={`${active ? 'Masquer' : 'Afficher'} les ${t}`}
+                >
+                  <span
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ background: TYPE_COLORS[t] }}
+                  />
+                  {t}
+                </button>
+              )
+            })}
+            <button
+              type="button"
+              onClick={() => setShowOrphans((v) => !v)}
+              className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] transition-opacity"
+              style={{
+                background: showOrphans ? 'var(--bg-tertiary)' : 'transparent',
+                color: showOrphans ? 'var(--fg-primary)' : 'var(--fg-muted)',
+                opacity: showOrphans ? 1 : 0.5,
+                border: `1px dashed ${showOrphans ? '#ef4444' : 'var(--border)'}`
+              }}
+              title="Afficher les wikilinks brisés comme ghost nodes"
+            >
+              <span className="inline-block h-2 w-2 rounded-full border border-[#ef4444]" />
+              orphelins
+            </button>
+          </div>
+        )}
 
         <button
           type="button"
           onClick={onClose}
-          className="ml-auto rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-0.5 text-[11px] text-[var(--fg-muted)] hover:text-[var(--fg-primary)]"
+          className={`${compactMode ? '' : 'ml-auto'} shrink-0 rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[11px] leading-none text-[var(--fg-muted)] hover:text-[var(--fg-primary)]`}
           aria-label="Fermer"
           title="Fermer (Échap)"
         >
-          × Fermer
+          ×
         </button>
+
+        {/* Popover de recherche en mode compact. Auto-focus à l'ouverture. */}
+        {compactMode && searchOpen && (
+          <div
+            className="absolute right-2 top-full z-20 mt-1 rounded-[var(--radius-sm)] border p-2 shadow-lg"
+            style={{
+              borderColor: 'var(--border)',
+              background: 'var(--bg-secondary)'
+            }}
+          >
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Rechercher un nœud…"
+              autoFocus
+              className="w-56 rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-tertiary)] px-2 py-1 text-[11px] text-[var(--fg-primary)] outline-none focus:border-[var(--fg-secondary)]"
+            />
+          </div>
+        )}
+
+        {/* Dropdown des filtres en mode compact. Positionné absolute sous
+            le header — ne pousse pas le contenu, se ferme au clic ⋯ ou
+            au resize hors compact. */}
+        {compactMode && filtersMenuOpen && (
+          <div
+            className="absolute right-2 top-full z-20 mt-1 flex max-w-[260px] flex-wrap gap-1 rounded-[var(--radius-sm)] border p-2 shadow-lg"
+            style={{
+              borderColor: 'var(--border)',
+              background: 'var(--bg-secondary)'
+            }}
+          >
+            {ALL_TYPES.map((t) => {
+              const active = typeFilter.has(t)
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => toggleType(t)}
+                  className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] transition-opacity"
+                  style={{
+                    background: active ? 'var(--bg-tertiary)' : 'transparent',
+                    color: active ? 'var(--fg-primary)' : 'var(--fg-muted)',
+                    opacity: active ? 1 : 0.5,
+                    border: `1px solid ${active ? TYPE_COLORS[t] : 'var(--border)'}`
+                  }}
+                  title={`${active ? 'Masquer' : 'Afficher'} les ${t}`}
+                >
+                  <span
+                    className="inline-block h-2 w-2 rounded-full"
+                    style={{ background: TYPE_COLORS[t] }}
+                  />
+                  {t}
+                </button>
+              )
+            })}
+            <button
+              type="button"
+              onClick={() => setShowOrphans((v) => !v)}
+              className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] transition-opacity"
+              style={{
+                background: showOrphans ? 'var(--bg-tertiary)' : 'transparent',
+                color: showOrphans ? 'var(--fg-primary)' : 'var(--fg-muted)',
+                opacity: showOrphans ? 1 : 0.5,
+                border: `1px dashed ${showOrphans ? '#ef4444' : 'var(--border)'}`
+              }}
+              title="Afficher les wikilinks brisés comme ghost nodes"
+            >
+              <span className="inline-block h-2 w-2 rounded-full border border-[#ef4444]" />
+              orphelins
+            </button>
+          </div>
+        )}
       </header>
 
       <div className="relative flex-1 overflow-hidden">
@@ -265,12 +455,21 @@ export default function WikiGraphModal({
         className="flex shrink-0 items-center gap-3 border-t px-3 py-2 text-[10px] text-[var(--fg-muted)]"
         style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}
       >
-        <span>
-          <strong style={{ color: 'var(--fg-secondary)' }}>Taille</strong> ∝ backlinks ·
-          <strong style={{ color: 'var(--fg-secondary)' }}> Contour blanc</strong> = pilier ·
-          <strong style={{ color: '#ef4444' }}> ⬢ pointillés</strong> = orphelin
-        </span>
-        <span className="ml-auto">Survol : met en évidence les liens · Drag : déplacer · Clic : ouvrir la page</span>
+        {compactMode ? (
+          // En mode compact, légende minimaliste — un seul résumé.
+          <span className="truncate">Survol : highlight · Drag : déplacer · Clic : ouvrir</span>
+        ) : (
+          <>
+            <span>
+              <strong style={{ color: 'var(--fg-secondary)' }}>Taille</strong> ∝ backlinks ·
+              <strong style={{ color: 'var(--fg-secondary)' }}> Contour blanc</strong> = pilier ·
+              <strong style={{ color: '#ef4444' }}> ⬢ pointillés</strong> = orphelin
+            </span>
+            <span className="ml-auto">
+              Survol : met en évidence les liens · Drag : déplacer · Clic : ouvrir la page
+            </span>
+          </>
+        )}
       </footer>
     </div>,
     mountTarget

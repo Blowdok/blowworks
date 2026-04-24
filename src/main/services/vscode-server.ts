@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
+  readFileSync,
   renameSync,
   writeFileSync,
   rmSync
@@ -122,6 +123,12 @@ class VSCodeServer {
     const ghToken = readStoredGitHubToken()
     writePatFile(authExtensionDir, ghToken)
 
+    // Désactive les extensions user qui sont cassées sur Code.exe serve-web
+    // (Node 22 + sandbox extensionHost) ou qui spamment des appels vers
+    // des endpoints inexistants. Idempotent — restaurable manuellement en
+    // renommant `package.json.blowworks-disabled` → `package.json`.
+    disableBrokenUserExtensions(serverDataDir)
+
     const isWin = process.platform === 'win32'
 
     // Sur Windows, pour invoquer la sous-commande `serve-web` SANS ouvrir
@@ -139,6 +146,13 @@ class VSCodeServer {
     // chargement (un dossier d'extension sans manifest est ignoré). Notre
     // `blowworks-auth` peut alors enregistrer l'id `github` sans conflit.
     disableBuiltinGitHubAuth(resolved.cliJs!)
+
+    // Bascule le marketplace par défaut (Microsoft, restreint aux builds
+    // VSCode signés) vers OpenVSX pour que l'install/update d'extensions
+    // depuis l'UI VSCode embarquée fonctionne. Microsoft renvoie 403/404
+    // sur leur gallery quand on tape depuis Code.exe + serve-web non
+    // officiel — OpenVSX accepte tout client.
+    patchProductJsonForOpenVSX(resolved.cliJs!)
 
     const baseArgs = [
       '--host',
@@ -377,6 +391,135 @@ function disableBuiltinGitHubAuth(cliJs: string): void {
       }
     } catch (err) {
       console.error('[vscode-server] rename échoué pour', extDir, ':', err)
+    }
+  }
+}
+
+// Endpoints OpenVSX (registry alternatif compatible avec l'API gallery
+// de Microsoft). Catalogue ~80% des extensions populaires ; manque les
+// exclusives Microsoft (Pylance, Remote-SSH, Live Share).
+const OPENVSX_GALLERY = {
+  serviceUrl: 'https://open-vsx.org/vscode/gallery',
+  itemUrl: 'https://open-vsx.org/vscode/item',
+  resourceUrlTemplate:
+    'https://open-vsx.org/api/{publisher}/{name}/{version}/file/{path}',
+  controlUrl: '',
+  recommendationsUrl: ''
+} as const
+
+// Patch le `product.json` pour rediriger les requêtes marketplace vers
+// OpenVSX. Idempotent : on ne ré-écrit pas si la cible OpenVSX est déjà
+// active. Sauvegarde l'original dans `product.json.blowworks-backup` pour
+// permettre un restore manuel.
+//
+// Comme `disableBuiltinGitHubAuth`, on patche les DEUX endroits :
+//   1. Cache user `~/.vscode/cli/serve-web/<commit-long>/product.json`
+//      = ce qui est réellement chargé au runtime.
+//   2. Source bundlée `<root>/<commit-short>/resources/app/product.json`
+//      = utilisé par VSCode pour ré-extraire vers (1) après update.
+function patchProductJsonForOpenVSX(cliJs: string): void {
+  const targets: string[] = []
+
+  // Cible #1 : cache user (chemin direct, pas de `resources/app/` intermédiaire).
+  try {
+    const userCacheRoot = join(app.getPath('home'), '.vscode', 'cli', 'serve-web')
+    if (existsSync(userCacheRoot)) {
+      for (const entry of readdirSync(userCacheRoot)) {
+        const candidate = join(userCacheRoot, entry, 'product.json')
+        if (existsSync(candidate)) targets.push(candidate)
+      }
+    }
+  } catch (err) {
+    console.error('[vscode-server] scan product.json (cache) échoué :', err)
+  }
+
+  // Cible #2 : source bundlée à côté de `out/cli.js`.
+  try {
+    const appDir = dirname(dirname(cliJs))
+    const bundled = join(appDir, 'product.json')
+    if (existsSync(bundled)) targets.push(bundled)
+  } catch (err) {
+    console.error('[vscode-server] résolution product.json bundlé échouée :', err)
+  }
+
+  if (targets.length === 0) {
+    console.warn(
+      '[vscode-server] aucun product.json trouvé — cold start ? Le marketplace OpenVSX sera actif au prochain démarrage.'
+    )
+    return
+  }
+
+  for (const productPath of targets) {
+    try {
+      const raw = readFileSync(productPath, 'utf8')
+      let parsed: { extensionsGallery?: { serviceUrl?: string } } & Record<string, unknown>
+      try {
+        parsed = JSON.parse(raw)
+      } catch (err) {
+        console.error('[vscode-server] product.json invalide :', productPath, err)
+        continue
+      }
+
+      // Idempotence : déjà patché ? on skip.
+      if (parsed.extensionsGallery?.serviceUrl === OPENVSX_GALLERY.serviceUrl) {
+        continue
+      }
+
+      // Backup une seule fois : si déjà fait, on ne réécrase pas
+      // l'original (qui contient les vrais URLs Microsoft).
+      const backupPath = `${productPath}.blowworks-backup`
+      if (!existsSync(backupPath)) {
+        writeFileSync(backupPath, raw, 'utf8')
+      }
+
+      parsed.extensionsGallery = { ...OPENVSX_GALLERY }
+      writeFileSync(productPath, JSON.stringify(parsed, null, 2), 'utf8')
+      console.log('[vscode-server] product.json basculé vers OpenVSX :', productPath)
+    } catch (err) {
+      console.error('[vscode-server] patch product.json échoué pour', productPath, ':', err)
+    }
+  }
+}
+
+// Désactive les extensions user présentes dans `<serverDataDir>/extensions/`
+// qui plantent sur Code.exe serve-web ou polluent la console. Méthode :
+// renommer `package.json` → `package.json.blowworks-disabled` (VSCode skip
+// les dossiers d'extensions sans manifest).
+//
+// Patterns désactivés (préfixes — la version à la fin varie) :
+//   - `github.copilot-chat-` : `PendingMigrationError: navigator is now a
+//     global` au démarrage (bug Node 22 dans copilot-chat ≤ 0.45.x), plus
+//     une rafale de 404 sur `api.github.com/copilot/mcp_registry`. Tant
+//     que Microsoft n'a pas patché, l'extension est inutilisable et
+//     remplit le log d'erreurs.
+//
+// Pour réactiver une extension désactivée : renommer manuellement
+// `package.json.blowworks-disabled` → `package.json` dans le dossier
+// `<userData>/openvscode-server-data/extensions/<id>-<version>/`.
+const DISABLED_USER_EXTENSIONS = ['github.copilot-chat-']
+
+function disableBrokenUserExtensions(serverDataDir: string): void {
+  const extDir = join(serverDataDir, 'extensions')
+  if (!existsSync(extDir)) return
+  let entries: string[]
+  try {
+    entries = readdirSync(extDir)
+  } catch (err) {
+    console.error('[vscode-server] scan extensions user échoué :', err)
+    return
+  }
+  for (const entry of entries) {
+    const matched = DISABLED_USER_EXTENSIONS.some((prefix) => entry.startsWith(prefix))
+    if (!matched) continue
+    const pkg = join(extDir, entry, 'package.json')
+    const backup = join(extDir, entry, 'package.json.blowworks-disabled')
+    if (existsSync(backup)) continue // déjà désactivée
+    if (!existsSync(pkg)) continue
+    try {
+      renameSync(pkg, backup)
+      console.log('[vscode-server] extension désactivée (broken/spammy) :', entry)
+    } catch (err) {
+      console.error('[vscode-server] désactivation échouée pour', entry, ':', err)
     }
   }
 }

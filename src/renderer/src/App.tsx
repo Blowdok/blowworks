@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar.js'
 import TabsBar from './components/TabsBar.js'
 import InfiniteCanvas from './components/canvas/InfiniteCanvas.js'
 import DeleteInterceptor from './components/DeleteInterceptor.js'
+import ShapeAutoStacker from './components/ShapeAutoStacker.js'
 import { useProjectStore } from './stores/project-store.js'
 import { useUIStore } from './stores/ui-store.js'
 import { useChatStore } from './stores/chat-store.js'
@@ -64,6 +65,11 @@ export default function App() {
           confirmation. Doit vivre au niveau App pour survivre à tout
           changement de layout ou de page tldraw. */}
       <DeleteInterceptor />
+      {/* Auto-stack des shapes utilisateur en colonne à droite quand un
+          panneau gauche (viewer markdown ou graph) est ouvert. Restaure
+          les positions à la fermeture. Cohabite avec n'importe quel
+          panneau via `wikiStore.leftPanelWidthFraction`. */}
+      <ShapeAutoStacker />
     </div>
   )
 }

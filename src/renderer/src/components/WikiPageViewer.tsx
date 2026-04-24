@@ -6,6 +6,7 @@ import {
   markdownRehypePlugins,
   markdownUrlTransform
 } from '../lib/markdown.js'
+import { applyMagneticSnap } from '../lib/magnetic-snap.js'
 import { useWikiStore } from '../stores/wiki-store.js'
 
 // Éditeur + aperçu markdown d'une page wiki. Monté une seule fois (dans
@@ -28,8 +29,24 @@ type Mode = 'split' | 'edit' | 'preview'
 
 export default function WikiPageViewer(): React.ReactElement | null {
   const pageName = useWikiStore((s) => s.openPageName)
+  const filePath = useWikiStore((s) => s.openFilePath)
   const closeWikiPage = useWikiStore((s) => s.closeWikiPage)
   const openWikiPage = useWikiStore((s) => s.openWikiPage)
+  const setLeftPanelWidthFraction = useWikiStore((s) => s.setLeftPanelWidthFraction)
+
+  // Clé unifiée qui identifie la cible courante du viewer :
+  //   - wiki-page (legacy) : `wiki/<pageName>`
+  //   - fichier arbitraire : `<filePath>` tel quel
+  // Cette clé sert à :
+  //   1. Déclencher le reset d'état quand la cible change.
+  //   2. Afficher le chemin dans le header.
+  //   3. Passer au Ctrl+S la bonne fonction d'écriture (writeWiki vs writeFile).
+  const target = filePath ?? (pageName ? `wiki/${pageName}` : null)
+  // Les .md sont rendus comme markdown ; les .txt/autres textes sont
+  // affichés en mode aperçu sans transformation wikilink.
+  const isMarkdown = target
+    ? /\.(md|markdown)$/i.test(target)
+    : true
 
   const [original, setOriginal] = useState<string | null>(null)
   const [draft, setDraft] = useState<string>('')
@@ -39,27 +56,29 @@ export default function WikiPageViewer(): React.ReactElement | null {
   const [savedAt, setSavedAt] = useState<number | null>(null)
 
   // Largeur du side panel en fraction (0..1) de la zone canvas. Permet
-  // de voir ses shapes (chat, terminal, etc.) sur la gauche pendant
-  // qu'on consulte/édite une page wiki à droite. Redimensionnable via
-  // un handle de drag à la bordure gauche du panel.
+  // de voir ses shapes (chat, terminal, etc.) à droite pendant qu'on
+  // consulte/édite une page wiki à gauche. Redimensionnable via un
+  // handle de drag à la bordure droite du panel. Snap magnétique à
+  // 50% : on peut dépasser, mais le panel "colle" au centre.
   const [widthFraction, setWidthFraction] = useState(0.5)
   const [resizing, setResizing] = useState(false)
+  const [snapped, setSnapped] = useState(true)
 
   const dirty = original !== null && draft !== original
   // Refs pour que le handler de clic wikilink dans le useMemo ci-dessous
-  // voie TOUJOURS la valeur courante de dirty/pageName au moment du
+  // voie TOUJOURS la valeur courante de dirty/target au moment du
   // clic, sans recréer le memo à chaque frappe (draft change = dirty
   // change → sans ref, invalidation du memo à chaque touche).
   const dirtyRef = useRef(dirty)
-  const pageNameRef = useRef(pageName)
+  const targetRef = useRef(target)
   dirtyRef.current = dirty
-  pageNameRef.current = pageName
+  targetRef.current = target
 
-  // Reset content/error quand pageName change — render-reset pattern
+  // Reset content/error quand la cible change — render-reset pattern
   // pour éviter `react-hooks/set-state-in-effect`.
-  const [lastName, setLastName] = useState(pageName)
-  if (lastName !== pageName) {
-    setLastName(pageName)
+  const [lastTarget, setLastTarget] = useState(target)
+  if (lastTarget !== target) {
+    setLastTarget(target)
     setOriginal(null)
     setDraft('')
     setError(null)
@@ -67,11 +86,26 @@ export default function WikiPageViewer(): React.ReactElement | null {
     setSavedAt(null)
   }
 
+  // Publie la largeur courante au store dès qu'un target est ouvert.
+  // Au cleanup (close ou unmount), repasse à null pour que le stacker
+  // restaure les positions originales des shapes.
   useEffect(() => {
-    if (!pageName) return
+    if (!target) return
+    setLeftPanelWidthFraction(widthFraction)
+    return () => setLeftPanelWidthFraction(null)
+  }, [target, widthFraction, setLeftPanelWidthFraction])
+
+  useEffect(() => {
+    if (!target) return
     let cancelled = false
-    window.blow.wiki
-      .readWiki(pageName)
+    // Branche sur le mode : wiki-page (readWiki) ou fichier arbitraire
+    // (readFile avec chemin complet relatif au dossier wiki).
+    const loader = filePath
+      ? window.blow.wiki.readFile(filePath)
+      : pageName
+        ? window.blow.wiki.readWiki(pageName)
+        : Promise.resolve('')
+    loader
       .then((c) => {
         if (!cancelled) {
           const str = c as string
@@ -85,11 +119,11 @@ export default function WikiPageViewer(): React.ReactElement | null {
     return () => {
       cancelled = true
     }
-  }, [pageName])
+  }, [target, filePath, pageName])
 
   // Fermeture sur Échap (avec garde-dirty).
   useEffect(() => {
-    if (!pageName) return
+    if (!target) return
     function onKey(e: KeyboardEvent): void {
       if (e.key === 'Escape') {
         e.stopPropagation()
@@ -105,10 +139,10 @@ export default function WikiPageViewer(): React.ReactElement | null {
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
     // `handleClose` et `handleSave` sont recréés à chaque render, on
-    // évite de les mettre en deps — seul `pageName`/`dirty`/`saving`
+    // évite de les mettre en deps — seul `target`/`dirty`/`saving`
     // déterminent la logique.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageName, dirty, saving])
+  }, [target, dirty, saving])
 
   function handleClose(): void {
     if (dirty) {
@@ -121,11 +155,17 @@ export default function WikiPageViewer(): React.ReactElement | null {
   }
 
   async function handleSave(): Promise<void> {
-    if (!pageName || !dirty || saving) return
+    if (!dirty || saving) return
     setSaving(true)
     setError(null)
     try {
-      await window.blow.wiki.writeWiki(pageName, draft)
+      if (filePath) {
+        await window.blow.wiki.writeFile(filePath, draft)
+      } else if (pageName) {
+        await window.blow.wiki.writeWiki(pageName, draft)
+      } else {
+        return
+      }
       setOriginal(draft)
       setSavedAt(Date.now())
       setTimeout(() => setSavedAt(null), 3000)
@@ -138,6 +178,10 @@ export default function WikiPageViewer(): React.ReactElement | null {
 
   const rendered = useMemo(() => {
     if (original === null) return null
+    // Fichiers non-markdown (txt, json brut déposé manuellement, etc.) :
+    // on wrap dans un code block pour affichage propre sans essayer de
+    // résoudre des wikilinks dans du contenu non-textuel-structuré.
+    const body = isMarkdown ? linkifyWikiRefs(draft) : `\`\`\`\n${draft}\n\`\`\``
     return (
       <ReactMarkdown
         remarkPlugins={markdownRemarkPlugins}
@@ -146,7 +190,7 @@ export default function WikiPageViewer(): React.ReactElement | null {
         components={{
           a: ({ children, href, ...rest }) => {
             if (href && href.startsWith('wiki-page://')) {
-              const target = href.slice('wiki-page://'.length)
+              const wikiTarget = href.slice('wiki-page://'.length)
               return (
                 <a
                   {...rest}
@@ -154,14 +198,14 @@ export default function WikiPageViewer(): React.ReactElement | null {
                   onClick={(e) => {
                     e.preventDefault()
                     // Garde dirty : refs pour éviter la closure stale
-                    // (le useMemo n'a pas dirty/pageName dans ses deps).
+                    // (le useMemo n'a pas dirty/target dans ses deps).
                     if (dirtyRef.current) {
                       const ok = window.confirm(
-                        `Modifications non sauvegardées sur "${pageNameRef.current}". Quitter sans enregistrer ?`
+                        `Modifications non sauvegardées sur "${targetRef.current}". Quitter sans enregistrer ?`
                       )
                       if (!ok) return
                     }
-                    openWikiPage(target)
+                    openWikiPage(wikiTarget)
                   }}
                   style={{ color: 'var(--fg-secondary)', cursor: 'pointer' }}
                 >
@@ -177,12 +221,12 @@ export default function WikiPageViewer(): React.ReactElement | null {
           }
         }}
       >
-        {linkifyWikiRefs(draft)}
+        {body}
       </ReactMarkdown>
     )
-  }, [draft, openWikiPage, original])
+  }, [draft, isMarkdown, openWikiPage, original])
 
-  if (!pageName) return null
+  if (!target) return null
 
   const mountTarget = document.getElementById('canvas-overlay-root') ?? document.body
 
@@ -194,13 +238,20 @@ export default function WikiPageViewer(): React.ReactElement | null {
     e.stopPropagation()
     setResizing(true)
     const container = mountTarget
+    // Snap state local au drag — closure stable pour calculer
+    // l'hystérésis sans subir le re-render.
+    let localSnapped = snapped
     function onMove(ev: PointerEvent): void {
       const rect = container.getBoundingClientRect()
       // Panel aligné à gauche : fraction = (pointerX - leftEdge) / totalWidth
       const frac = (ev.clientX - rect.left) / rect.width
-      // Clamp : min 22% (lecture rapide), max 92% (quasi plein)
-      const clamped = Math.max(0.22, Math.min(0.92, frac))
-      setWidthFraction(clamped)
+      // Clamp soft : empêche de tomber sous 8% (handle reste attrapable)
+      // ou de dépasser 95% (toujours un sliver de canvas visible).
+      const clamped = Math.max(0.08, Math.min(0.95, frac))
+      const result = applyMagneticSnap(clamped, localSnapped)
+      localSnapped = result.snapped
+      setWidthFraction(result.frac)
+      setSnapped(result.snapped)
     }
     function onUp(): void {
       setResizing(false)
@@ -229,11 +280,14 @@ export default function WikiPageViewer(): React.ReactElement | null {
         onPointerDown={startResize}
         className="absolute bottom-0 right-0 top-0 z-10 w-[5px] cursor-col-resize hover:bg-[var(--fg-secondary)]"
         style={{
-          background: resizing ? 'var(--fg-secondary)' : 'transparent',
+          // Aimanté → handle cyan + glow pour signaler "vous êtes au centre".
+          // En cours de redim sans snap → blanc plein. Au repos → transparent.
+          background: snapped && resizing ? '#22d3ee' : resizing ? 'var(--fg-secondary)' : 'transparent',
+          boxShadow: snapped && resizing ? '0 0 8px #22d3ee' : undefined,
           transition: resizing ? 'none' : 'background 120ms ease-out',
           transform: 'translateX(2px)'
         }}
-        title="Glisser pour redimensionner"
+        title={snapped ? 'Aimanté à 50% — tirer pour décoller' : 'Glisser pour redimensionner'}
       />
       <header
         className="flex shrink-0 items-center gap-3 border-b px-3 py-2"
@@ -249,7 +303,7 @@ export default function WikiPageViewer(): React.ReactElement | null {
           ← Fermer
         </button>
         <code className="flex-1 truncate text-[12px] text-[var(--fg-muted)]">
-          wiki/{pageName}
+          {target}
           {dirty && <span className="ml-2" style={{ color: '#f59e0b' }}>●</span>}
         </code>
 

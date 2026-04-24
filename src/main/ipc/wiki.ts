@@ -72,6 +72,25 @@ export function registerWikiHandlers(): void {
     return { ok: err === '', error: err || null }
   })
 
+  ipcMain.handle(IPC_CHANNELS.wiki.listAllFiles, () => wiki.listAllFiles())
+
+  ipcMain.handle(IPC_CHANNELS.wiki.openFileInOS, async (_evt, raw) => {
+    const { relPath } = z.object({ relPath: z.string().min(1).max(1024) }).parse(raw)
+    return wiki.openFileInOS(relPath)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.wiki.readFile, async (_evt, raw) => {
+    const { relPath } = z.object({ relPath: z.string().min(1).max(1024) }).parse(raw)
+    return wiki.readFile(relPath)
+  })
+  ipcMain.handle(IPC_CHANNELS.wiki.writeFile, async (_evt, raw) => {
+    const { relPath, content } = z
+      .object({ relPath: z.string().min(1).max(1024), content: z.string().max(1_000_000) })
+      .parse(raw)
+    await wiki.writeFile(relPath, content)
+    return { ok: true }
+  })
+
   // Import manuel : ouvre un file picker multi-sélection + copie chaque
   // fichier compatible dans raw/. Retourne le détail par fichier (succès
   // ou erreur) pour que la UI affiche un récap honnête.

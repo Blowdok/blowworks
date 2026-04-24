@@ -109,9 +109,19 @@ export const IPC_CHANNELS = {
     appendLog: 'wiki.appendLog',
     openFolderInExplorer: 'wiki.openFolderInExplorer',
     openRawInExplorer: 'wiki.openRawInExplorer',
+    openFileInOS: 'wiki.openFileInOS',
+    // Lecture/écriture d'un fichier texte arbitraire dans le dossier
+    // wiki (hors `wiki/`). Utilisé par le viewer intégré quand l'user
+    // clique dans l'explorateur sur SCHEMA.md, log.md, raw/ ou audit/.
+    readFile: 'wiki.readFile',
+    writeFile: 'wiki.writeFile',
     // Import manuel : ouvre un file picker + copie .md/.txt dans raw/
     // pour ingestion par le Wiki Builder. Atomique côté renderer.
     importToRaw: 'wiki.importToRaw',
+    // Arborescence complète du dossier wiki (pas juste wiki/).
+    // Utilisé par l'explorateur de la sidebar pour afficher TOUS les
+    // fichiers créés (raw, audit, SCHEMA, log, etc.).
+    listAllFiles: 'wiki.listAllFiles',
     // Graphe du wiki (Sprint 3 étape 2). Retourne {nodes, edges}
     // construits à partir des wikilinks du dossier wiki/.
     getGraph: 'wiki.getGraph'

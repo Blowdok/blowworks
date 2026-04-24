@@ -51,7 +51,13 @@ export const PROJECT_CORRIDOR_GAP =
 
 export function filterProjectShapes(editor: Editor, projectId: string): TLShape[] {
   return editor.getCurrentPageShapes().filter((s) => {
-    if (s.type !== 'vscode' && s.type !== 'terminal' && s.type !== 'chat') return false
+    // Types de shapes "portail" affectables à un projet. BrowserShape a été
+    // ajoutée après ChatShape (feat navigateur intégré) mais doit aussi
+    // être rangée — sans ça, `arrange` oublie les iframes web et l'user
+    // voit une shape "paumée" après avoir cliqué sur ▦.
+    if (s.type !== 'vscode' && s.type !== 'terminal' && s.type !== 'chat' && s.type !== 'browser') {
+      return false
+    }
     const pid = (s.props as { projectId?: string | null }).projectId
     return pid === projectId
   })
@@ -239,6 +245,19 @@ export function arrangeProjectInGrid(
         editor.updateShape({
           id: s.id,
           type: 'chat',
+          x: cell.x,
+          y: cell.y,
+          rotation: 0,
+          props: { w: cell.w, h: cell.h }
+        })
+      } else if (s.type === 'browser') {
+        // BrowserShape : ajoutée après ChatShape. Partial update sur x/y
+        // + taille cellule. L'url, l'historique et le projectId restent
+        // intacts. Sans cette branche, le filtre a beau capturer la shape,
+        // elle n'est jamais déplacée → reste à sa position d'origine.
+        editor.updateShape({
+          id: s.id,
+          type: 'browser',
           x: cell.x,
           y: cell.y,
           rotation: 0,
