@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
+
+// Clés localStorage pour persister l'état UI du viewer (mode d'affichage
+// + largeur du panneau) entre ouvertures et reloads de l'app. Lus
+// synchrones au 1er render → pas de flash de défaut à l'ouverture.
+const LS_MODE_KEY = 'blow.wiki.viewer.mode'
+const LS_WIDTH_KEY = 'blow.wiki.viewer.widthFraction'
 import {
   markdownRemarkPlugins,
   markdownRehypePlugins,
@@ -51,7 +57,12 @@ export default function WikiPageViewer(): React.ReactElement | null {
   const [original, setOriginal] = useState<string | null>(null)
   const [draft, setDraft] = useState<string>('')
   const [error, setError] = useState<string | null>(null)
-  const [mode, setMode] = useState<Mode>('split')
+  // Mode persisté en localStorage : conserve le dernier choix entre
+  // ouvertures et reloads. Défaut = 'split' si rien en mémoire.
+  const [mode, setMode] = useState<Mode>(() => {
+    const saved = localStorage.getItem(LS_MODE_KEY)
+    return saved === 'edit' || saved === 'preview' || saved === 'split' ? saved : 'split'
+  })
   const [saving, setSaving] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
 
@@ -60,7 +71,12 @@ export default function WikiPageViewer(): React.ReactElement | null {
   // consulte/édite une page wiki à gauche. Redimensionnable via un
   // handle de drag à la bordure droite du panel. Snap magnétique à
   // 50% : on peut dépasser, mais le panel "colle" au centre.
-  const [widthFraction, setWidthFraction] = useState(0.5)
+  // Persisté en localStorage pour conserver le ratio entre sessions.
+  const [widthFraction, setWidthFraction] = useState(() => {
+    const saved = localStorage.getItem(LS_WIDTH_KEY)
+    const n = saved ? parseFloat(saved) : NaN
+    return Number.isFinite(n) && n >= 0.08 && n <= 0.95 ? n : 0.5
+  })
   const [resizing, setResizing] = useState(false)
   const [snapped, setSnapped] = useState(true)
   // Feedback visuel temporaire après un copier réussi (icône → ✓ pendant 1.5s).
@@ -96,6 +112,15 @@ export default function WikiPageViewer(): React.ReactElement | null {
     setLeftPanelWidthFraction(widthFraction)
     return () => setLeftPanelWidthFraction(null)
   }, [target, widthFraction, setLeftPanelWidthFraction])
+
+  // Persiste le mode d'affichage et la largeur du panneau à chaque
+  // changement, pour les restaurer à la prochaine ouverture / reload.
+  useEffect(() => {
+    localStorage.setItem(LS_MODE_KEY, mode)
+  }, [mode])
+  useEffect(() => {
+    localStorage.setItem(LS_WIDTH_KEY, String(widthFraction))
+  }, [widthFraction])
 
   useEffect(() => {
     if (!target) return

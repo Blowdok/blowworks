@@ -51,6 +51,10 @@ const TYPE_COLORS: Record<string, string> = {
 // Types disponibles pour le filtre (couvre le seed wiki + ghost).
 const ALL_TYPES = ['concept', 'connection', 'qa', 'projet', 'personne', 'outil', 'décision']
 
+// Clé localStorage pour persister la largeur du panneau graph entre
+// ouvertures et reloads. Lue synchrone au 1er render — pas de flash.
+const LS_GRAPH_WIDTH_KEY = 'blow.wiki.graph.widthFraction'
+
 export default function WikiGraphModal({
   open,
   onClose
@@ -73,8 +77,13 @@ export default function WikiGraphModal({
 
   // Largeur du side panel en fraction (0..1) de la zone canvas. Snap
   // magnétique à 50% via `applyMagneticSnap` — l'user peut dépasser
-  // mais le panel "colle" au centre.
-  const [widthFraction, setWidthFraction] = useState(0.5)
+  // mais le panel "colle" au centre. Persistée en localStorage pour
+  // restaurer le dernier ratio entre ouvertures / reloads.
+  const [widthFraction, setWidthFraction] = useState(() => {
+    const saved = localStorage.getItem(LS_GRAPH_WIDTH_KEY)
+    const n = saved ? parseFloat(saved) : NaN
+    return Number.isFinite(n) && n >= 0.08 && n <= 0.95 ? n : 0.5
+  })
   const [resizing, setResizing] = useState(false)
   const [snapped, setSnapped] = useState(true)
   // Mode compact : sous 70% de largeur, les filtres par type vont dans
@@ -111,6 +120,12 @@ export default function WikiGraphModal({
     setLeftPanelWidthFraction(widthFraction)
     return () => setLeftPanelWidthFraction(null)
   }, [open, widthFraction, setLeftPanelWidthFraction])
+
+  // Persiste la largeur à chaque changement, pour la restaurer à la
+  // prochaine ouverture / reload.
+  useEffect(() => {
+    localStorage.setItem(LS_GRAPH_WIDTH_KEY, String(widthFraction))
+  }, [widthFraction])
 
   useEffect(() => {
     if (!open) return
