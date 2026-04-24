@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import {
@@ -67,6 +67,9 @@ export default function WikiGraphModal({
   // et pousse le graph à droite en split 50/50. Navigation interne aux
   // wikilinks : met à jour cette valeur SANS fermer le graph.
   const [previewPageName, setPreviewPageName] = useState<string | null>(null)
+  // Ref vers GraphCanvas pour appeler resetView/fitToView depuis le
+  // menu ⋯ du header (dropdown compact ET boutons inline non-compact).
+  const graphCanvasRef = useRef<GraphCanvasHandle>(null)
 
   // Largeur du side panel en fraction (0..1) de la zone canvas. Snap
   // magnétique à 50% via `applyMagneticSnap` — l'user peut dépasser
@@ -310,6 +313,31 @@ export default function WikiGraphModal({
           </div>
         )}
 
+        {/* Boutons de vue (Fit / Reset zoom) visibles en mode non-compact.
+            En mode compact ils sont groupés dans le dropdown ⋯. */}
+        {!compactMode && (
+          <>
+            <button
+              type="button"
+              onClick={() => graphCanvasRef.current?.fitToView()}
+              className="shrink-0 rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[11px] leading-none text-[var(--fg-muted)] hover:text-[var(--fg-primary)]"
+              aria-label="Ajuster à l'écran"
+              title="Ajuster à l'écran (recadre sur les nœuds visibles)"
+            >
+              ⊞
+            </button>
+            <button
+              type="button"
+              onClick={() => graphCanvasRef.current?.resetView()}
+              className="shrink-0 rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[11px] leading-none text-[var(--fg-muted)] hover:text-[var(--fg-primary)]"
+              aria-label="Réinitialiser le zoom"
+              title="Réinitialiser le zoom (double-clic sur le vide fait pareil)"
+            >
+              ↺
+            </button>
+          </>
+        )}
+
         <button
           type="button"
           onClick={onClose}
@@ -390,6 +418,35 @@ export default function WikiGraphModal({
               <span className="inline-block h-2 w-2 rounded-full border border-[#ef4444]" />
               orphelins
             </button>
+            {/* Séparateur + actions de vue (zoom reset / fit). Groupées
+                avec les filtres pour rester dans un seul dropdown ⋯. */}
+            <div
+              className="my-1 w-full border-t"
+              style={{ borderColor: 'var(--border)' }}
+              aria-hidden
+            />
+            <button
+              type="button"
+              onClick={() => {
+                graphCanvasRef.current?.fitToView()
+                setFiltersMenuOpen(false)
+              }}
+              className="w-full rounded-[var(--radius-sm)] px-2 py-1 text-left text-[10px] text-[var(--fg-secondary)] hover:bg-[var(--bg-tertiary)]"
+              title="Recadrer sur les nœuds visibles"
+            >
+              ⊞ Ajuster à l&apos;écran
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                graphCanvasRef.current?.resetView()
+                setFiltersMenuOpen(false)
+              }}
+              className="w-full rounded-[var(--radius-sm)] px-2 py-1 text-left text-[10px] text-[var(--fg-secondary)] hover:bg-[var(--bg-tertiary)]"
+              title="Revenir à la vue initiale"
+            >
+              ↺ Réinitialiser le zoom
+            </button>
           </div>
         )}
       </header>
@@ -433,6 +490,7 @@ export default function WikiGraphModal({
             )}
             <div className={previewPageName ? 'w-1/2 min-w-0' : 'h-full w-full'}>
               <GraphCanvas
+                ref={graphCanvasRef}
                 data={data}
                 typeFilter={typeFilter}
                 showOrphans={showOrphans}
@@ -457,7 +515,9 @@ export default function WikiGraphModal({
       >
         {compactMode ? (
           // En mode compact, légende minimaliste — un seul résumé.
-          <span className="truncate">Survol : highlight · Drag : déplacer · Clic : ouvrir</span>
+          <span className="truncate">
+            Molette : zoom · Drag vide : pan · Drag nœud : déplacer · 2× clic : reset
+          </span>
         ) : (
           <>
             <span>
@@ -466,7 +526,7 @@ export default function WikiGraphModal({
               <strong style={{ color: '#ef4444' }}> ⬢ pointillés</strong> = orphelin
             </span>
             <span className="ml-auto">
-              Survol : met en évidence les liens · Drag : déplacer · Clic : ouvrir la page
+              Molette : zoom · Drag vide : pan · Drag nœud : déplacer · 2× clic : reset
             </span>
           </>
         )}
@@ -500,21 +560,39 @@ interface SimEdge {
   isGhost: boolean
 }
 
-function GraphCanvas({
-  data,
-  typeFilter,
-  showOrphans,
-  search,
-  selectedNodeId,
-  onNodeClick
-}: {
-  data: WikiGraphDataT
-  typeFilter: Set<string>
-  showOrphans: boolean
-  search: string
-  selectedNodeId: string | null
-  onNodeClick: (id: string) => void
-}): React.ReactElement {
+// API exposée par GraphCanvas via ref : les contrôles de vue (reset,
+// fit) sont appelés depuis le menu ⋯ du parent WikiGraphModal, qui
+// n'a pas directement accès au state viewBox interne du canvas.
+export interface GraphCanvasHandle {
+  resetView: () => void
+  fitToView: () => void
+}
+
+interface ViewBox {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+// Cap du zoom : de 0.1× (toute la scène + beaucoup de marge) jusqu'à
+// 10× (très dézoomé sur un petit groupe de nœuds). Clamp appliqué sur
+// l'échelle viewBox.w / WIDTH — plus petit = zoom IN, plus grand = OUT.
+const MIN_VIEWBOX_SCALE = 0.1
+const MAX_VIEWBOX_SCALE = 10
+const ZOOM_STEP = 1.15
+
+const GraphCanvas = forwardRef<
+  GraphCanvasHandle,
+  {
+    data: WikiGraphDataT
+    typeFilter: Set<string>
+    showOrphans: boolean
+    search: string
+    selectedNodeId: string | null
+    onNodeClick: (id: string) => void
+  }
+>(function GraphCanvas({ data, typeFilter, showOrphans, search, selectedNodeId, onNodeClick }, externalRef) {
   // ─────── Construction des nœuds incluant ghost nodes (orphelins)
   const { simNodes, simEdges } = useMemo(() => {
     // Map id → node pour lookup O(1)
@@ -600,6 +678,22 @@ function GraphCanvas({
   const [dragId, setDragId] = useState<string | null>(null)
   const svgRef = useRef<SVGSVGElement>(null)
 
+  // ViewBox navigable : zoom (w, h) et pan (x, y). Valeur initiale =
+  // vue complète de la scène. Toute interaction (molette, drag vide,
+  // reset, fit) mute ce state ; le rendu SVG consomme viewBox via
+  // l'attribut `viewBox="x y w h"`.
+  const [viewBox, setViewBox] = useState<ViewBox>({ x: 0, y: 0, w: WIDTH, h: HEIGHT })
+  // Pan en cours : coord initiale du pointer + viewBox au moment où
+  // le pan a démarré. Null quand pas de pan actif.
+  const panStateRef = useRef<{ startX: number; startY: number; vbX: number; vbY: number } | null>(
+    null
+  )
+  // Miroir du ref ci-dessus pour les changements visuels déclenchés
+  // pendant le pan (ex. cursor grabbing). Lire un ref pendant render
+  // est interdit par les règles React — le state permet de re-render
+  // proprement à chaque bascule pan ON/OFF.
+  const [isPanning, setIsPanning] = useState(false)
+
   // Reset quand la géométrie change (ajout/retrait orphelins, nouvelles pages).
   const [lastDataKey, setLastDataKey] = useState({ simNodes, simEdges })
   if (lastDataKey.simNodes !== simNodes || lastDataKey.simEdges !== simEdges) {
@@ -675,19 +769,38 @@ function GraphCanvas({
     return TYPE_COLORS[n.type] ?? TYPE_COLORS.default
   }
 
-  function svgCoords(e: React.PointerEvent): { x: number; y: number } {
+  // Convertit clientX/Y en coords SVG en tenant compte du viewBox
+  // courant (zoom/pan). Utilisé par le drag de nœud et le zoom molette
+  // pour savoir quel point garder fixe sous le curseur.
+  function svgCoords(clientX: number, clientY: number): { x: number; y: number } {
     const svg = svgRef.current
     if (!svg) return { x: 0, y: 0 }
     const rect = svg.getBoundingClientRect()
-    const x = ((e.clientX - rect.left) / rect.width) * WIDTH
-    const y = ((e.clientY - rect.top) / rect.height) * HEIGHT
+    const x = viewBox.x + ((clientX - rect.left) / rect.width) * viewBox.w
+    const y = viewBox.y + ((clientY - rect.top) / rect.height) * viewBox.h
     return { x, y }
   }
 
   // Met à jour la position pendant un drag ; clamp aux bords.
   function handleDrag(e: React.PointerEvent): void {
+    if (panStateRef.current) {
+      // Pan actif (drag sur le vide) : on translate le viewBox en
+      // fonction du delta de pointer. 1 px écran = viewBox.w/rect.width
+      // en coords SVG → la vue suit 1:1 le geste peu importe le zoom.
+      const svg = svgRef.current
+      if (!svg) return
+      const rect = svg.getBoundingClientRect()
+      const dx = ((e.clientX - panStateRef.current.startX) / rect.width) * viewBox.w
+      const dy = ((e.clientY - panStateRef.current.startY) / rect.height) * viewBox.h
+      setViewBox((vb) => ({
+        ...vb,
+        x: panStateRef.current!.vbX - dx,
+        y: panStateRef.current!.vbY - dy
+      }))
+      return
+    }
     if (!dragId) return
-    const { x, y } = svgCoords(e)
+    const { x, y } = svgCoords(e.clientX, e.clientY)
     setNodes((prev) =>
       prev.map((n) =>
         n.id === dragId
@@ -697,17 +810,137 @@ function GraphCanvas({
     )
   }
 
+  // Zoom molette centré sur le curseur. On calcule le point SVG sous
+  // le curseur AVANT le zoom, on ajuste w/h par le facteur, puis on
+  // translate x/y pour que ce même point reste sous le curseur.
+  // `deltaY > 0` = wheel-down = zoom OUT (viewBox qui grandit).
+  function handleWheel(e: React.WheelEvent<SVGSVGElement>): void {
+    e.preventDefault()
+    const factor = e.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP
+    const svg = svgRef.current
+    if (!svg) return
+    const rect = svg.getBoundingClientRect()
+    const ratioX = (e.clientX - rect.left) / rect.width
+    const ratioY = (e.clientY - rect.top) / rect.height
+    // Point SVG sous le curseur avant zoom
+    const px = viewBox.x + ratioX * viewBox.w
+    const py = viewBox.y + ratioY * viewBox.h
+    // Nouvelle taille clampée
+    const newW = clamp(viewBox.w * factor, WIDTH * MIN_VIEWBOX_SCALE, WIDTH * MAX_VIEWBOX_SCALE)
+    const newH = clamp(viewBox.h * factor, HEIGHT * MIN_VIEWBOX_SCALE, HEIGHT * MAX_VIEWBOX_SCALE)
+    // Nouvelle origine : garder px/py sous le curseur
+    const newX = px - ratioX * newW
+    const newY = py - ratioY * newH
+    setViewBox({ x: newX, y: newY, w: newW, h: newH })
+  }
+
+  // Pan start sur le SVG : uniquement si la cible est le SVG lui-même
+  // (background) et PAS un nœud ou une arête. Un clic sur un nœud
+  // déclenche son propre stopPropagation qui empêche d'arriver ici.
+  function handleSvgPointerDown(e: React.PointerEvent<SVGSVGElement>): void {
+    if (e.target !== e.currentTarget) return
+    // Capturer le pointer pour recevoir pointermove/up même si le
+    // curseur sort du SVG pendant le drag.
+    e.currentTarget.setPointerCapture(e.pointerId)
+    panStateRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      vbX: viewBox.x,
+      vbY: viewBox.y
+    }
+    setIsPanning(true)
+  }
+
+  function handleSvgPointerUp(e: React.PointerEvent<SVGSVGElement>): void {
+    if (panStateRef.current) {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+      panStateRef.current = null
+      setIsPanning(false)
+    }
+    setDragId(null)
+  }
+
+  // Double-clic sur le vide du SVG = reset zoom (raccourci). Filtre
+  // sur e.target === currentTarget comme pan, pour ne pas trigger
+  // si l'user double-clique sur un nœud.
+  function handleSvgDoubleClick(e: React.MouseEvent<SVGSVGElement>): void {
+    if (e.target !== e.currentTarget) return
+    setViewBox({ x: 0, y: 0, w: WIDTH, h: HEIGHT })
+  }
+
+  // Calcule la bounding box des nœuds visibles + padding, pour le
+  // bouton "Fit to view". Filtre sur isVisible pour ne pas recadrer
+  // sur des nœuds masqués par un filtre par type.
+  function fitToVisibleNodes(): void {
+    const visible = nodes.filter((n) => isVisible(n))
+    if (visible.length === 0) {
+      setViewBox({ x: 0, y: 0, w: WIDTH, h: HEIGHT })
+      return
+    }
+    let minX = Infinity
+    let minY = Infinity
+    let maxX = -Infinity
+    let maxY = -Infinity
+    for (const n of visible) {
+      const r = nodeRadius(n) + 12 // padding pour les labels
+      if (n.x - r < minX) minX = n.x - r
+      if (n.y - r < minY) minY = n.y - r
+      if (n.x + r > maxX) maxX = n.x + r
+      if (n.y + r > maxY) maxY = n.y + r
+    }
+    // Padding visuel supplémentaire autour de la bbox.
+    const padX = (maxX - minX) * 0.08 + 20
+    const padY = (maxY - minY) * 0.08 + 20
+    const bboxW = maxX - minX + 2 * padX
+    const bboxH = maxY - minY + 2 * padY
+    // Préserve le ratio d'aspect WIDTH/HEIGHT du SVG : on prend la
+    // plus grande des deux dimensions relatives comme référence.
+    const aspect = WIDTH / HEIGHT
+    const w = Math.max(bboxW, bboxH * aspect)
+    const h = Math.max(bboxH, bboxW / aspect)
+    const cx = (minX + maxX) / 2
+    const cy = (minY + maxY) / 2
+    setViewBox({ x: cx - w / 2, y: cy - h / 2, w, h })
+  }
+
+  // Expose les actions de vue au parent via ref (menu ⋯).
+  useImperativeHandle(
+    externalRef,
+    () => ({
+      resetView: () => setViewBox({ x: 0, y: 0, w: WIDTH, h: HEIGHT }),
+      fitToView: fitToVisibleNodes
+    }),
+    // fitToVisibleNodes dépend de nodes (closure) — l'imperative handle
+    // est recréée à chaque changement, ce qui garantit que le parent
+    // appelle toujours une version avec la liste de nœuds courante.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [nodes, typeFilter, showOrphans]
+  )
+
   const nodesById = new Map(nodes.map((n) => [n.id, n]))
 
   return (
     <svg
       ref={svgRef}
-      viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+      viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
       className="h-full w-full"
-      style={{ background: 'var(--bg-primary)' }}
+      style={{
+        background: 'var(--bg-primary)',
+        cursor: isPanning ? 'grabbing' : 'grab',
+        // Empêche la sélection de texte pendant le pan.
+        userSelect: 'none',
+        WebkitUserSelect: 'none'
+      }}
+      onPointerDown={handleSvgPointerDown}
       onPointerMove={handleDrag}
-      onPointerUp={() => setDragId(null)}
-      onPointerLeave={() => setDragId(null)}
+      onPointerUp={handleSvgPointerUp}
+      onPointerLeave={() => {
+        panStateRef.current = null
+        setIsPanning(false)
+        setDragId(null)
+      }}
+      onWheel={handleWheel}
+      onDoubleClick={handleSvgDoubleClick}
     >
       {/* Définitions : marker flèche pour arêtes, glow filter pour hover. */}
       <defs>
@@ -929,7 +1162,7 @@ function GraphCanvas({
       </style>
     </svg>
   )
-}
+})
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v))
