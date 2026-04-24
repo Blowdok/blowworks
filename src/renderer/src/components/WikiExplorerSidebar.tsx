@@ -144,7 +144,7 @@ function FolderNode({ node, depth, selectedPath, onSelect, onContextMenuFile }: 
       >
         <span className="inline-block w-3 text-[9px] opacity-70">{open ? '▾' : '▸'}</span>
         <span className="truncate">{node.name}/</span>
-        <span className="ml-auto text-[11px] font-medium text-white">{node.children.length}</span>
+        <span className="ml-auto text-[9px] text-white opacity-80">{node.children.length}</span>
       </button>
       {open && (
         <TreeView
