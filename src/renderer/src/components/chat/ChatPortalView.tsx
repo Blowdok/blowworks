@@ -147,14 +147,6 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     })
   }
 
-  function toggleThinking(): void {
-    editor.updateShape<ChatShape>({
-      id: shape.id,
-      type: 'chat',
-      props: { thinkingEnabled: !shape.props.thinkingEnabled }
-    })
-  }
-
   function toggleWikiContext(): void {
     editor.updateShape<ChatShape>({
       id: shape.id,
@@ -237,11 +229,11 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       // est configuré. L'IA peut alors faire read_wiki_page/search_wiki/…
       // en cours de réponse au lieu de recevoir un dump complet.
       wikiToolsEnabled: shape.props.wikiContextEnabled && wikiConfigured,
-      // Reasoning activé via le toggle 🧠 de ChatInput. OpenRouter
-      // normalise le param `reasoning: { effort: 'medium' }` pour les
-      // modèles compatibles (Claude 3.7+/4, o1/o3, Gemini Thinking,
-      // DeepSeek R1, Grok). Ignoré silencieusement par les autres.
-      thinkingEnabled: shape.props.thinkingEnabled,
+      // Reasoning toujours activé : OpenRouter ignore silencieusement le
+      // param `reasoning` pour les modèles non compatibles, donc pas de
+      // régression — et ça évite un toggle UI supplémentaire que la
+      // plupart des utilisateurs laissent sur "on" de toute façon.
+      thinkingEnabled: true,
       wikiContext,
       maxTokens: defaults.maxTokens
     })
@@ -583,8 +575,6 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
         disabledReason={disabledReason}
         webSearchEnabled={shape.props.webSearchEnabled}
         onToggleWebSearch={toggleWebSearch}
-        thinkingEnabled={shape.props.thinkingEnabled}
-        onToggleThinking={toggleThinking}
       />
 
       {/* Toast compact de retour agent — flotte au-dessus de la zone de

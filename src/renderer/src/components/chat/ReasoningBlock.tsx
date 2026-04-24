@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
+import { Brain } from 'lucide-react'
 import {
   markdownRemarkPlugins,
   markdownRehypePlugins,
@@ -48,13 +49,6 @@ export default function ReasoningBlock({
     [content]
   )
 
-  // Compteur de mots simple (split whitespace). Non parfait pour CJK mais
-  // suffit pour donner à l'utilisateur une idée de l'ampleur du raisonnement.
-  const wordCount = useMemo(
-    () => content.trim().split(/\s+/).filter(Boolean).length,
-    [content]
-  )
-
   return (
     <div
       className="my-2 overflow-hidden rounded-[var(--radius-sm)] border"
@@ -69,20 +63,16 @@ export default function ReasoningBlock({
         className="relative flex w-full items-center gap-2 px-3 py-2 text-left text-[11px] text-[var(--fg-secondary)] hover:bg-[var(--bg-primary)]"
         aria-expanded={expanded}
       >
-        <span className="shrink-0 text-[13px]" aria-hidden>
-          🧠
-        </span>
+        <Brain size={14} className="shrink-0" aria-hidden />
         <span className="flex-1 font-medium">
-          Raisonnement
-          {done ? (
-            <span className="ml-2 text-[10px] text-[var(--fg-muted)]">
-              {wordCount} mot{wordCount > 1 ? 's' : ''}
-            </span>
-          ) : (
-            <span className="ml-2 inline-block animate-pulse text-[10px] text-[var(--fg-muted)]">
-              en cours…
-            </span>
-          )}
+          Thinking
+          <span
+            className={`ml-1 inline-block text-[10px] text-[var(--fg-muted)] ${
+              !done ? 'animate-pulse' : ''
+            }`}
+          >
+            …
+          </span>
         </span>
         <span className="shrink-0 text-[9px] opacity-70" aria-hidden>
           {expanded ? '▾' : '▸'}
@@ -108,7 +98,13 @@ export default function ReasoningBlock({
       {expanded && (
         <div
           className="border-t px-3 py-2"
-          style={{ borderColor: 'var(--border)' }}
+          style={{
+            borderColor: 'var(--border)',
+            // Fond DU DÉPLIÉ plus foncé que celui du header (bg-tertiary) :
+            // on utilise bg-primary qui est la couleur la plus foncée du
+            // thème → le bloc se distingue clairement des ToolTraceBadge.
+            background: 'var(--bg-primary)'
+          }}
         >
           <div
             className="markdown-body text-[12px] opacity-85"

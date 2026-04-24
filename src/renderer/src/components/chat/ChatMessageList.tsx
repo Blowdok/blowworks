@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
+import { Copy, Check } from 'lucide-react'
 import {
   markdownRemarkPlugins,
   markdownRehypePlugins,
@@ -313,8 +314,46 @@ function MessageBubble({
             </button>
           </div>
         )}
+        {/* Bouton copier : aligné à droite pour user (bulle à droite),
+            à gauche pour assistant (bulle pleine largeur). Discret
+            par défaut (opacity 40%), pleine visibilité au hover de la
+            bulle ou au focus clavier. */}
+        <div
+          className={`mt-1 flex ${isUser ? 'justify-end' : 'justify-start'}`}
+        >
+          <CopyBubbleButton content={message.content} />
+        </div>
       </div>
     </div>
+  )
+}
+
+// Bouton copier réutilisable — copie dans le presse-papier et affiche
+// une coche pendant 1,5s comme feedback. Rendu compact (18px icon) pour
+// ne pas encombrer la bulle mais rester assez grand pour être cliquable.
+function CopyBubbleButton({ content }: { content: string }): React.ReactElement {
+  const [copied, setCopied] = useState(false)
+
+  async function handleCopy(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(content)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch (e) {
+      console.warn('[chat] copie presse-papier échouée :', e)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => void handleCopy()}
+      title={copied ? 'Copié !' : 'Copier le message'}
+      aria-label="Copier le message"
+      className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--fg-muted)] opacity-40 transition-opacity hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-secondary)] hover:opacity-100 focus:opacity-100 group-hover:opacity-70"
+    >
+      {copied ? <Check size={13} /> : <Copy size={13} />}
+    </button>
   )
 }
 

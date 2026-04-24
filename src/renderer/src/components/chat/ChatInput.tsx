@@ -1,5 +1,5 @@
 import { useRef, useEffect } from 'react'
-import { ArrowUp, Brain, Globe, Paperclip, Square, Zap } from 'lucide-react'
+import { ArrowUp, Globe, Paperclip, Square, Zap } from 'lucide-react'
 
 interface ChatInputProps {
   value: string
@@ -11,8 +11,6 @@ interface ChatInputProps {
   disabledReason?: string
   webSearchEnabled: boolean
   onToggleWebSearch: () => void
-  thinkingEnabled: boolean
-  onToggleThinking: () => void
   // Rappel pour le bouton trombone (upload fichiers, lot 2). Laissé null ici.
   onAttach?: () => void
   // Rappel pour l'éclair d'optimisation (lot 2). Laissé null ici.
@@ -36,8 +34,6 @@ export default function ChatInput({
   disabledReason,
   webSearchEnabled,
   onToggleWebSearch,
-  thinkingEnabled,
-  onToggleThinking,
   onAttach,
   onOptimize
 }: ChatInputProps): React.ReactElement {
@@ -142,16 +138,6 @@ export default function ChatInput({
                   : 'Activer la recherche web (Tavily)'
               }
               Icon={Globe}
-            />
-            <IconToggle
-              active={thinkingEnabled}
-              onClick={onToggleThinking}
-              title={
-                thinkingEnabled
-                  ? 'Mode raisonnement activé'
-                  : 'Activer le raisonnement (modèles compatibles)'
-              }
-              Icon={Brain}
             />
             <IconButton
               disabled
