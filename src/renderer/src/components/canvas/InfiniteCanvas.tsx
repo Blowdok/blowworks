@@ -15,6 +15,7 @@ import { useCanvasPersistence } from '../../hooks/use-canvas-persistence.js'
 import { useEditorStore } from '../../stores/editor-store.js'
 import { useUIStore } from '../../stores/ui-store.js'
 import ShapePortalManager from '../shape-portal/ShapePortalManager.js'
+import CanvasContextMenu from './CanvasContextMenu.js'
 
 // Canvas infini tldraw + shape utils custom (Terminal, VSCode).
 export default function InfiniteCanvas() {
@@ -83,23 +84,36 @@ export default function InfiniteCanvas() {
         { source: 'user', scope: 'document' }
       )
 
-      // Raccourcis globaux :
+      // Raccourcis globaux : spawn à la position COURANTE du pointeur
+      // (évite les chevauchements par défaut au centre du viewport).
+      // Si le pointeur n'est pas sur le canvas (ex. déclenché depuis
+      // un bouton header), on fallback au viewport center.
       //   Ctrl+T  → nouveau terminal
       //   Ctrl+K  → nouvelle conversation IA
       //   Ctrl+B  → nouveau navigateur (DDG)
       //   Alt+T   → toggle toolbar tldraw (outils select/hand/draw/…)
+      const getPointerAt = (): { x: number; y: number } | undefined => {
+        // `inputs.currentPagePoint` est mis à jour en continu par tldraw
+        // à chaque mouvement. On accepte la position si elle est dans le
+        // viewport courant — sinon c'est une position stale (focus hors
+        // canvas) et on fallback au centre.
+        const p = editor.inputs.currentPagePoint
+        const bounds = editor.getViewportPageBounds()
+        if (!bounds.containsPoint(p)) return undefined
+        return { x: p.x, y: p.y }
+      }
       const onKeyDown = (e: KeyboardEvent) => {
         if (e.ctrlKey && e.key.toLowerCase() === 't' && !e.altKey && !e.shiftKey) {
           e.preventDefault()
-          spawnTerminalShape(editor)
+          spawnTerminalShape(editor, getPointerAt())
         }
         if (e.ctrlKey && e.key.toLowerCase() === 'k' && !e.altKey && !e.shiftKey) {
           e.preventDefault()
-          void spawnChatShape(editor)
+          void spawnChatShape(editor, getPointerAt())
         }
         if (e.ctrlKey && e.key.toLowerCase() === 'b' && !e.altKey && !e.shiftKey) {
           e.preventDefault()
-          spawnBrowserShape(editor)
+          spawnBrowserShape(editor, undefined, getPointerAt())
         }
         if (e.altKey && e.key.toLowerCase() === 't' && !e.ctrlKey && !e.shiftKey) {
           e.preventDefault()
@@ -154,20 +168,36 @@ export default function InfiniteCanvas() {
         */}
         <ShapePortalManager />
       </Tldraw>
+      {/* Menu contextuel custom au clic droit sur le VIDE : crée chat /
+          terminal / browser / vscode centrés sur le point cliqué. Sur une
+          shape existante, le menu tldraw natif reste actif. */}
+      <CanvasContextMenu />
     </div>
   )
 }
 
-// Crée une nouvelle shape terminal au centre du viewport caméra.
-// Exporté pour être invocable depuis le Header (bouton "+ Nouveau terminal").
+// Centre de spawn : soit `at` si fourni (clic droit / pointeur souris au
+// moment du raccourci), soit le centre géométrique du viewport. Factorisé
+// car les 4 spawn l'ont en commun.
+function resolveSpawnCenter(
+  editor: Editor,
+  at?: { x: number; y: number }
+): { x: number; y: number } {
+  if (at) return at
+  const bounds = editor.getViewportPageBounds()
+  return { x: bounds.midX, y: bounds.midY }
+}
+
+// Crée une nouvelle shape terminal. Par défaut au centre du viewport ;
+// si `at` est fourni (clic droit sur canvas ou pointeur au moment d'un
+// raccourci), la shape est centrée sur ce point page. Exporté pour être
+// invocable depuis le Header (bouton "+ Nouveau terminal").
 // Le shell par défaut est celui choisi en dernier par l'utilisateur
 // (persisté dans `useUIStore.lastShell`) — évite de rebasculer vers pwsh
 // à chaque spawn si l'utilisateur travaille par préférence dans un autre
 // shell. `getState()` car la fonction est appelée hors React.
-export function spawnTerminalShape(editor: Editor): void {
-  const bounds = editor.getViewportPageBounds()
-  const cx = bounds.midX
-  const cy = bounds.midY
+export function spawnTerminalShape(editor: Editor, at?: { x: number; y: number }): void {
+  const { x: cx, y: cy } = resolveSpawnCenter(editor, at)
   const shell = useUIStore.getState().lastShell
   editor.createShape<TerminalShape>({
     id: createShapeId(),
@@ -199,10 +229,11 @@ function getDefaultCwd(): string {
 // au boot depuis settings SQLite). Si aucune clé OpenRouter n'est encore
 // configurée, la shape est quand même créée — l'envoi du premier message
 // retournera une erreur explicite qui guidera l'utilisateur vers Settings.
-export async function spawnChatShape(editor: Editor): Promise<void> {
-  const bounds = editor.getViewportPageBounds()
-  const cx = bounds.midX
-  const cy = bounds.midY
+export async function spawnChatShape(
+  editor: Editor,
+  at?: { x: number; y: number }
+): Promise<void> {
+  const { x: cx, y: cy } = resolveSpawnCenter(editor, at)
   const id = createShapeId()
   const defaults = useChatStore.getState().defaults
 
@@ -247,10 +278,12 @@ export async function spawnChatShape(editor: Editor): Promise<void> {
 // DuckDuckGo homepage. Si `rawUrl` est fourni (lien intercepté, bouton
 // header avec pré-saisie, etc.), on le résout via `resolveQuery` : URL
 // nue / avec schéma / texte de recherche sont tous acceptés.
-export function spawnBrowserShape(editor: Editor, rawUrl?: string): void {
-  const bounds = editor.getViewportPageBounds()
-  const cx = bounds.midX
-  const cy = bounds.midY
+export function spawnBrowserShape(
+  editor: Editor,
+  rawUrl?: string,
+  at?: { x: number; y: number }
+): void {
+  const { x: cx, y: cy } = resolveSpawnCenter(editor, at)
   const url = rawUrl ? resolveQuery(rawUrl) : DUCKDUCKGO_HOMEPAGE
   const id = createShapeId()
   editor.createShape<BrowserShape>({
@@ -270,10 +303,12 @@ export function spawnBrowserShape(editor: Editor, rawUrl?: string): void {
 
 // Crée une nouvelle shape VSCode liée à un dossier concret. Spawne le
 // sidecar openvscode-server au montage si nécessaire (cf. VSCodeShape).
-export function spawnVSCodeShape(editor: Editor, folder: string): void {
-  const bounds = editor.getViewportPageBounds()
-  const cx = bounds.midX
-  const cy = bounds.midY
+export function spawnVSCodeShape(
+  editor: Editor,
+  folder: string,
+  at?: { x: number; y: number }
+): void {
+  const { x: cx, y: cy } = resolveSpawnCenter(editor, at)
   // Normalise les backslashes Windows en slashes pour l'URL du serveur.
   const normalized = folder.replace(/\\/g, '/')
   editor.createShape<VSCodeShape>({
