@@ -8,7 +8,7 @@ import {
 import type { AIMessageT } from '@shared/ipc-contract.js'
 import CitationsList from './CitationsList.js'
 import CodeBlock from './CodeBlock.js'
-import type { ToolTrace } from '../../stores/chat-store.js'
+import type { Segment, ToolTrace } from '../../stores/chat-store.js'
 import { useChatStore } from '../../stores/chat-store.js'
 import { useEditorStore } from '../../stores/editor-store.js'
 import { useWikiStore } from '../../stores/wiki-store.js'
@@ -17,14 +17,12 @@ import { spawnBrowserShape } from '../canvas/InfiniteCanvas.js'
 
 interface ChatMessageListProps {
   messages: AIMessageT[]
-  // Texte en cours de streaming pour le dernier message assistant à venir.
-  // Null si aucun stream actif.
-  streamingContent: string | null
+  // Timeline du stream actif : mélange de segments `text` (markdown
+  // streamé) et `tool` (badges d'actions IA). undefined = aucun stream
+  // en cours. Le rendu entrelace les segments dans l'ordre de réception.
+  streamingSegments?: Segment[]
   streamingError: string | null
   streamingCitations: string[] | undefined
-  // Tool calls en cours dans le stream actif (affichés inline au-dessus
-  // du texte streamé). Vide si pas d'appel d'outil.
-  streamingToolTraces?: ToolTrace[]
   // Sprint 3 : callback "Filer cette réponse dans le wiki". Si fourni,
   // chaque MessageBubble assistant affiche un bouton 📥 qui relance
   // l'agent QA Filer sur ce seul message. Null = fonctionnalité désactivée
@@ -42,19 +40,18 @@ interface ChatMessageListProps {
 // nouveau chunk — respect de l'intention de lecture.
 export default function ChatMessageList({
   messages,
-  streamingContent,
+  streamingSegments,
   streamingError,
   streamingCitations,
-  streamingToolTraces,
   onFileBack,
   fileBackInProgress
 }: ChatMessageListProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const isAtBottomRef = useRef(true)
-  // Map des traces persistantes (post-stream) indexée par messageId.
-  // Utilisée par chaque MessageBubble assistant pour afficher les badges
-  // d'actions IA réalisées par le LLM avec les wiki tools.
-  const messageToolTraces = useChatStore((s) => s.messageToolTraces)
+  // Map des timelines persistantes (post-stream) indexée par messageId.
+  // Utilisée par chaque MessageBubble assistant pour reconstituer le
+  // déroulé entrelacé des actions IA après la fin du streaming.
+  const messageSegments = useChatStore((s) => s.messageSegments)
 
   // Observe le scroll pour détecter si l'utilisateur est proche du bas
   // (tolérance 48 px). Seuls les auto-scrolls valident cet état ; un
@@ -78,7 +75,7 @@ export default function ChatMessageList({
     if (!el) return
     if (!isAtBottomRef.current) return
     el.scrollTop = el.scrollHeight
-  }, [messages, streamingContent])
+  }, [messages, streamingSegments])
 
   // Auto-copie sur sélection — pattern hérité du TerminalShape (convention
   // xterm/mintty Linux) : toute sélection finalisée à la souris est
@@ -109,7 +106,7 @@ export default function ChatMessageList({
     return () => el.removeEventListener('mouseup', onMouseUp)
   }, [])
 
-  const hasMessages = messages.length > 0 || streamingContent !== null
+  const hasMessages = messages.length > 0 || (streamingSegments && streamingSegments.length > 0)
 
   return (
     <div
@@ -163,16 +160,15 @@ export default function ChatMessageList({
             message={m}
             onFileBack={onFileBack}
             fileBackInProgress={fileBackInProgress === m.id}
-            toolTraces={messageToolTraces.get(m.id)}
+            segments={messageSegments.get(m.id)}
           />
         ))}
 
-        {streamingContent !== null && (
+        {streamingSegments && streamingSegments.length > 0 && (
           <StreamingBubble
-            content={streamingContent}
+            segments={streamingSegments}
             error={streamingError}
             citations={streamingCitations}
-            toolTraces={streamingToolTraces}
           />
         )}
       </div>
@@ -244,24 +240,26 @@ const markdownComponents: Components = {
   }
 }
 
-// Bulle d'un message commité en DB (user ou assistant).
+// Bulle d'un message commité en DB (user ou assistant). Si une timeline
+// de segments est fournie (assistant uniquement, via
+// `chatStore.messageSegments`), on rend les segments ENTRELACÉS : texte
+// markdown puis badge d'action puis texte puis badge, dans l'ordre
+// chronologique. Sinon on rend `message.content` en un seul bloc markdown.
 function MessageBubble({
   message,
   onFileBack,
   fileBackInProgress,
-  toolTraces
+  segments
 }: {
   message: AIMessageT
   onFileBack?: (messageId: string) => void
   fileBackInProgress?: boolean
-  // Traces des actions IA (wiki tools) déclenchées pour produire ce
-  // message assistant. Vide ou undefined = pas de badge à afficher.
-  // Persisté dans `chatStore.messageToolTraces` après la fin du stream.
-  toolTraces?: ToolTrace[]
+  segments?: Segment[]
 }): React.ReactElement {
   const isUser = message.role === 'user'
   const isAssistant = message.role === 'assistant'
   const showFileBack = isAssistant && onFileBack && message.content.length > 60
+  const useTimeline = isAssistant && segments !== undefined && segments.length > 0
 
   return (
     <div className={`mb-4 flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -279,17 +277,9 @@ function MessageBubble({
           color: 'var(--fg-primary)'
         }}
       >
-        {/* Traces des actions IA — visibles AU-DESSUS du contenu pour
-            que l'utilisateur voie le contexte de production de la réponse
-            même après la fin du stream. */}
-        {isAssistant && toolTraces && toolTraces.length > 0 && (
-          <div className="mb-2 flex flex-col gap-1">
-            {toolTraces.map((t) => (
-              <ToolTraceBadge key={t.id} trace={t} />
-            ))}
-          </div>
-        )}
-        {isAssistant ? (
+        {useTimeline ? (
+          <SegmentsTimeline segments={segments!} />
+        ) : isAssistant ? (
           <div className="markdown-body">
             <ReactMarkdown
               remarkPlugins={markdownRemarkPlugins}
@@ -327,39 +317,19 @@ function MessageBubble({
   )
 }
 
-// Bulle pour le message assistant en cours de streaming : cursor clignotant,
-// markdown rendu en live (pas de buffer — `react-markdown` tolère bien les
-// petits deltas tant qu'il y a un re-render par chunk). Affiche aussi les
-// tool calls de la boucle agent en cours (read_wiki_page, search_wiki, …)
-// sous forme de badges compacts au-dessus du markdown.
+// Bulle pour le message assistant en cours de streaming : timeline
+// entrelacée de segments (texte markdown + badges d'actions) dans l'ordre
+// chronologique du raisonnement. Cursor clignotant à la fin pour signaler
+// que le stream est toujours actif.
 function StreamingBubble({
-  content,
+  segments,
   error,
-  citations,
-  toolTraces
+  citations
 }: {
-  content: string
+  segments: Segment[]
   error: string | null
   citations: string[] | undefined
-  toolTraces?: ToolTrace[]
 }): React.ReactElement {
-  // Memo du rendu : évite de refabriquer l'arbre markdown à chaque delta
-  // si le texte cumulé n'a pas changé (cas des chunks vides/keep-alive).
-  // On linkifie les refs wiki avant rendu → les mentions `wiki/xxx.md`
-  // et `[[slug]]` deviennent cliquables vers le WikiPageViewer.
-  const rendered = useMemo(
-    () => (
-      <ReactMarkdown
-        remarkPlugins={markdownRemarkPlugins}
-        rehypePlugins={markdownRehypePlugins}
-        components={markdownComponents}
-      >
-        {content.length > 0 ? linkifyWikiRefs(content) : ' '}
-      </ReactMarkdown>
-    ),
-    [content]
-  )
-
   return (
     <div className="mb-4 flex justify-start">
       <div
@@ -369,17 +339,7 @@ function StreamingBubble({
         className="w-full max-w-full rounded-[var(--radius-md)] px-1 py-1"
         style={{ color: 'var(--fg-primary)' }}
       >
-        {toolTraces && toolTraces.length > 0 && (
-          <div className="mb-2 flex flex-col gap-1">
-            {toolTraces.map((t) => (
-              <ToolTraceBadge key={t.id} trace={t} />
-            ))}
-          </div>
-        )}
-        <div className="markdown-body">
-          {rendered}
-          <span className="animate-pulse text-[var(--fg-secondary)]">▋</span>
-        </div>
+        <SegmentsTimeline segments={segments} withCursor />
         {error && (
           <div
             className="mt-2 rounded-[var(--radius-sm)] border px-2 py-1 text-[11px]"
@@ -391,6 +351,88 @@ function StreamingBubble({
         {citations && citations.length > 0 && <CitationsList urls={citations} />}
       </div>
     </div>
+  )
+}
+
+// Rendu de la timeline entrelacée : parcourt les segments et rend un bloc
+// markdown pour chaque `text` et un badge pour chaque `tool`. Si
+// `withCursor`, ajoute un curseur clignotant à la fin du DERNIER segment
+// `text` pour matérialiser la progression du stream.
+function SegmentsTimeline({
+  segments,
+  withCursor = false
+}: {
+  segments: Segment[]
+  withCursor?: boolean
+}): React.ReactElement {
+  // Trouve l'index du dernier segment text pour y coller le curseur.
+  const lastTextIdx = withCursor
+    ? (() => {
+        for (let i = segments.length - 1; i >= 0; i--) {
+          if (segments[i].kind === 'text') return i
+        }
+        return -1
+      })()
+    : -1
+  // Si withCursor et qu'aucun segment n'est text (ex: pure séquence
+  // d'actions sans texte avant), on affiche le curseur après le dernier
+  // segment tool pour signaler que le stream continue.
+  const trailingCursor = withCursor && lastTextIdx === -1 && segments.length > 0
+
+  return (
+    <div className="markdown-body">
+      {segments.map((seg, i) => {
+        if (seg.kind === 'tool') {
+          return (
+            <div key={`tool-${seg.trace.id}`} className="my-2">
+              <ToolTraceBadge trace={seg.trace} />
+            </div>
+          )
+        }
+        // kind === 'text'
+        const isLast = i === lastTextIdx
+        return (
+          <TextSegmentRendered
+            key={`text-${i}`}
+            content={seg.content}
+            cursor={isLast && withCursor}
+          />
+        )
+      })}
+      {trailingCursor && (
+        <span className="animate-pulse text-[var(--fg-secondary)]">▋</span>
+      )}
+    </div>
+  )
+}
+
+// Un segment texte rendu en markdown, memoisé sur son content pour éviter
+// de refabriquer l'arbre à chaque delta d'un AUTRE segment.
+function TextSegmentRendered({
+  content,
+  cursor
+}: {
+  content: string
+  cursor: boolean
+}): React.ReactElement {
+  const rendered = useMemo(
+    () => (
+      <ReactMarkdown
+        remarkPlugins={markdownRemarkPlugins}
+        rehypePlugins={markdownRehypePlugins}
+        urlTransform={markdownUrlTransform}
+        components={markdownComponents}
+      >
+        {content.length > 0 ? linkifyWikiRefs(content) : ' '}
+      </ReactMarkdown>
+    ),
+    [content]
+  )
+  return (
+    <>
+      {rendered}
+      {cursor && <span className="animate-pulse text-[var(--fg-secondary)]">▋</span>}
+    </>
   )
 }
 

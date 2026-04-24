@@ -541,10 +541,9 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       {/* Historique scrollable (flex:1 → prend tout l'espace vertical dispo). */}
       <ChatMessageList
         messages={messages}
-        streamingContent={activeStream?.content ?? null}
+        streamingSegments={activeStream?.segments}
         streamingError={activeStream?.error ?? null}
         streamingCitations={activeStream?.citations}
-        streamingToolTraces={activeStream?.toolTraces}
         onFileBack={wikiConfigured ? (id) => void handleFileBack(id) : undefined}
         fileBackInProgress={fileBackInProgress}
       />

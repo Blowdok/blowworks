@@ -33,17 +33,67 @@ export interface ToolTrace {
   error?: string
 }
 
+// Segment de timeline entrelacée : soit un bloc de texte (delta streamé),
+// soit une action IA (tool call). Construit en ordre CHRONOLOGIQUE au
+// fur et à mesure de la boucle agent — permet de reproduire le déroulé
+// exact du raisonnement du modèle ("Je vais chercher..." → action →
+// "Parfait, laisse-moi lire..." → action → réponse finale).
+export type Segment =
+  | { kind: 'text'; content: string }
+  | { kind: 'tool'; trace: ToolTrace }
+
 export interface StreamState {
   requestId: string
-  content: string
+  // Segments ordonnés remplaçant `content + toolTraces` flat : permet au
+  // renderer d'intercaler texte narratif et badges d'actions comme dans
+  // le raisonnement réel du LLM.
+  segments: Segment[]
   startedAt: number
   citations?: string[]
   error?: string
-  // Liste ordonnée de tool calls au cours de la réponse en stream.
-  toolTraces: ToolTrace[]
   // Demande de confirmation en cours (toolCallId, args) pour qu'un
   // composant UI puisse afficher le dialog. Null quand rien en attente.
   awaitingConfirm: { id: string; name: string; arguments: Record<string, unknown> } | null
+}
+
+// Helpers pour construire/mettre à jour la liste de segments depuis le
+// chunk listener. Logique : un delta texte prolonge le dernier segment
+// s'il est 'text', sinon crée un nouveau segment 'text'. Un toolCall
+// crée toujours un nouveau segment 'tool'. Un toolResult met à jour le
+// segment 'tool' existant par id (ne crée rien de nouveau).
+export function appendTextDelta(segments: Segment[], delta: string): Segment[] {
+  if (delta.length === 0) return segments
+  const last = segments[segments.length - 1]
+  if (last && last.kind === 'text') {
+    return [
+      ...segments.slice(0, -1),
+      { kind: 'text', content: last.content + delta }
+    ]
+  }
+  return [...segments, { kind: 'text', content: delta }]
+}
+
+export function upsertToolSegment(
+  segments: Segment[],
+  trace: ToolTrace
+): Segment[] {
+  const idx = segments.findIndex(
+    (s) => s.kind === 'tool' && s.trace.id === trace.id
+  )
+  if (idx === -1) return [...segments, { kind: 'tool', trace }]
+  const next = [...segments]
+  next[idx] = { kind: 'tool', trace }
+  return next
+}
+
+// Helper de lecture : concatène tous les segments 'text' pour obtenir
+// le contenu markdown complet du message (utile pour le `content` à
+// poster en DB ou pour debug). Ignore les segments 'tool'.
+export function segmentsToText(segments: Segment[]): string {
+  return segments
+    .filter((s): s is Extract<Segment, { kind: 'text' }> => s.kind === 'text')
+    .map((s) => s.content)
+    .join('')
 }
 
 export interface ChatConversation {
@@ -63,12 +113,11 @@ interface ChatStore {
   // de chargement des messages tant que la conv n'est pas sélectionnée.
   allConversations: Map<string, AIConversationSummaryT>
   activeStreams: Map<string, StreamState>
-  // Trace des actions IA (tool_calls) attachées au message assistant qui
-  // les a déclenchées. Renseignée à la fin du stream — sans ça, les
-  // badges ToolTrace disparaîtraient quand le StreamingBubble est démonté.
-  // Volatile (non persisté en DB) : suffit pour voir l'historique pendant
-  // la session courante.
-  messageToolTraces: Map<string, ToolTrace[]>
+  // Timeline de segments (texte + actions) attachée au message assistant
+  // qui l'a produite. Renseignée à la fin du stream pour que MessageBubble
+  // affiche le déroulé entrelacé même après la fin du streaming.
+  // Volatile (non persisté en DB) — suffit pour la session courante.
+  messageSegments: Map<string, Segment[]>
 
   hydrate: () => Promise<void>
   refreshApiKeyStatus: () => Promise<void>
@@ -138,7 +187,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   conversations: new Map(),
   allConversations: new Map(),
   activeStreams: new Map(),
-  messageToolTraces: new Map(),
+  messageSegments: new Map(),
 
   hydrate: async () => {
     // Installe le listener de streaming UNE SEULE FOIS au premier hydrate.
@@ -347,9 +396,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     const streams = new Map(get().activeStreams)
     streams.set(conversationId, {
       requestId,
-      content: '',
+      segments: [],
       startedAt: Date.now(),
-      toolTraces: [],
       awaitingConfirm: null
     })
     set({ activeStreams: streams })
@@ -365,19 +413,24 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   confirmToolCall: async (conversationId, toolCallId, approved) => {
     // Update optimiste : on sort la demande "awaitingConfirm" et on
-    // passe le ToolTrace correspondant en status = en cours / refusé.
+    // passe le segment 'tool' correspondant en status = en cours / refusé.
     const streams = new Map(get().activeStreams)
     const stream = streams.get(conversationId)
     if (stream) {
-      const traces: ToolTrace[] = stream.toolTraces.map((t) =>
-        t.id === toolCallId
-          ? { ...t, status: approved ? ('running' as const) : ('refused' as const) }
-          : t
-      )
+      const segments: Segment[] = stream.segments.map((s) => {
+        if (s.kind !== 'tool' || s.trace.id !== toolCallId) return s
+        return {
+          kind: 'tool',
+          trace: {
+            ...s.trace,
+            status: approved ? ('running' as const) : ('refused' as const)
+          }
+        }
+      })
       streams.set(conversationId, {
         ...stream,
         awaitingConfirm: null,
-        toolTraces: traces
+        segments
       })
       set({ activeStreams: streams })
     }
@@ -404,97 +457,103 @@ function installChunkListener(
   if (chunkListenerInstalled) return
   chunkListenerInstalled = true
 
+  // Helper partagé : applique un patch à l'entrée active du stream et
+  // persiste dans le store. Retourne le segments[] résultant pour que
+  // les handlers qui en ont besoin puissent chaîner (ex: toolConfirmNeeded
+  // qui met aussi à jour awaitingConfirm).
+  function patchStream(
+    conversationId: string,
+    patch: (prev: StreamState) => StreamState
+  ): void {
+    const streams = new Map(useChatStore.getState().activeStreams)
+    const current = streams.get(conversationId)
+    if (!current) return
+    streams.set(conversationId, patch(current))
+    useChatStore.setState({ activeStreams: streams })
+  }
+
   window.blow.ai.onChunk((payload) => {
     const { conversationId, delta, done, error, citations, toolCall, toolResult, toolConfirmNeeded } = payload
-    const state = useChatStore.getState()
 
+    // Timeline entrelacée : un delta texte prolonge le dernier segment
+    // 'text', un toolCall crée un nouveau segment 'tool'. L'ordre de
+    // réception des chunks est chronologique → les segments reflètent
+    // exactement le déroulé du raisonnement du modèle (texte → action
+    // → texte → action → réponse finale).
     if (delta) {
-      const streams = new Map(state.activeStreams)
-      const current = streams.get(conversationId)
-      if (current) {
-        streams.set(conversationId, { ...current, content: current.content + delta })
-        useChatStore.setState({ activeStreams: streams })
-      }
+      patchStream(conversationId, (prev) => ({
+        ...prev,
+        segments: appendTextDelta(prev.segments, delta)
+      }))
     }
 
-    // Tool events (Sprint 2). On met à jour la liste `toolTraces` du
-    // stream actif pour que le renderer puisse afficher le cycle de vie
-    // de chaque tool (pending → running/awaiting-confirm → success/error).
     if (toolCall) {
-      const streams = new Map(useChatStore.getState().activeStreams)
-      const current = streams.get(conversationId)
-      if (current) {
-        const existing = current.toolTraces.find((t) => t.id === toolCall.id)
-        const newTrace: ToolTrace = existing
-          ? { ...existing, arguments: toolCall.arguments, status: 'running' }
+      patchStream(conversationId, (prev) => {
+        const existing = prev.segments.find(
+          (s): s is Extract<Segment, { kind: 'tool' }> =>
+            s.kind === 'tool' && s.trace.id === toolCall.id
+        )
+        const trace: ToolTrace = existing
+          ? { ...existing.trace, arguments: toolCall.arguments, status: 'running' }
           : {
               id: toolCall.id,
               name: toolCall.name,
               arguments: toolCall.arguments,
               status: 'running'
             }
-        const traces = existing
-          ? current.toolTraces.map((t) => (t.id === toolCall.id ? newTrace : t))
-          : [...current.toolTraces, newTrace]
-        streams.set(conversationId, { ...current, toolTraces: traces })
-        useChatStore.setState({ activeStreams: streams })
-      }
+        return { ...prev, segments: upsertToolSegment(prev.segments, trace) }
+      })
     }
 
     if (toolConfirmNeeded) {
-      const streams = new Map(useChatStore.getState().activeStreams)
-      const current = streams.get(conversationId)
-      if (current) {
-        const existing = current.toolTraces.find((t) => t.id === toolConfirmNeeded.id)
-        const newTrace: ToolTrace = existing
-          ? { ...existing, arguments: toolConfirmNeeded.arguments, status: 'awaiting-confirm' }
+      patchStream(conversationId, (prev) => {
+        const existing = prev.segments.find(
+          (s): s is Extract<Segment, { kind: 'tool' }> =>
+            s.kind === 'tool' && s.trace.id === toolConfirmNeeded.id
+        )
+        const trace: ToolTrace = existing
+          ? { ...existing.trace, arguments: toolConfirmNeeded.arguments, status: 'awaiting-confirm' }
           : {
               id: toolConfirmNeeded.id,
               name: toolConfirmNeeded.name,
               arguments: toolConfirmNeeded.arguments,
               status: 'awaiting-confirm'
             }
-        const traces = existing
-          ? current.toolTraces.map((t) => (t.id === toolConfirmNeeded.id ? newTrace : t))
-          : [...current.toolTraces, newTrace]
-        streams.set(conversationId, {
-          ...current,
-          toolTraces: traces,
+        return {
+          ...prev,
+          segments: upsertToolSegment(prev.segments, trace),
           awaitingConfirm: {
             id: toolConfirmNeeded.id,
             name: toolConfirmNeeded.name,
             arguments: toolConfirmNeeded.arguments
           }
-        })
-        useChatStore.setState({ activeStreams: streams })
-      }
+        }
+      })
     }
 
     if (toolResult) {
-      const streams = new Map(useChatStore.getState().activeStreams)
-      const current = streams.get(conversationId)
-      if (current) {
-        const traces = current.toolTraces.map((t) =>
-          t.id === toolResult.id
-            ? {
-                ...t,
-                status: toolResult.error ? ('error' as const) : ('success' as const),
-                result: toolResult.result,
-                error: toolResult.error
-              }
-            : t
+      patchStream(conversationId, (prev) => {
+        const existing = prev.segments.find(
+          (s): s is Extract<Segment, { kind: 'tool' }> =>
+            s.kind === 'tool' && s.trace.id === toolResult.id
         )
-        streams.set(conversationId, { ...current, toolTraces: traces })
-        useChatStore.setState({ activeStreams: streams })
-      }
+        if (!existing) return prev
+        const trace: ToolTrace = {
+          ...existing.trace,
+          status: toolResult.error ? 'error' : 'success',
+          result: toolResult.result,
+          error: toolResult.error
+        }
+        return { ...prev, segments: upsertToolSegment(prev.segments, trace) }
+      })
     }
 
     if (done) {
       const streams = new Map(useChatStore.getState().activeStreams)
       const current = streams.get(conversationId)
-      // Capture les traces AVANT le delete : on en a besoin dans la closure
+      // Capture les segments AVANT le delete : on en a besoin dans la closure
       // async ci-dessous pour les attacher au dernier message assistant.
-      const finalToolTraces = current ? [...current.toolTraces] : []
+      const finalSegments = current ? [...current.segments] : []
       if (current && error) {
         streams.set(conversationId, { ...current, error, citations })
         useChatStore.setState({ activeStreams: streams })
@@ -516,21 +575,25 @@ function installChunkListener(
             messagesCount: fetched.messages.length
           })
         }
-        // Attache les traces capturées au dernier message assistant
-        // pour qu'elles restent visibles après la fin du stream (sinon
-        // les badges du StreamingBubble disparaissent au démontage).
-        const traces = new Map(useChatStore.getState().messageToolTraces)
-        if (fetched && finalToolTraces.length > 0) {
+        // Attache la timeline capturée au dernier message assistant pour
+        // qu'elle reste visible après la fin du stream (sinon le rendu
+        // entrelacé du StreamingBubble disparaîtrait au démontage).
+        // On ne persiste que les timelines qui ont au moins un segment
+        // tool — sinon le message est purement textuel et son content
+        // suffit (rendu markdown classique via MessageBubble).
+        const hasToolSegment = finalSegments.some((s) => s.kind === 'tool')
+        const segmentsMap = new Map(useChatStore.getState().messageSegments)
+        if (fetched && hasToolSegment) {
           const lastAssistant = [...fetched.messages]
             .reverse()
             .find((m) => m.role === 'assistant')
-          if (lastAssistant) traces.set(lastAssistant.id, finalToolTraces)
+          if (lastAssistant) segmentsMap.set(lastAssistant.id, finalSegments)
         }
         useChatStore.setState({
           conversations: convs,
           activeStreams: newStreams,
           allConversations: allConvs,
-          messageToolTraces: traces
+          messageSegments: segmentsMap
         })
       })().catch((e) => {
         console.warn('[chat-store] refetch conversation failed', e)
