@@ -4,6 +4,7 @@ import { listMessages, getConversation } from './ai-conversations.js'
 import { oneShotChat } from './openrouter.js'
 import * as wiki from './wiki-fs.js'
 import { runWikiLint, findSafeFixableIssues, type LintReport, type LintIssue } from './wiki-lint.js'
+import { researchAndUpdate, type ResearchResult } from './researcher.js'
 import type {
   AgentT,
   AgentKindT,
@@ -721,6 +722,27 @@ function buildCorrectionsBlock(issues: LintIssue[]): string {
 export async function runLint(): Promise<LintReport> {
   const agent = getAgentByKind('lint')
   return runWikiLint(agent && agent.enabled ? agent : null)
+}
+
+// ──────────────────────────────────────────────────────────── Researcher (Sprint 5)
+
+// Exécute l'agent Researcher : identifie les infos du wiki à vérifier,
+// lance les recherches web via Tavily, produit et applique les updates.
+// Coûteux (2 appels LLM + N appels Tavily) — le bouton UI est gated par
+// `enabled` de l'agent (off par défaut).
+export async function runResearcher(): Promise<ResearchResult> {
+  const agent = getAgentByKind('researcher')
+  if (!agent) {
+    throw new Error(
+      "Agent Researcher introuvable. La DB a-t-elle été correctement migrée ?"
+    )
+  }
+  if (!agent.enabled) {
+    throw new Error(
+      "Agent Researcher désactivé. Activez-le dans Paramètres > Agents (nécessite une clé Tavily)."
+    )
+  }
+  return researchAndUpdate(agent)
 }
 
 // ──────────────────────────────────────────────────────────── File-back (Sprint 3)

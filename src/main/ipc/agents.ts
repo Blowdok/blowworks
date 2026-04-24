@@ -49,4 +49,6 @@ export function registerAgentsHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.agents.runLint, () => agents.runLint())
+
+  ipcMain.handle(IPC_CHANNELS.agents.runResearcher, () => agents.runResearcher())
 }

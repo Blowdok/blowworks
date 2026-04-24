@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { LintReportT } from '@shared/ipc-contract.js'
+import type { LintReportT, ResearchResultT } from '@shared/ipc-contract.js'
 import { useWikiStore } from '../stores/wiki-store.js'
 
 // Section « Mémoire » de la Sidebar de l'app — permet de reconstruire le
@@ -31,6 +31,10 @@ export default function MemorySidebarSection({
   const [lintResult, setLintResult] = useState<
     { kind: 'ok' | 'issues' | 'error'; message: string } | null
   >(null)
+  const [researching, setResearching] = useState(false)
+  const [researchResult, setResearchResult] = useState<
+    { kind: 'ok' | 'error'; message: string } | null
+  >(null)
 
   async function handleBuild(): Promise<void> {
     await runWikiBuilder()
@@ -56,6 +60,31 @@ export default function MemorySidebarSection({
       setTimeout(() => setLintResult(null), 8000)
     } finally {
       setLinting(false)
+    }
+  }
+
+  async function handleResearch(): Promise<void> {
+    setResearching(true)
+    setResearchResult(null)
+    try {
+      const r = (await window.blow.agents.runResearcher()) as ResearchResultT
+      const n = r.operations.length
+      setResearchResult({
+        kind: 'ok',
+        message:
+          n === 0
+            ? `✓ Rien à actualiser (${r.queriesMade} recherche${r.queriesMade > 1 ? 's' : ''})`
+            : `✓ ${n} page${n > 1 ? 's' : ''} actualisée${n > 1 ? 's' : ''} (${r.queriesMade} recherche${r.queriesMade > 1 ? 's' : ''})`
+      })
+      setTimeout(() => setResearchResult(null), 10000)
+      // Rafraîchit le statut (wikiCount peut changer si des updates ont été faits).
+      void refreshStatus()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setResearchResult({ kind: 'error', message: msg })
+      setTimeout(() => setResearchResult(null), 10000)
+    } finally {
+      setResearching(false)
     }
   }
 
@@ -153,7 +182,7 @@ export default function MemorySidebarSection({
           <button
             type="button"
             onClick={() => void handleBuild()}
-            disabled={building || status.rawCount === 0}
+            disabled={building || researching || linting || status.rawCount === 0}
             className="rounded-[var(--radius-sm)] border px-2 py-1 text-[10px] disabled:cursor-not-allowed disabled:opacity-40"
             style={{
               borderColor: 'var(--border)',
@@ -179,11 +208,20 @@ export default function MemorySidebarSection({
           <button
             type="button"
             onClick={() => void handleLint()}
-            disabled={linting || building || status.wikiCount === 0}
+            disabled={linting || building || researching || status.wikiCount === 0}
             className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--fg-muted)] hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)] disabled:cursor-not-allowed disabled:opacity-40"
             title="Audit du wiki (orphelins, liens brisés, contradictions). Rapport écrit dans audit/."
           >
             {linting ? '⏳ Lint…' : '🩺 Health check'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleResearch()}
+            disabled={researching || linting || building || status.wikiCount === 0}
+            className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[10px] text-[var(--fg-muted)] hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)] disabled:cursor-not-allowed disabled:opacity-40"
+            title="Actualise le wiki via recherches web (Tavily). L'agent Researcher identifie les infos datées, vérifie auprès des sources et met à jour les pages. Nécessite : clé Tavily + agent Researcher activé (Paramètres > Agents)."
+          >
+            {researching ? '⏳ Recherche web…' : '🌐 Actualiser depuis le web'}
           </button>
           {lintResult && (
             <div
@@ -199,6 +237,22 @@ export default function MemorySidebarSection({
             >
               {lintResult.kind === 'ok' ? '✓ ' : lintResult.kind === 'error' ? '✗ ' : '⚠ '}
               {lintResult.message}
+            </div>
+          )}
+          {researchResult && (
+            <div
+              className="text-[9px]"
+              style={{
+                color: researchResult.kind === 'error' ? '#f87171' : 'var(--fg-secondary)'
+              }}
+            >
+              {researchResult.kind === 'error' ? '✗ ' : ''}
+              {researchResult.message}
+            </div>
+          )}
+          {researching && (
+            <div className="text-[9px] text-[var(--fg-muted)]">
+              Phase 1 : identifier les infos à vérifier… puis recherches Tavily + synthèse. Peut prendre 1-3 min.
             </div>
           )}
           {building && (

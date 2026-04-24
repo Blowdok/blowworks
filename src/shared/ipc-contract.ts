@@ -282,9 +282,16 @@ export type AIDefaultsT = z.infer<typeof AIDefaultsSchema>
 // ──────────────────────────────────────────────────────────── Agents IA
 
 // Un agent = une unité d'exécution one-shot (vs ChatShape = interaction
-// multi-tours). `kind` distingue les 2 agents système ('synthesizer',
-// 'wiki_builder') des agents libres ('custom') que l'utilisateur créera.
-export const AgentKindSchema = z.enum(['synthesizer', 'wiki_builder', 'lint', 'custom'])
+// multi-tours). `kind` distingue les agents système (synthesizer,
+// wiki_builder, lint, researcher) des agents libres ('custom') que
+// l'utilisateur créera.
+export const AgentKindSchema = z.enum([
+  'synthesizer',
+  'wiki_builder',
+  'lint',
+  'researcher',
+  'custom'
+])
 export type AgentKindT = z.infer<typeof AgentKindSchema>
 
 // Bornes max tokens : 128 min (quelque chose de significatif), 200k max
@@ -403,6 +410,21 @@ export const LintReportSchema = z.object({
   summary: z.string()
 })
 export type LintReportT = z.infer<typeof LintReportSchema>
+
+// Rapport d'exécution du Researcher (Sprint 5) : remonté au renderer pour
+// afficher un toast synthétique après actualisation web.
+export const ResearchResultSchema = z.object({
+  queriesMade: z.number().int().nonnegative(),
+  operations: z.array(
+    z.object({
+      op: z.string(),
+      filename: z.string(),
+      bytes: z.number().int().nonnegative()
+    })
+  ),
+  logEntry: z.string()
+})
+export type ResearchResultT = z.infer<typeof ResearchResultSchema>
 
 // ──────────────────────────────────────────────────────────── Wiki (mémoire FS)
 

@@ -83,7 +83,9 @@ export const IPC_CHANNELS = {
     // wiki qa/ réutilisable. Payload: { conversationId, messageId }.
     runFileBackResponse: 'agents.runFileBackResponse',
     // Lint (Sprint 4) : audit de cohérence du wiki.
-    runLint: 'agents.runLint'
+    runLint: 'agents.runLint',
+    // Researcher (Sprint 5) : actualise le wiki via recherches web Tavily.
+    runResearcher: 'agents.runResearcher'
   },
   wiki: {
     // Mémoire long-terme partagée entre conversations IA (dossier FS

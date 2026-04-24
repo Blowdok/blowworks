@@ -192,7 +192,8 @@ const api = {
     runWikiBuilder: () => ipcRenderer.invoke(IPC_CHANNELS.agents.runWikiBuilder),
     runFileBackResponse: (conversationId: string, messageId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.agents.runFileBackResponse, { conversationId, messageId }),
-    runLint: () => ipcRenderer.invoke(IPC_CHANNELS.agents.runLint)
+    runLint: () => ipcRenderer.invoke(IPC_CHANNELS.agents.runLint),
+    runResearcher: () => ipcRenderer.invoke(IPC_CHANNELS.agents.runResearcher)
   },
   wiki: {
     getFolder: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.getFolder),

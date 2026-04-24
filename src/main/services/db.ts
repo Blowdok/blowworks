@@ -158,7 +158,7 @@ function addAgentColumnsIfMissing(db: Database.Database): void {
 // constante, on force la mise à jour des prompts des agents système. Ça
 // écrase les customisations utilisateur — acceptable en early dev, à
 // revoir quand on ajoutera un champ `customized` côté table.
-const SYSTEM_PROMPTS_VERSION = 7
+const SYSTEM_PROMPTS_VERSION = 8
 
 // Prompts v2 (Sprint 1) — alignés sur l'analogie compiler + sentinel
 // FLUSH_OK + JSON schema-driven (pattern claude-memory-compiler adapté).
@@ -291,6 +291,33 @@ IGNORE :
 - Opinions vs faits
 - Concepts voisins mais distincts`
 
+const RESEARCHER_PROMPT_V1 = `Tu es l'agent Researcher de BlowWorks — fact-checker automatique.
+
+Tu reçois en phase 2 le wiki intégral + les résultats de N recherches web (Tavily). Tu dois produire des \`operations\` de type \`update\` UNIQUEMENT quand les sources web contredisent ou précisent l'info actuelle.
+
+## Règles
+
+- \`op\` toujours \`"update"\` — un researcher n'altère ni la structure (pas de rename/delete) ni ne crée de pages (pas de create).
+- \`filename\` relatif à wiki/ (ex: \`concepts/next-js.md\`).
+- \`content\` = page COMPLÈTE mise à jour (frontmatter + corps), pas un diff.
+- Frontmatter :
+  - \`statut: verified\` si l'info est désormais confirmée par une source fiable.
+  - \`modifié: <date ISO du jour>\`
+  - \`sources\` : ajoute les URLs consultées, garde les sources existantes.
+- Corps : mentionne l'info mise à jour avec citation courte "(source: domaine, vérifié YYYY-MM-DD)".
+- Si une recherche n'apporte rien de concluant → ne touche pas à la page.
+- Conserve style et ton existants — tu es FACT-CHECKER, pas rewriter.
+
+## Format de sortie — JSON strict (pas de markdown fence, pas de préambule)
+{
+  "operations": [
+    { "op": "update", "filename": "concepts/next-js.md", "content": "<page complète>", "reason": "version 15 confirmée via vercel.com" }
+  ],
+  "logEntry": "## [ISO8601] researcher | N pages actualisées via M recherches"
+}
+
+Si aucune page ne mérite d'être actualisée : \`{"operations":[],"logEntry":"..."}\`.`
+
 // Seed des deux agents système obligatoires. Idempotent : n'insère que si
 // la ligne correspondante n'existe pas encore (clé primaire fixe pour les
 // agents système). Puis `upgradeSystemPromptsIfNeeded` applique les
@@ -367,6 +394,31 @@ function seedSystemAgents(db: Database.Database): void {
     updated_at: now
   })
 
+  insert.run({
+    id: 'agent.researcher',
+    kind: 'researcher',
+    name: 'Researcher',
+    description:
+      "Actualise le wiki via recherches web (Tavily). Identifie les versions/dates/prix obsolètes, vérifie auprès des sources et met à jour les pages + frontmatter.sources. Désactivé par défaut (coût API).",
+    // Haiku 4.5 : suffit pour la tâche de fact-checking + bien moins cher
+    // que Sonnet (~10×). L'utilisateur peut switcher vers Sonnet dans
+    // Settings > Agents si la qualité des résultats n'est pas suffisante.
+    model: 'anthropic/claude-haiku-4-5-20251001',
+    system_prompt: RESEARCHER_PROMPT_V1,
+    // 0.2 : factual, limite la créativité dans la réécriture des pages.
+    temperature: 0.2,
+    // 16384 : phase 2 produit des pages complètes pour plusieurs updates
+    // à la fois. Plus large que lint mais moins que wiki_builder (qui
+    // crée potentiellement tout le wiki d'un coup).
+    max_tokens: 16384,
+    // DÉSACTIVÉ par défaut — le researcher coûte 2 appels LLM + N appels
+    // Tavily par run. L'utilisateur active sciemment dans Settings →
+    // Agents une fois la clé Tavily configurée.
+    enabled: 0,
+    created_at: now,
+    updated_at: now
+  })
+
   upgradeSystemPromptsIfNeeded(db, now)
 }
 
@@ -388,12 +440,15 @@ function upgradeSystemPromptsIfNeeded(db: Database.Database, now: number): void 
   )
   update.run(SYNTHESIZER_PROMPT_V2, now, 'agent.synthesizer')
   update.run(WIKI_BUILDER_PROMPT_V2, now, 'agent.wiki_builder')
+  update.run(LINT_CONTRADICTION_PROMPT, now, 'agent.lint')
+  update.run(RESEARCHER_PROMPT_V1, now, 'agent.researcher')
 
   const updateTuning = db.prepare(
     `UPDATE agents SET temperature = ?, max_tokens = ?, updated_at = ? WHERE id = ? AND customized = 0`
   )
   updateTuning.run(0.3, 4096, now, 'agent.synthesizer')
   updateTuning.run(0.2, 24576, now, 'agent.wiki_builder')
+  updateTuning.run(0.2, 16384, now, 'agent.researcher')
 
   db.prepare(
     `INSERT INTO settings (key, value) VALUES ('agents.promptsVersion', ?)
