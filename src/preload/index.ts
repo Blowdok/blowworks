@@ -227,6 +227,8 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.wiki.readFile, { relPath }),
     writeFile: (relPath: string, content: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.wiki.writeFile, { relPath, content }),
+    deleteFile: (relPath: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.wiki.deleteFile, { relPath }),
     importToRaw: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.importToRaw),
     listAllFiles: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.listAllFiles),
     getGraph: () => ipcRenderer.invoke(IPC_CHANNELS.wiki.getGraph)

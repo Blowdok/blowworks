@@ -63,6 +63,12 @@ interface ChatStore {
   // de chargement des messages tant que la conv n'est pas sélectionnée.
   allConversations: Map<string, AIConversationSummaryT>
   activeStreams: Map<string, StreamState>
+  // Trace des actions IA (tool_calls) attachées au message assistant qui
+  // les a déclenchées. Renseignée à la fin du stream — sans ça, les
+  // badges ToolTrace disparaîtraient quand le StreamingBubble est démonté.
+  // Volatile (non persisté en DB) : suffit pour voir l'historique pendant
+  // la session courante.
+  messageToolTraces: Map<string, ToolTrace[]>
 
   hydrate: () => Promise<void>
   refreshApiKeyStatus: () => Promise<void>
@@ -132,6 +138,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   conversations: new Map(),
   allConversations: new Map(),
   activeStreams: new Map(),
+  messageToolTraces: new Map(),
 
   hydrate: async () => {
     // Installe le listener de streaming UNE SEULE FOIS au premier hydrate.
@@ -485,6 +492,9 @@ function installChunkListener(
     if (done) {
       const streams = new Map(useChatStore.getState().activeStreams)
       const current = streams.get(conversationId)
+      // Capture les traces AVANT le delete : on en a besoin dans la closure
+      // async ci-dessous pour les attacher au dernier message assistant.
+      const finalToolTraces = current ? [...current.toolTraces] : []
       if (current && error) {
         streams.set(conversationId, { ...current, error, citations })
         useChatStore.setState({ activeStreams: streams })
@@ -506,10 +516,21 @@ function installChunkListener(
             messagesCount: fetched.messages.length
           })
         }
+        // Attache les traces capturées au dernier message assistant
+        // pour qu'elles restent visibles après la fin du stream (sinon
+        // les badges du StreamingBubble disparaissent au démontage).
+        const traces = new Map(useChatStore.getState().messageToolTraces)
+        if (fetched && finalToolTraces.length > 0) {
+          const lastAssistant = [...fetched.messages]
+            .reverse()
+            .find((m) => m.role === 'assistant')
+          if (lastAssistant) traces.set(lastAssistant.id, finalToolTraces)
+        }
         useChatStore.setState({
           conversations: convs,
           activeStreams: newStreams,
-          allConversations: allConvs
+          allConversations: allConvs,
+          messageToolTraces: traces
         })
       })().catch((e) => {
         console.warn('[chat-store] refetch conversation failed', e)

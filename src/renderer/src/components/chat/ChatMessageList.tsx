@@ -9,6 +9,7 @@ import type { AIMessageT } from '@shared/ipc-contract.js'
 import CitationsList from './CitationsList.js'
 import CodeBlock from './CodeBlock.js'
 import type { ToolTrace } from '../../stores/chat-store.js'
+import { useChatStore } from '../../stores/chat-store.js'
 import { useEditorStore } from '../../stores/editor-store.js'
 import { useWikiStore } from '../../stores/wiki-store.js'
 import { linkifyWikiRefs } from '../WikiPageViewer.js'
@@ -50,6 +51,10 @@ export default function ChatMessageList({
 }: ChatMessageListProps): React.ReactElement {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const isAtBottomRef = useRef(true)
+  // Map des traces persistantes (post-stream) indexée par messageId.
+  // Utilisée par chaque MessageBubble assistant pour afficher les badges
+  // d'actions IA réalisées par le LLM avec les wiki tools.
+  const messageToolTraces = useChatStore((s) => s.messageToolTraces)
 
   // Observe le scroll pour détecter si l'utilisateur est proche du bas
   // (tolérance 48 px). Seuls les auto-scrolls valident cet état ; un
@@ -158,6 +163,7 @@ export default function ChatMessageList({
             message={m}
             onFileBack={onFileBack}
             fileBackInProgress={fileBackInProgress === m.id}
+            toolTraces={messageToolTraces.get(m.id)}
           />
         ))}
 
@@ -242,11 +248,16 @@ const markdownComponents: Components = {
 function MessageBubble({
   message,
   onFileBack,
-  fileBackInProgress
+  fileBackInProgress,
+  toolTraces
 }: {
   message: AIMessageT
   onFileBack?: (messageId: string) => void
   fileBackInProgress?: boolean
+  // Traces des actions IA (wiki tools) déclenchées pour produire ce
+  // message assistant. Vide ou undefined = pas de badge à afficher.
+  // Persisté dans `chatStore.messageToolTraces` après la fin du stream.
+  toolTraces?: ToolTrace[]
 }): React.ReactElement {
   const isUser = message.role === 'user'
   const isAssistant = message.role === 'assistant'
@@ -268,6 +279,16 @@ function MessageBubble({
           color: 'var(--fg-primary)'
         }}
       >
+        {/* Traces des actions IA — visibles AU-DESSUS du contenu pour
+            que l'utilisateur voie le contexte de production de la réponse
+            même après la fin du stream. */}
+        {isAssistant && toolTraces && toolTraces.length > 0 && (
+          <div className="mb-2 flex flex-col gap-1">
+            {toolTraces.map((t) => (
+              <ToolTraceBadge key={t.id} trace={t} />
+            ))}
+          </div>
+        )}
         {isAssistant ? (
           <div className="markdown-body">
             <ReactMarkdown

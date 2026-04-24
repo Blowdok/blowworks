@@ -91,6 +91,12 @@ export function registerWikiHandlers(): void {
     return { ok: true }
   })
 
+  ipcMain.handle(IPC_CHANNELS.wiki.deleteFile, async (_evt, raw) => {
+    const { relPath } = z.object({ relPath: z.string().min(1).max(1024) }).parse(raw)
+    await wiki.deleteFile(relPath)
+    return { ok: true }
+  })
+
   // Import manuel : ouvre un file picker multi-sélection + copie chaque
   // fichier compatible dans raw/. Retourne le détail par fichier (succès
   // ou erreur) pour que la UI affiche un récap honnête.

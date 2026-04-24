@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { WikiEntryT } from '@shared/ipc-contract.js'
 import { useWikiStore } from '../stores/wiki-store.js'
+import ConfirmDialog from './ConfirmDialog.js'
 
 // Explorateur wiki plein cadre dans la sidebar. Remplace le contenu
 // standard (Projets + Mémoire + Graph) quand `sidebarMode === 'wiki-explorer'`.
@@ -89,9 +90,10 @@ interface TreeViewProps {
   depth: number
   selectedPath: string | null
   onSelect: (entry: WikiEntryT) => void
+  onContextMenuFile: (entry: WikiEntryT, x: number, y: number) => void
 }
 
-function TreeView({ nodes, depth, selectedPath, onSelect }: TreeViewProps): React.ReactElement {
+function TreeView({ nodes, depth, selectedPath, onSelect, onContextMenuFile }: TreeViewProps): React.ReactElement {
   return (
     <div className="flex flex-col">
       {nodes.map((n) =>
@@ -102,6 +104,7 @@ function TreeView({ nodes, depth, selectedPath, onSelect }: TreeViewProps): Reac
             depth={depth}
             selectedPath={selectedPath}
             onSelect={onSelect}
+            onContextMenuFile={onContextMenuFile}
           />
         ) : (
           <FileNode
@@ -110,6 +113,7 @@ function TreeView({ nodes, depth, selectedPath, onSelect }: TreeViewProps): Reac
             depth={depth}
             selected={selectedPath === n.path}
             onSelect={onSelect}
+            onContextMenuFile={onContextMenuFile}
           />
         )
       )}
@@ -122,9 +126,10 @@ interface FolderNodeProps {
   depth: number
   selectedPath: string | null
   onSelect: (entry: WikiEntryT) => void
+  onContextMenuFile: (entry: WikiEntryT, x: number, y: number) => void
 }
 
-function FolderNode({ node, depth, selectedPath, onSelect }: FolderNodeProps): React.ReactElement {
+function FolderNode({ node, depth, selectedPath, onSelect, onContextMenuFile }: FolderNodeProps): React.ReactElement {
   const [open, setOpen] = useState(depth === 0)
   // Orange pour racine, bleu pour sous-dossiers.
   const colorClass = depth === 0 ? 'text-orange-400' : 'text-blue-400'
@@ -147,6 +152,7 @@ function FolderNode({ node, depth, selectedPath, onSelect }: FolderNodeProps): R
           depth={depth + 1}
           selectedPath={selectedPath}
           onSelect={onSelect}
+          onContextMenuFile={onContextMenuFile}
         />
       )}
     </div>
@@ -158,9 +164,16 @@ interface FileNodeProps {
   depth: number
   selected: boolean
   onSelect: (entry: WikiEntryT) => void
+  onContextMenuFile: (entry: WikiEntryT, x: number, y: number) => void
 }
 
-function FileNode({ node, depth, selected, onSelect }: FileNodeProps): React.ReactElement {
+function FileNode({
+  node,
+  depth,
+  selected,
+  onSelect,
+  onContextMenuFile
+}: FileNodeProps): React.ReactElement {
   const displayName = node.name.replace(/\.(md|markdown)$/i, '')
   // Fichiers : blanc par défaut, cyan si sélectionné.
   const colorClass = selected
@@ -170,9 +183,14 @@ function FileNode({ node, depth, selected, onSelect }: FileNodeProps): React.Rea
     <button
       type="button"
       onClick={() => onSelect(node.entry)}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        onContextMenuFile(node.entry, e.clientX, e.clientY)
+      }}
       className={`flex w-full items-center gap-1 truncate rounded-[var(--radius-sm)] px-1 py-0.5 text-left text-[11px] hover:bg-[var(--bg-tertiary)] ${colorClass}`}
       style={{ paddingLeft: 4 + depth * 10 + 12 }}
-      title={node.path}
+      title={`${node.path}\n(clic droit pour plus d'options)`}
     >
       <span className="truncate">{displayName}</span>
     </button>
@@ -189,10 +207,22 @@ export default function WikiExplorerSidebar({
   const openPageName = useWikiStore((s) => s.openPageName)
   const openFilePath = useWikiStore((s) => s.openFilePath)
 
+  const closeWikiPage = useWikiStore((s) => s.closeWikiPage)
+
   const [entries, setEntries] = useState<WikiEntryT[]>([])
   const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState('')
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  // Menu contextuel d'un fichier : null = fermé. Les coords sont en pixels
+  // écran (clientX/Y du PointerEvent).
+  const [contextMenu, setContextMenu] = useState<
+    { entry: WikiEntryT; x: number; y: number } | null
+  >(null)
+  const contextMenuRef = useRef<HTMLDivElement>(null)
+  // Cible d'une suppression en attente de confirmation. Affiche le
+  // ConfirmDialog partagé (même pattern que les autres deletes du projet).
+  const [pendingDelete, setPendingDelete] = useState<WikiEntryT | null>(null)
+  const [refreshTick, setRefreshTick] = useState(0)
 
   // Synchronise la sélection avec le viewer wiki global : si l'utilisateur
   // clique un wikilink depuis le chat ou ouvre un fichier ailleurs, on met
@@ -236,7 +266,33 @@ export default function WikiExplorerSidebar({
     return () => {
       cancelled = true
     }
-  }, [status.initialized, status.wikiCount, status.rawCount])
+  }, [status.initialized, status.wikiCount, status.rawCount, refreshTick])
+
+  // Ferme le menu contextuel sur Échap / clic AILLEURS / scroll.
+  // IMPORTANT : on ne ferme pas si le clic est DANS le menu, sinon le
+  // listener en capture s'exécute avant le onClick du bouton Supprimer
+  // → le menu est démonté avant que React n'ait pu déclencher l'action.
+  useEffect(() => {
+    if (!contextMenu) return
+    function close(): void {
+      setContextMenu(null)
+    }
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === 'Escape') close()
+    }
+    function onMouseDown(e: MouseEvent): void {
+      if (contextMenuRef.current?.contains(e.target as Node)) return
+      close()
+    }
+    document.addEventListener('keydown', onKey, true)
+    document.addEventListener('mousedown', onMouseDown, true)
+    window.addEventListener('scroll', close, true)
+    return () => {
+      document.removeEventListener('keydown', onKey, true)
+      document.removeEventListener('mousedown', onMouseDown, true)
+      window.removeEventListener('scroll', close, true)
+    }
+  }, [contextMenu])
 
   const tree = useMemo(() => {
     const full = buildTree(entries)
@@ -254,6 +310,37 @@ export default function WikiExplorerSidebar({
       // interne mais via readFile/writeFile (chemin complet relatif).
       // Évite que l'OS lance VSCode/Notepad pour chaque clic.
       openWikiFile(entry.name)
+    }
+  }
+
+  const handleContextMenuFile = (entry: WikiEntryT, x: number, y: number): void => {
+    setContextMenu({ entry, x, y })
+  }
+
+  // Étape 1 : clic sur "Supprimer…" dans le menu contextuel → ferme le
+  // menu et arme la modale de confirmation partagée. Pas de window.confirm
+  // pour rester cohérent avec les autres suppressions du projet.
+  function requestDelete(entry: WikiEntryT): void {
+    setContextMenu(null)
+    setPendingDelete(entry)
+  }
+
+  // Étape 2 : confirmation utilisateur dans la modale → exécute le delete.
+  async function confirmDelete(entry: WikiEntryT): Promise<void> {
+    setPendingDelete(null)
+    try {
+      await window.blow.wiki.deleteFile(entry.name)
+      // Si la page supprimée est ouverte dans le viewer, on le ferme.
+      if (selectedPath === entry.name) {
+        setSelectedPath(null)
+        closeWikiPage()
+      }
+      // Refresh la liste de fichiers + le statut wiki (compteurs).
+      setRefreshTick((t) => t + 1)
+      void useWikiStore.getState().refresh()
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      window.alert(`Suppression échouée : ${msg}`)
     }
   }
 
@@ -291,7 +378,7 @@ export default function WikiExplorerSidebar({
             placeholder="Filtrer…"
             className="w-full rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-tertiary)] px-2 py-1 text-[12px] text-[var(--fg-primary)] outline-none focus:border-[var(--fg-secondary)]"
           />
-          <div className="mt-1 flex items-center justify-between text-[10px] text-[var(--fg-muted)]">
+          <div className="mt-1 flex items-center justify-between text-[12px] text-[var(--fg-muted)]">
             <span>
               {entries.length} fichier{entries.length > 1 ? 's' : ''} · {status.wikiCount} wiki ·{' '}
               {status.rawCount} raw
@@ -315,9 +402,100 @@ export default function WikiExplorerSidebar({
             depth={0}
             selectedPath={selectedPath}
             onSelect={handleSelect}
+            onContextMenuFile={handleContextMenuFile}
           />
         )}
       </div>
+
+      {contextMenu && (
+        <FileContextMenu
+          ref={contextMenuRef}
+          entry={contextMenu.entry}
+          screenX={contextMenu.x}
+          screenY={contextMenu.y}
+          onDelete={() => requestDelete(contextMenu.entry)}
+        />
+      )}
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Supprimer ce fichier ?"
+        message={
+          pendingDelete && (
+            <>
+              <p>
+                Vous êtes sur le point de supprimer définitivement&nbsp;:
+              </p>
+              <p className="mt-2 break-all rounded-[var(--radius-sm)] border border-[var(--border)] bg-[var(--bg-tertiary)] px-2 py-1 font-mono text-[12px] text-[var(--fg-primary)]">
+                {pendingDelete.name}
+              </p>
+              <p className="mt-2 text-[var(--fg-muted)]">
+                Cette action est irréversible — le fichier disparaîtra du disque.
+              </p>
+            </>
+          )
+        }
+        confirmLabel="Supprimer"
+        cancelLabel="Annuler"
+        destructive
+        onConfirm={() => {
+          if (pendingDelete) void confirmDelete(pendingDelete)
+        }}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   )
 }
+
+// Petit popover en position fixed pour les actions sur un fichier
+// (clic droit dans l'arbre). Pour l'instant un seul item : Supprimer.
+// Auto-clamp aux bords du viewport pour ne jamais déborder. La ref est
+// utilisée par le composant parent pour ne pas fermer le menu quand le
+// clic se fait DANS le menu (sinon le mousedown en capture le démonte
+// avant que onClick ne se déclenche).
+const FileContextMenu = React.forwardRef<
+  HTMLDivElement,
+  {
+    entry: WikiEntryT
+    screenX: number
+    screenY: number
+    onDelete: () => void
+  }
+>(function FileContextMenu({ entry, screenX, screenY, onDelete }, ref) {
+  const MENU_W = 180
+  const MENU_H = 64
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  const left = Math.min(screenX, vw - MENU_W - 8)
+  const top = Math.min(screenY, vh - MENU_H - 8)
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      className="fixed z-[60] flex min-w-[180px] flex-col gap-0.5 rounded-[var(--radius-sm)] border p-1 shadow-xl"
+      style={{
+        left,
+        top,
+        borderColor: 'var(--border)',
+        background: 'var(--bg-secondary)'
+      }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div
+        className="truncate px-2 pb-1 pt-0.5 text-[9px] uppercase tracking-widest text-[var(--fg-muted)]"
+        title={entry.name}
+      >
+        {entry.name}
+      </div>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={onDelete}
+        className="flex w-full items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[12px] text-red-400 hover:bg-[var(--bg-tertiary)]"
+      >
+        <span className="w-4 text-center">🗑</span>
+        <span className="flex-1">Supprimer…</span>
+      </button>
+    </div>
+  )
+})

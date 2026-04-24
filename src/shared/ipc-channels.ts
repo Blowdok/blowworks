@@ -117,6 +117,9 @@ export const IPC_CHANNELS = {
     // clique dans l'explorateur sur SCHEMA.md, log.md, raw/ ou audit/.
     readFile: 'wiki.readFile',
     writeFile: 'wiki.writeFile',
+    // Suppression d'un fichier arbitraire dans le dossier wiki (sandbox).
+    // Utilisé par le menu contextuel de l'explorateur (clic droit → 🗑).
+    deleteFile: 'wiki.deleteFile',
     // Import manuel : ouvre un file picker + copie .md/.txt dans raw/
     // pour ingestion par le Wiki Builder. Atomique côté renderer.
     importToRaw: 'wiki.importToRaw',

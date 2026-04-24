@@ -63,6 +63,8 @@ export default function WikiPageViewer(): React.ReactElement | null {
   const [widthFraction, setWidthFraction] = useState(0.5)
   const [resizing, setResizing] = useState(false)
   const [snapped, setSnapped] = useState(true)
+  // Feedback visuel temporaire après un copier réussi (icône → ✓ pendant 1.5s).
+  const [copiedAt, setCopiedAt] = useState<number | null>(null)
 
   const dirty = original !== null && draft !== original
   // Refs pour que le handler de clic wikilink dans le useMemo ci-dessous
@@ -152,6 +154,17 @@ export default function WikiPageViewer(): React.ReactElement | null {
       if (!ok) return
     }
     closeWikiPage()
+  }
+
+  async function handleCopy(): Promise<void> {
+    if (original === null) return
+    try {
+      await navigator.clipboard.writeText(draft)
+      setCopiedAt(Date.now())
+      setTimeout(() => setCopiedAt(null), 1500)
+    } catch (e) {
+      console.warn('[viewer] copie presse-papier échouée :', e)
+    }
   }
 
   async function handleSave(): Promise<void> {
@@ -327,6 +340,16 @@ export default function WikiPageViewer(): React.ReactElement | null {
         )}
         <button
           type="button"
+          onClick={() => void handleCopy()}
+          disabled={original === null}
+          className="rounded-[var(--radius-sm)] border border-[var(--border)] px-2 py-1 text-[11px] text-[var(--fg-muted)] hover:border-[var(--fg-secondary)] hover:text-[var(--fg-secondary)] disabled:cursor-not-allowed disabled:opacity-40"
+          title="Copier le contenu markdown dans le presse-papier"
+          aria-label="Copier"
+        >
+          {copiedAt ? '✓ Copié' : '📋 Copier'}
+        </button>
+        <button
+          type="button"
           onClick={() => void handleSave()}
           disabled={!dirty || saving}
           className="rounded-[var(--radius-sm)] border px-2 py-1 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-40"
@@ -359,7 +382,7 @@ export default function WikiPageViewer(): React.ReactElement | null {
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
                   spellCheck={false}
-                  className="h-full w-full resize-none border-0 bg-transparent px-5 py-4 font-mono text-[12px] leading-[1.6] outline-none"
+                  className="h-full w-full resize-none border-0 bg-transparent px-5 py-4 font-mono text-[14px] leading-[1.6] outline-none"
                   style={{
                     color: 'var(--fg-primary)',
                     background: 'var(--bg-primary)'
@@ -369,7 +392,7 @@ export default function WikiPageViewer(): React.ReactElement | null {
             )}
             {(mode === 'preview' || mode === 'split') && (
               <div
-                className={`min-h-0 overflow-y-auto px-5 py-4 text-[13px] ${mode === 'split' ? 'w-1/2' : 'flex-1'}`}
+                className={`min-h-0 overflow-y-auto px-5 py-4 text-[14px] ${mode === 'split' ? 'w-1/2' : 'flex-1'}`}
                 style={{ color: 'var(--fg-primary)', background: 'var(--bg-secondary)' }}
               >
                 <div className="markdown-body mx-auto max-w-[720px]">{rendered}</div>

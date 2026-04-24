@@ -503,6 +503,24 @@ export async function deleteWiki(name: string): Promise<void> {
   await fs.unlink(p)
 }
 
+// Delete d'un fichier arbitraire dans le dossier wiki (raw/, audit/,
+// SCHEMA.md, log.md, wiki/…). Sandbox strict : refuse les chemins hors
+// du dossier wiki configuré. Utilisé par l'explorateur sidebar pour
+// permettre à l'utilisateur de nettoyer les artefacts (rapports lint
+// vieux, raw obsolète, etc.) avec confirmation côté UI.
+export async function deleteFile(relPath: string): Promise<void> {
+  const folder = ensureConfigured()
+  const target = path.resolve(folder, relPath)
+  const root = path.resolve(folder)
+  if (!target.startsWith(root + path.sep) && target !== root) {
+    throw new Error(`Chemin hors dossier wiki : ${relPath}`)
+  }
+  if (target === root) {
+    throw new Error('Suppression du dossier wiki racine interdite.')
+  }
+  await fs.unlink(target)
+}
+
 // Ouvre le dossier wiki dans l'explorateur OS. Renvoie une chaîne vide en
 // succès (comportement de `shell.openPath`) ou un message d'erreur.
 export async function openFolderInExplorer(): Promise<string> {
