@@ -783,20 +783,18 @@ const GraphCanvas = forwardRef<
 
   // Met à jour la position pendant un drag ; clamp aux bords.
   function handleDrag(e: React.PointerEvent): void {
-    if (panStateRef.current) {
-      // Pan actif (drag sur le vide) : on translate le viewBox en
-      // fonction du delta de pointer. 1 px écran = viewBox.w/rect.width
-      // en coords SVG → la vue suit 1:1 le geste peu importe le zoom.
+    // Capture locale du ref AVANT le setState : entre l'appel de
+    // handleDrag et l'exécution différée du setter par React, le ref
+    // peut être nullé (onPointerLeave/Up concurrent) → TypeError dans
+    // le setter. La variable locale `pan` garantit une valeur stable.
+    const pan = panStateRef.current
+    if (pan) {
       const svg = svgRef.current
       if (!svg) return
       const rect = svg.getBoundingClientRect()
-      const dx = ((e.clientX - panStateRef.current.startX) / rect.width) * viewBox.w
-      const dy = ((e.clientY - panStateRef.current.startY) / rect.height) * viewBox.h
-      setViewBox((vb) => ({
-        ...vb,
-        x: panStateRef.current!.vbX - dx,
-        y: panStateRef.current!.vbY - dy
-      }))
+      const dx = ((e.clientX - pan.startX) / rect.width) * viewBox.w
+      const dy = ((e.clientY - pan.startY) / rect.height) * viewBox.h
+      setViewBox((vb) => ({ ...vb, x: pan.vbX - dx, y: pan.vbY - dy }))
       return
     }
     if (!dragId) return
