@@ -164,6 +164,20 @@ function buildRawFilename(conversationId: string): string {
   return `conv-${tail}-${iso}.md`
 }
 
+// Extrait un résumé court d'un article markdown : frontmatter YAML complet
+// + 1er paragraphe du corps. Utilisé en mode compact quand le prompt full
+// dépasse le budget — le WB garde assez de contexte pour détecter les
+// doublons et respecter les conventions, sans inliner 50k tokens d'articles.
+function extractArticleDigest(content: string): string {
+  const fmMatch = content.match(/^---\r?\n[\s\S]*?\r?\n---/)
+  const frontmatter = fmMatch ? fmMatch[0] : ''
+  const body = fmMatch ? content.slice(fmMatch[0].length).trimStart() : content.trimStart()
+  // Premier paragraphe non-vide (ou premier titre si le fichier commence par ##).
+  const firstBlock = body.split(/\n\s*\n/).find((p) => p.trim().length > 0) ?? ''
+  const truncated = firstBlock.length > 400 ? firstBlock.slice(0, 400) + '…' : firstBlock
+  return frontmatter ? `${frontmatter}\n\n${truncated}` : truncated
+}
+
 // Normalise un chemin relatif en retirant les prefix `wiki/`, `./wiki/`,
 // `/wiki/` que le modèle colle parfois malgré le prompt. `writeWiki`
 // ajoute déjà le prefix côté FS, donc laisser le modèle le mettre causait
@@ -360,22 +374,28 @@ async function runWikiBuilderBatch(
     )
   ])
 
-  // Contenu intégral des articles existants pour éviter doublons. Les
-  // articles vraiment gros pourraient être tronqués ici si besoin, mais
-  // pour l'instant on inline tout — le chunking côté raw suffit à
-  // contenir le budget total.
-  const existingArticles = await Promise.all(
+  // Contenu des articles existants : inliné INTÉGRALEMENT tant que le
+  // prompt total reste sous `BUDGET_INPUT_TOKENS`. Au-delà on bascule en
+  // mode compact (frontmatter + 1er paragraphe seulement) pour éviter le
+  // HTTP 400 "max context length" d'OpenRouter. Le WB a alors moins de
+  // contexte pour détecter les doublons ou enrichir précisément, mais la
+  // compilation passe au lieu de planter. L'index.md reste inliné en entier
+  // dans tous les cas — c'est la carte maître des articles existants.
+  const existingArticlesFull = await Promise.all(
     wikiEntries.map(async (e) => {
       try {
         const content = await wiki.readWiki(e.name)
-        return `### ${e.name}\n\n${content}`
+        return { name: e.name, content }
       } catch {
         return null
       }
     })
   )
-  const existingArticlesBlock =
-    existingArticles.filter((x): x is string => x !== null).join('\n\n---\n\n') ||
+  const validArticles = existingArticlesFull.filter(
+    (x): x is { name: string; content: string } => x !== null
+  )
+  const fullArticlesBlock =
+    validArticles.map((a) => `### ${a.name}\n\n${a.content}`).join('\n\n---\n\n') ||
     '(aucun article existant)'
 
   // Lint-fix léger intégré : on récupère les issues "safe" (broken-ref +
@@ -387,31 +407,57 @@ async function runWikiBuilderBatch(
   const safeIssues = await findSafeFixableIssues().catch(() => [] as LintIssue[])
   const correctionsBlock = buildCorrectionsBlock(safeIssues)
 
-  const userPromptParts = [
-    '## Contexte du compilateur',
-    '',
-    '**IMPORTANT** : tous les `filename` que tu produis dans `operations[]` sont relatifs au dossier `wiki/`. Écris `concepts/pagemark.md`, PAS `wiki/concepts/pagemark.md`. Le runner ajoute le prefix automatiquement — si tu le mets aussi, tu créeras une arborescence `wiki/wiki/...`.',
-    '',
-    '### SCHEMA.md (spec)',
-    schema ?? '(SCHEMA.md absent — utilise les conventions standard de BlowWorks)',
-    '',
-    '### index.md (état maître, vit dans wiki/index.md)',
-    indexContent ?? '(index.md absent — à créer)',
-    '',
-    '### Articles existants (chemins relatifs à wiki/)',
-    existingArticlesBlock,
-    '',
-    '## Raw sources à compiler (CE batch uniquement)',
-    '',
-    rawBlocks.join('\n\n---\n\n')
-  ]
-  if (correctionsBlock) userPromptParts.push('', correctionsBlock)
-  userPromptParts.push(
-    '',
-    '## Tâche',
-    "Produis le JSON d'opérations selon la spec SCHEMA pour CES sources uniquement. N'inline pas de markdown fence autour du JSON. Rappel : `filename` sans prefix `wiki/`."
-  )
-  const userPrompt = userPromptParts.join('\n\n')
+  const buildPrompt = (articlesBlock: string, compact: boolean): string => {
+    const parts = [
+      '## Contexte du compilateur',
+      '',
+      '**IMPORTANT** : tous les `filename` que tu produis dans `operations[]` sont relatifs au dossier `wiki/`. Écris `concepts/pagemark.md`, PAS `wiki/concepts/pagemark.md`. Le runner ajoute le prefix automatiquement — si tu le mets aussi, tu créeras une arborescence `wiki/wiki/...`.',
+      '',
+      '### SCHEMA.md (spec)',
+      schema ?? '(SCHEMA.md absent — utilise les conventions standard de BlowWorks)',
+      '',
+      '### index.md (état maître, vit dans wiki/index.md)',
+      indexContent ?? '(index.md absent — à créer)',
+      '',
+      compact
+        ? '### Articles existants — APERÇU COMPACT (frontmatter + 1er paragraphe seulement, pour tenir dans le contexte)'
+        : '### Articles existants (chemins relatifs à wiki/)',
+      articlesBlock,
+      '',
+      '## Raw sources à compiler (CE batch uniquement)',
+      '',
+      rawBlocks.join('\n\n---\n\n')
+    ]
+    if (correctionsBlock) parts.push('', correctionsBlock)
+    parts.push(
+      '',
+      '## Tâche',
+      "Produis le JSON d'opérations selon la spec SCHEMA pour CES sources uniquement. N'inline pas de markdown fence autour du JSON. Rappel : `filename` sans prefix `wiki/`."
+    )
+    if (compact) {
+      parts.push(
+        '',
+        "_Note : le contexte est en mode compact car le wiki est dense. Si tu as besoin du contenu complet d'un article existant pour le mettre à jour, produis un `update` avec le contenu que tu veux appliquer — tu ne peux pas relire le corps intégral ici._"
+      )
+    }
+    return parts.join('\n\n')
+  }
+
+  // Budget input : on cible ~140k tokens d'input pour laisser 24k de sortie
+  // sous le plafond 200k des modèles Claude. Approximation ~4 chars/token.
+  // Si le prompt full dépasse, on bascule en compact (titre + frontmatter +
+  // 1er paragraphe de chaque article existant).
+  const BUDGET_INPUT_CHARS = 140_000 * 4
+  let userPrompt = buildPrompt(fullArticlesBlock, false)
+  if (userPrompt.length > BUDGET_INPUT_CHARS) {
+    const compactArticlesBlock =
+      validArticles.map((a) => `### ${a.name}\n\n${extractArticleDigest(a.content)}`).join('\n\n---\n\n') ||
+      '(aucun article existant)'
+    userPrompt = buildPrompt(compactArticlesBlock, true)
+    console.log(
+      `[wiki-builder] prompt full trop gros (${fullArticlesBlock.length} chars d'articles) → bascule en mode compact (${compactArticlesBlock.length} chars)`
+    )
+  }
 
   const result = await oneShotChat({
     model: agent.model,
