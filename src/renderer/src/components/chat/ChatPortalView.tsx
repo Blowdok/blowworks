@@ -73,6 +73,8 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     | { kind: 'idle' }
     | { kind: 'running' }
     | { kind: 'success'; filename: string }
+    | { kind: 'duplicate'; filename: string }
+    | { kind: 'skipped' }
     | { kind: 'flush-ok' }
     | { kind: 'error'; message: string }
   >({ kind: 'idle' })
@@ -246,8 +248,18 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       const r = (await window.blow.agents.runFileBackResponse(convId, messageId)) as {
         filename: string
         logEntry: string
+        status?: 'written' | 'duplicate' | 'skipped'
       }
-      setSynthState({ kind: 'success', filename: r.filename })
+      // Le QA Filer peut désormais skip ou détecter un doublon — on
+      // affiche des toasts distincts pour que l'utilisateur comprenne
+      // pourquoi aucune page n'a été créée le cas échéant.
+      if (r.status === 'skipped') {
+        setSynthState({ kind: 'skipped' })
+      } else if (r.status === 'duplicate') {
+        setSynthState({ kind: 'duplicate', filename: r.filename })
+      } else {
+        setSynthState({ kind: 'success', filename: r.filename })
+      }
       void refreshWikiStatus()
       setTimeout(() => setSynthState({ kind: 'idle' }), 4000)
     } catch (e) {
@@ -603,6 +615,10 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
           {synthState.kind === 'running' && '⏳ Synthèse en cours…'}
           {synthState.kind === 'success' &&
             `✓ Synthèse sauvée dans raw/${synthState.filename}`}
+          {synthState.kind === 'duplicate' &&
+            `⚠ Déjà filé dans wiki/qa/${synthState.filename} — rien de nouveau à écrire.`}
+          {synthState.kind === 'skipped' &&
+            '∅ Le modèle estime que cette Q/R ne vaut pas la peine d\'être filée (SKIP_QA).'}
           {synthState.kind === 'flush-ok' &&
             '∅ Rien à sauver — la conversation n\'a pas de substance mémorisable (FLUSH_OK).'}
           {synthState.kind === 'error' && `✗ ${synthState.message}`}

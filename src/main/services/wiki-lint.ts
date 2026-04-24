@@ -315,36 +315,119 @@ async function runContradictionCheck(
 
   const issues: LintIssue[] = []
   for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim()
-    if (!trimmed) continue
-
-    const contradiction = trimmed.match(
-      /^CONTRADICTION:\s*(?:wiki\/)?(\S+)\s+vs\s+(?:wiki\/)?(\S+)\s*-\s*(.+)$/i
-    )
-    if (contradiction) {
-      issues.push({
-        kind: 'contradiction',
-        severity: 'high',
-        pages: [
-          contradiction[1].replace(/^wiki\//, ''),
-          contradiction[2].replace(/^wiki\//, '')
-        ],
-        description: contradiction[3].trim()
-      })
-      continue
-    }
-    const inconsistency = trimmed.match(/^INCONSISTENCY:\s*(?:wiki\/)?(\S+)\s*-\s*(.+)$/i)
-    if (inconsistency) {
-      issues.push({
-        kind: 'inconsistency',
-        severity: 'medium',
-        pages: [inconsistency[1].replace(/^wiki\//, '')],
-        description: inconsistency[2].trim()
-      })
-    }
+    const issue = parseLintLine(line)
+    if (issue) issues.push(issue)
     // Lignes non-parseables : ignorées (le modèle a dévié du format).
   }
   return issues
+}
+
+// Parse une ligne de lint. Deux formats supportés :
+//
+// Ancien (prompt V1) :
+//   CONTRADICTION: wiki/A vs wiki/B - description
+//   INCONSISTENCY: wiki/A - description
+//
+// Nouveau (prompt V2+) :
+//   CONTRADICTION[HIGH|LOW]: wiki/A#heading vs wiki/B#heading | claim-a: "..." | claim-b: "..." | angle: <dates|chiffres|...>
+//   INCONSISTENCY[HIGH|LOW]: wiki/A#heading | description | angle: <...>
+//
+// Dans les deux cas on strip `wiki/` et `#heading` des paths, et on
+// synthétise une description lisible à partir des champs présents.
+function parseLintLine(rawLine: string): LintIssue | null {
+  const trimmed = rawLine.trim()
+  if (!trimmed) return null
+
+  // Détecte type + severity optionnelle (défaut HIGH pour contradiction,
+  // MEDIUM pour inconsistency). Groupe 1 = type, groupe 2 = severity.
+  const prefix = trimmed.match(/^(CONTRADICTION|INCONSISTENCY)(?:\[(HIGH|LOW|MEDIUM)\])?\s*:\s*(.*)$/i)
+  if (!prefix) return null
+
+  const kind = prefix[1].toLowerCase() === 'contradiction' ? 'contradiction' : 'inconsistency'
+  const severityTag = prefix[2]?.toUpperCase()
+  const rest = prefix[3]
+
+  // Sépare le segment "paths" du segment "description/claims/angle".
+  // Le séparateur est le PREMIER `|` (nouveau format) ou ` - ` (ancien).
+  // Note : on évite de splitter sur un `-` dans un claim, donc on cherche
+  // ` - ` avec espaces autour (uniquement l'ancien format).
+  let pathsPart: string
+  let tailPart: string
+  const pipeIdx = rest.indexOf('|')
+  const dashSepIdx = rest.search(/\s+-\s+/)
+  if (pipeIdx >= 0 && (dashSepIdx < 0 || pipeIdx < dashSepIdx)) {
+    pathsPart = rest.slice(0, pipeIdx).trim()
+    tailPart = rest.slice(pipeIdx + 1).trim()
+  } else if (dashSepIdx >= 0) {
+    pathsPart = rest.slice(0, dashSepIdx).trim()
+    tailPart = rest.replace(/^.*?\s+-\s+/, '').trim()
+  } else {
+    // Format sans description : juste les paths.
+    pathsPart = rest.trim()
+    tailPart = ''
+  }
+
+  if (kind === 'contradiction') {
+    // paths : "wiki/A#h vs wiki/B#h"
+    const m = pathsPart.match(/^(?:wiki\/)?(\S+?)\s+vs\s+(?:wiki\/)?(\S+)$/i)
+    if (!m) return null
+    const pageA = stripHeading(m[1])
+    const pageB = stripHeading(m[2])
+    const description = buildDescriptionFromTail(tailPart) || 'Contradiction détectée'
+    const severity: LintSeverity =
+      severityTag === 'LOW' ? 'low' : 'high'
+    return {
+      kind: 'contradiction',
+      severity,
+      pages: [pageA, pageB],
+      description
+    }
+  }
+
+  // inconsistency : paths = "wiki/A#h"
+  const pageA = stripHeading(pathsPart.replace(/^wiki\//, ''))
+  const description = buildDescriptionFromTail(tailPart) || 'Incohérence détectée'
+  const severity: LintSeverity = severityTag === 'HIGH' ? 'high' : severityTag === 'LOW' ? 'low' : 'medium'
+  return {
+    kind: 'inconsistency',
+    severity,
+    pages: [pageA],
+    description
+  }
+}
+
+// Retire une éventuelle ancre `#heading` d'un chemin `foo/bar.md#section`.
+function stripHeading(pathWithHash: string): string {
+  const hashIdx = pathWithHash.indexOf('#')
+  return hashIdx >= 0 ? pathWithHash.slice(0, hashIdx) : pathWithHash
+}
+
+// Reconstruit une description lisible depuis le tail — soit un simple
+// texte (ancien format), soit une série de pipes `| claim-a: "..." |
+// claim-b: "..." | angle: ...` (nouveau format).
+function buildDescriptionFromTail(tail: string): string {
+  if (!tail) return ''
+  // Si pas de structure pipe, c'est une description plate → renvoyer tel quel.
+  if (!tail.includes('|') && !/(claim-a|claim-b|angle)\s*:/i.test(tail)) {
+    return tail.trim()
+  }
+  // Parse les segments "key: value" séparés par `|`.
+  const parts: Record<string, string> = {}
+  for (const chunk of tail.split('|')) {
+    const m = chunk.trim().match(/^(claim-a|claim-b|angle|description)\s*:\s*(.*)$/i)
+    if (!m) continue
+    parts[m[1].toLowerCase()] = m[2].trim().replace(/^"(.*)"$/, '$1')
+  }
+  const bits: string[] = []
+  if (parts['claim-a'] && parts['claim-b']) {
+    bits.push(`A: "${parts['claim-a']}" vs B: "${parts['claim-b']}"`)
+  } else if (parts.description) {
+    bits.push(parts.description)
+  } else if (parts['claim-a']) {
+    bits.push(parts['claim-a'])
+  }
+  if (parts.angle) bits.push(`(angle: ${parts.angle})`)
+  return bits.join(' ').trim() || tail.trim()
 }
 
 // ──────────────────────────────────────────────────────────── Report markdown

@@ -805,7 +805,16 @@ export async function runResearcher(): Promise<ResearchResult> {
 export async function runFileBackResponse(
   conversationId: string,
   assistantMessageId: string
-): Promise<{ filename: string; logEntry: string }> {
+): Promise<{
+  filename: string
+  logEntry: string
+  // 'written' : page écrite normalement dans wiki/qa/.
+  // 'duplicate' : l'agent a détecté un doublon ; filename pointe vers
+  //   la page existante, aucun write n'a eu lieu.
+  // 'skipped' : l'agent a jugé la Q/R non pertinente (SKIP_QA). filename
+  //   vaut 'SKIP_QA' à titre indicatif, pas un vrai chemin.
+  status: 'written' | 'duplicate' | 'skipped'
+}> {
   const conv = getConversation(conversationId)
   if (!conv) throw new Error(`Conversation ${conversationId} introuvable.`)
 
@@ -839,7 +848,24 @@ export async function runFileBackResponse(
     throw new Error('Agent QA Filer introuvable. Relancez BlowWorks pour re-seed la DB.')
   }
 
+  // Contexte pour détection de doublon + peuplement wikilinks :
+  //  - liste des Q/R existantes (slug + titre extrait du frontmatter)
+  //  - liste des pages concepts/connections (pour wikilinks non brisés)
+  // On lit le frontmatter en extraction "lite" (pas tout le contenu) pour
+  // rester rapide même sur un wiki de 100+ pages.
+  const { existingQa, existingPages } = await loadQaFilerContext()
+
   const userPrompt = [
+    existingQa.length > 0
+      ? '## Q/R déjà filées (pour détection de doublon)\n\n' +
+        existingQa.map((q) => `- \`${q.slug}\` : ${q.titre}`).join('\n')
+      : '## Q/R déjà filées\n\n(aucune)',
+    '',
+    existingPages.length > 0
+      ? '## Pages concepts/connections disponibles pour wikilinks\n\n' +
+        existingPages.map((p) => `- \`[[${p.slug}]]\` : ${p.titre}`).join('\n')
+      : '## Pages concepts/connections\n\n(aucune — tu ne peux pas produire de wikilinks vers concepts/ ou connections/ encore)',
+    '',
     "## Échange à filer",
     '',
     "### Question utilisateur",
@@ -851,7 +877,7 @@ export async function runFileBackResponse(
     assistant.content,
     '',
     '## Tâche',
-    "Produis le JSON avec la page wiki qa/ correspondante."
+    "Produis le JSON avec la page wiki qa/ correspondante. Respecte la détection de doublon et le cas SKIP_QA si applicable."
   ].join('\n\n')
 
   const result = await oneShotChat({
@@ -878,22 +904,58 @@ export async function runFileBackResponse(
     const msg = e instanceof Error ? e.message : String(e)
     throw new Error(`Réponse QA Filer invalide : JSON malformé (${msg}).`)
   }
-  if (
-    !parsed ||
-    typeof parsed !== 'object' ||
-    typeof (parsed as { filename?: unknown }).filename !== 'string' ||
-    typeof (parsed as { content?: unknown }).content !== 'string'
-  ) {
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('Réponse QA Filer invalide : objet manquant.')
+  }
+
+  const obj = parsed as {
+    filename?: string | null
+    content?: string | null
+    duplicateOf?: string | null
+    logEntry?: string
+  }
+
+  // Cas SKIP_QA : le modèle estime que le Q/R ne mérite pas d'être filé.
+  // Pas d'écriture. Log minimal. Retour au renderer avec filename = 'SKIP_QA'
+  // et status indicatif (compat ancien type + info supplémentaire).
+  if (obj.filename === 'SKIP_QA') {
+    const logEntry =
+      typeof obj.logEntry === 'string' && obj.logEntry.trim().length > 0
+        ? obj.logEntry
+        : `## [${new Date().toISOString()}] qa-file | skip (modèle)`
+    try {
+      await wiki.appendLog(logEntry + '\n')
+    } catch (e) {
+      console.warn('[qa-filer] appendLog échoué :', e)
+    }
+    return { filename: 'SKIP_QA', logEntry, status: 'skipped' }
+  }
+
+  // Cas doublon : l'agent a trouvé une Q/R sémantiquement équivalente
+  // déjà présente. Pas d'écriture — on retourne la cible pour que le
+  // renderer puisse afficher "déjà filé : qa/...".
+  if (typeof obj.duplicateOf === 'string' && obj.duplicateOf.length > 0) {
+    const cleanExisting = stripWikiPrefix(obj.duplicateOf)
+    const logEntry =
+      typeof obj.logEntry === 'string' && obj.logEntry.trim().length > 0
+        ? obj.logEntry
+        : `## [${new Date().toISOString()}] qa-file | doublon de ${cleanExisting}`
+    try {
+      await wiki.appendLog(logEntry + '\n')
+    } catch (e) {
+      console.warn('[qa-filer] appendLog échoué :', e)
+    }
+    return { filename: cleanExisting, logEntry, status: 'duplicate' }
+  }
+
+  // Cas normal : l'agent a produit filename + content → on écrit.
+  if (typeof obj.filename !== 'string' || typeof obj.content !== 'string') {
     throw new Error('Réponse QA Filer invalide : filename ou content manquant.')
   }
-  const obj = parsed as { filename: string; content: string; logEntry?: string }
 
   // Strip le prefix `wiki/` si l'agent l'a ajouté malgré l'instruction
   // (writeWiki l'ajoute déjà au niveau FS).
-  let cleanFilename = obj.filename.replace(/\\/g, '/').trim()
-  if (cleanFilename.startsWith('./')) cleanFilename = cleanFilename.slice(2)
-  if (cleanFilename.startsWith('/')) cleanFilename = cleanFilename.slice(1)
-  if (cleanFilename.startsWith('wiki/')) cleanFilename = cleanFilename.slice(5)
+  const cleanFilename = stripWikiPrefix(obj.filename)
 
   await wiki.writeWiki(cleanFilename, obj.content)
   const logEntry =
@@ -906,5 +968,48 @@ export async function runFileBackResponse(
     console.warn('[qa-filer] appendLog échoué :', e)
   }
 
-  return { filename: cleanFilename, logEntry }
+  return { filename: cleanFilename, logEntry, status: 'written' }
+}
+
+// Charge un contexte léger pour le QA Filer : slugs et titres des Q/R
+// existantes (pour détection de doublon) + slugs/titres des pages
+// concepts/connections (pour peupler les wikilinks sans en inventer).
+// N'inclut que le frontmatter (pas le corps) pour rester rapide même
+// sur un wiki de 100+ pages.
+async function loadQaFilerContext(): Promise<{
+  existingQa: Array<{ slug: string; titre: string }>
+  existingPages: Array<{ slug: string; titre: string }>
+}> {
+  const entries = await wiki.listWiki()
+  const existingQa: Array<{ slug: string; titre: string }> = []
+  const existingPages: Array<{ slug: string; titre: string }> = []
+  await Promise.all(
+    entries.map(async (entry) => {
+      const isQa = entry.name.startsWith('qa/')
+      const isConcept =
+        entry.name.startsWith('concepts/') || entry.name.startsWith('connections/')
+      if (!isQa && !isConcept) return
+      const slug = entry.name
+        .replace(/\.md$/i, '')
+        .replace(/^(qa|concepts|connections)\//, '')
+      let titre = slug
+      try {
+        const content = await wiki.readWiki(entry.name)
+        const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/)
+        if (fmMatch) {
+          const titreMatch = fmMatch[1].match(
+            /^titre:\s*["']?([^"'\n]+?)["']?\s*$/m
+          )
+          if (titreMatch) titre = titreMatch[1].trim()
+        }
+      } catch {
+        /* illisible : on garde le slug comme titre */
+      }
+      if (isQa) existingQa.push({ slug, titre })
+      else existingPages.push({ slug, titre })
+    })
+  )
+  existingQa.sort((a, b) => a.slug.localeCompare(b.slug))
+  existingPages.sort((a, b) => a.slug.localeCompare(b.slug))
+  return { existingQa, existingPages }
 }
