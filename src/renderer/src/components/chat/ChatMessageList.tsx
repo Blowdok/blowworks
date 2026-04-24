@@ -8,6 +8,7 @@ import {
 import type { AIMessageT } from '@shared/ipc-contract.js'
 import CitationsList from './CitationsList.js'
 import CodeBlock from './CodeBlock.js'
+import ReasoningBlock from './ReasoningBlock.js'
 import type { Segment, ToolTrace } from '../../stores/chat-store.js'
 import { useChatStore } from '../../stores/chat-store.js'
 import { useEditorStore } from '../../stores/editor-store.js'
@@ -374,10 +375,16 @@ function SegmentsTimeline({
         return -1
       })()
     : -1
-  // Si withCursor et qu'aucun segment n'est text (ex: pure séquence
-  // d'actions sans texte avant), on affiche le curseur après le dernier
-  // segment tool pour signaler que le stream continue.
-  const trailingCursor = withCursor && lastTextIdx === -1 && segments.length > 0
+  // Si withCursor et qu'aucun segment text dans la timeline, on peut
+  // afficher un curseur en queue pour signaler que le stream continue.
+  // SAUF si le dernier segment est un `reasoning` en cours — dans ce cas
+  // le shimmer du ReasoningBlock suffit comme indicateur d'activité, le
+  // ▋ en plus serait redondant et visuellement bruyant.
+  const lastSeg = segments[segments.length - 1]
+  const lastIsActiveReasoning =
+    lastSeg && lastSeg.kind === 'reasoning' && !lastSeg.done
+  const trailingCursor =
+    withCursor && lastTextIdx === -1 && segments.length > 0 && !lastIsActiveReasoning
 
   return (
     <div className="markdown-body">
@@ -387,6 +394,15 @@ function SegmentsTimeline({
             <div key={`tool-${seg.trace.id}`} className="my-2">
               <ToolTraceBadge trace={seg.trace} />
             </div>
+          )
+        }
+        if (seg.kind === 'reasoning') {
+          return (
+            <ReasoningBlock
+              key={`reasoning-${i}`}
+              content={seg.content}
+              done={seg.done}
+            />
           )
         }
         // kind === 'text'

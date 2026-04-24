@@ -300,6 +300,13 @@ export default function WikiExplorerSidebar({
   }, [entries, filter])
 
   const handleSelect = (entry: WikiEntryT): void => {
+    // Toggle : re-clic sur le fichier déjà sélectionné → désélectionne
+    // et ferme l'aperçu markdown (viewer wiki ou file viewer).
+    if (selectedPath === entry.name) {
+      setSelectedPath(null)
+      closeWikiPage()
+      return
+    }
     setSelectedPath(entry.name)
     if (entry.name.startsWith('wiki/')) {
       // Pages wiki : viewer markdown intégré en mode legacy (readWiki).
