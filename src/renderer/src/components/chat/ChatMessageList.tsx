@@ -204,10 +204,16 @@ export default function ChatMessageList({
         <button
           type="button"
           onClick={scrollToBottom}
+          onPointerDown={(e) => e.stopPropagation()}
           aria-label="Descendre à la fin de la conversation"
           title="Descendre"
           className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full border shadow-lg backdrop-blur transition-colors hover:bg-[var(--bg-tertiary)]"
           style={{
+            // pointerEvents auto REQUIS : le root de ChatPortalView est en
+            // pointer-events:none (pour laisser tldraw capturer le drag) et
+            // seules les zones interactives le réactivent explicitement.
+            // Sans ça le bouton est visible mais ne reçoit pas les clics.
+            pointerEvents: 'auto',
             borderColor: 'var(--border)',
             background: 'var(--bg-secondary)',
             color: 'var(--fg-secondary)',
