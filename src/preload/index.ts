@@ -123,6 +123,7 @@ const api = {
       wikiContext?: string | null
       webSearchEnabled?: boolean
       wikiToolsEnabled?: boolean
+      thinkingEnabled?: boolean
       maxTokens?: number
     }) => ipcRenderer.invoke(IPC_CHANNELS.ai.sendMessage, input),
     cancelStream: (requestId: string) =>

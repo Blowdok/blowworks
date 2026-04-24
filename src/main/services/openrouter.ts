@@ -215,10 +215,21 @@ export interface StreamChatOptions {
   // une boucle agent multi-tours : le modèle peut lire et modifier le
   // wiki en cours de réponse, jusqu'à MAX_AGENT_ITER tours.
   wikiToolsEnabled?: boolean
+  // Active le reasoning/chain-of-thought pour les modèles qui le supportent
+  // (Claude 3.7+, DeepSeek R1, OpenAI o1/o3, Gemini 2.0 Thinking, etc.).
+  // OpenRouter normalise le param — on passe `reasoning: { effort: 'medium' }`
+  // et c'est lui qui traduit vers l'API du modèle cible. Les deltas de
+  // reasoning arrivent dans des chunks `reasoningDelta` distincts du
+  // contenu principal — le renderer les rend comme un segment pliable.
+  thinkingEnabled?: boolean
 }
 
 export interface StreamChunk {
   delta?: string
+  // Delta du raisonnement (chain-of-thought). Émis par les modèles
+  // reasoning quand `thinkingEnabled=true`. Distinct de `delta` pour
+  // que le renderer puisse rendre un bloc pliable séparé du contenu.
+  reasoningDelta?: string
   done?: boolean
   usage?: { promptTokens: number; completionTokens: number }
   citations?: string[]
@@ -493,6 +504,14 @@ async function runOneTurn(
     body.tools = WIKI_TOOL_SCHEMAS
     body.tool_choice = 'auto'
   }
+  if (opts.thinkingEnabled) {
+    // Paramètre `reasoning` normalisé par OpenRouter (valide pour
+    // Claude 3.7+/4, OpenAI o1/o3, Gemini Thinking, DeepSeek R1, Grok).
+    // `effort: 'medium'` laisse le provider choisir le budget approprié.
+    // Le modèle émet des chunks `delta.reasoning_details[]` en streaming.
+    // Doc : https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+    body.reasoning = { effort: 'medium' }
+  }
 
   const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
     method: 'POST',
@@ -528,6 +547,21 @@ async function runOneTurn(
       | Array<{
           delta?: {
             content?: string
+            // OpenRouter normalized reasoning format (streaming).
+            // Array de blocs { type: 'reasoning.text' | 'reasoning.summary' |
+            // 'reasoning.encrypted', text?, summary?, data?, ... }. Cf.
+            // https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
+            reasoning_details?: Array<{
+              type?: string
+              text?: string
+              summary?: string
+              data?: string
+              format?: string
+              index?: number
+              id?: string | null
+            }>
+            // Alias legacy (certains modèles/routes envoient `reasoning` plat).
+            reasoning?: string
             tool_calls?: Array<{
               index: number
               id?: string
@@ -547,6 +581,27 @@ async function runOneTurn(
 
     const delta = choices?.[0]?.delta
     if (delta?.content) onChunk({ delta: delta.content })
+
+    // Reasoning details. On concatène tous les blocs `reasoning.text` et
+    // `reasoning.summary` du chunk. Les blocs `encrypted` sont ignorés
+    // (base64 opaque, non affichable). Si le modèle utilise le format
+    // legacy `delta.reasoning` (string plate), on le route aussi.
+    if (Array.isArray(delta?.reasoning_details)) {
+      const parts: string[] = []
+      for (const block of delta.reasoning_details) {
+        if (block.type === 'reasoning.text' && typeof block.text === 'string') {
+          parts.push(block.text)
+        } else if (
+          block.type === 'reasoning.summary' &&
+          typeof block.summary === 'string'
+        ) {
+          parts.push(block.summary)
+        }
+      }
+      if (parts.length > 0) onChunk({ reasoningDelta: parts.join('') })
+    } else if (typeof delta?.reasoning === 'string' && delta.reasoning.length > 0) {
+      onChunk({ reasoningDelta: delta.reasoning })
+    }
 
     // Accumulation progressive des tool_calls. OpenRouter/OpenAI envoie
     // le JSON des arguments en plusieurs chunks — on concatène jusqu'à

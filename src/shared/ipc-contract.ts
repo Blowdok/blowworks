@@ -185,6 +185,12 @@ export const AISendMessageInput = z.object({
   // toggle 📚 côté renderer : quand la mémoire est activée pour une conv,
   // l'IA peut naviguer le wiki à la demande au lieu de recevoir un dump.
   wikiToolsEnabled: z.boolean().default(false),
+  // Active le reasoning (chain-of-thought) pour les modèles compatibles
+  // (Claude 3.7+/4, OpenAI o1/o3, Gemini Thinking, DeepSeek R1, Grok).
+  // Branché au toggle 🧠 dans la ChatInput. OpenRouter normalise l'API
+  // via `reasoning: { effort: 'medium' }` — les deltas arrivent dans des
+  // chunks `reasoningDelta` distincts du contenu principal.
+  thinkingEnabled: z.boolean().default(false),
   maxTokens: z.number().int().positive().optional()
 })
 export type AISendMessageInputT = z.infer<typeof AISendMessageInput>
@@ -224,6 +230,10 @@ export const AIChunkEventSchema = z.object({
   requestId: z.string().min(1),
   conversationId: z.string().min(1),
   delta: z.string().optional(),
+  // Delta du reasoning (chain-of-thought). Émis par les modèles
+  // compatibles quand `thinkingEnabled=true`. Le renderer l'accumule
+  // dans un segment `reasoning` séparé pour affichage pliable.
+  reasoningDelta: z.string().optional(),
   done: z.boolean().optional(),
   error: z.string().optional(),
   usage: z

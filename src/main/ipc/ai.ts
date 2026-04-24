@@ -188,7 +188,8 @@ export function registerAIHandlers(): void {
           wikiContext: input.wikiContext ?? undefined,
           webSearchEnabled: input.webSearchEnabled,
           webSearchQuery: input.content,
-          wikiToolsEnabled: input.wikiToolsEnabled
+          wikiToolsEnabled: input.wikiToolsEnabled,
+          thinkingEnabled: input.thinkingEnabled
         },
         (chunk) => {
           if (chunk.delta) {
@@ -197,6 +198,13 @@ export function registerAIHandlers(): void {
               requestId,
               conversationId: input.conversationId,
               delta: chunk.delta
+            })
+          }
+          if (chunk.reasoningDelta) {
+            broadcastChunk({
+              requestId,
+              conversationId: input.conversationId,
+              reasoningDelta: chunk.reasoningDelta
             })
           }
           if (chunk.error) {

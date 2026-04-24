@@ -194,6 +194,7 @@ interface ChatStore {
       temperature: number
       webSearchEnabled: boolean
       wikiToolsEnabled?: boolean
+      thinkingEnabled?: boolean
       systemPrompt?: string | null
       wikiContext?: string | null
       maxTokens?: number
@@ -437,6 +438,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       wikiContext: opts.wikiContext ?? null,
       webSearchEnabled: opts.webSearchEnabled,
       wikiToolsEnabled: opts.wikiToolsEnabled ?? false,
+      thinkingEnabled: opts.thinkingEnabled ?? false,
       maxTokens: opts.maxTokens
     })) as { requestId: string }
 

@@ -237,6 +237,11 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       // est configuré. L'IA peut alors faire read_wiki_page/search_wiki/…
       // en cours de réponse au lieu de recevoir un dump complet.
       wikiToolsEnabled: shape.props.wikiContextEnabled && wikiConfigured,
+      // Reasoning activé via le toggle 🧠 de ChatInput. OpenRouter
+      // normalise le param `reasoning: { effort: 'medium' }` pour les
+      // modèles compatibles (Claude 3.7+/4, o1/o3, Gemini Thinking,
+      // DeepSeek R1, Grok). Ignoré silencieusement par les autres.
+      thinkingEnabled: shape.props.thinkingEnabled,
       wikiContext,
       maxTokens: defaults.maxTokens
     })
