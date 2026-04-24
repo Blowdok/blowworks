@@ -163,7 +163,7 @@ export default function Sidebar() {
 
   return (
     <aside
-      className={`${width} flex h-full flex-col border-r border-[var(--border)] bg-[var(--bg-secondary)] transition-[width] duration-150`}
+      className={`${width} flex h-full min-h-0 flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--bg-secondary)] transition-[width] duration-150`}
     >
       {sidebarMode === 'wiki-explorer' ? (
         <WikiExplorerSidebar collapsed={collapsed} />

@@ -144,7 +144,7 @@ function FolderNode({ node, depth, selectedPath, onSelect, onContextMenuFile }: 
       >
         <span className="inline-block w-3 text-[9px] opacity-70">{open ? '▾' : '▸'}</span>
         <span className="truncate">{node.name}/</span>
-        <span className="ml-auto text-[9px] opacity-60">{node.children.length}</span>
+        <span className="ml-auto text-[11px] font-medium text-white">{node.children.length}</span>
       </button>
       {open && (
         <TreeView
@@ -345,7 +345,7 @@ export default function WikiExplorerSidebar({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <header
         className="flex shrink-0 items-center gap-2 border-b px-3 py-3"
         style={{ borderColor: 'var(--border)' }}
