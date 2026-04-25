@@ -439,16 +439,23 @@ function BrowserTabBar({
       style={{
         background: 'var(--bg-primary, #000)',
         borderColor: 'var(--border, #2a2a2a)',
-        // `pointer-events: none` sur le wrapper → les espaces vides entre
-        // onglets restent en drag zone tldraw (cohérent avec le header en
-        // dessous). Chaque onglet et le bouton + repassent en `auto`.
+        // `pointer-events: none` PARTOUT par défaut sur la barre — les
+        // zones vides (entre onglets, après le dernier onglet) restent en
+        // drag zone tldraw, pour que cliquer ailleurs qu'un onglet
+        // sélectionne la shape (bordure bleue + handles de resize).
+        // Seuls les onglets et le bouton + repassent en `auto`.
         pointerEvents: 'none'
       }}
     >
       <div
+        // Pas de `pointerEvents: 'auto'` ici : ce wrapper sert juste au
+        // layout flex/scroll. Si on le mettait à 'auto', le `flex-1`
+        // l'étendrait à toute la largeur disponible et capturerait les
+        // clics sur les espaces vides, bloquant la sélection tldraw.
+        // Conséquence : le scroll horizontal à la souris est désactivé sur
+        // les zones VIDES de la barre, mais reste possible en hover sur un
+        // onglet (qui lui a `pointerEvents: 'auto'`).
         className="no-scrollbar flex flex-1 items-end gap-0.5 overflow-x-auto"
-        style={{ pointerEvents: 'auto' }}
-        {...stopInteractive}
       >
         {tabs.map((tab) => (
           <BrowserTabItem
@@ -509,7 +516,12 @@ function BrowserTabItem({
       style={{
         background: active ? 'var(--bg-secondary, #101010)' : 'transparent',
         borderColor: active ? 'var(--border, #2a2a2a)' : 'transparent',
-        color: active ? 'var(--fg-primary, #e5e5e5)' : 'var(--fg-muted, #888)'
+        color: active ? 'var(--fg-primary, #e5e5e5)' : 'var(--fg-muted, #888)',
+        // L'onglet doit recevoir les pointer events (le wrapper barre est
+        // en `pointer-events: none` pour laisser passer la sélection tldraw
+        // dans les zones vides). Sans `auto` ici, le clic glisserait à
+        // travers et la shape se sélectionnerait au lieu d'activer le tab.
+        pointerEvents: 'auto'
       }}
       {...stopInteractive}
     >
