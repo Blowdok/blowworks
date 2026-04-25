@@ -9,7 +9,11 @@ import {
   type ChatShape,
   type BrowserShape
 } from './shapes/index.js'
-import { resolveQuery } from './shapes/BrowserShape.js'
+import {
+  resolveQuery,
+  lookupWebContentsBinding,
+  addTabToShape
+} from './shapes/BrowserShape.js'
 import { getSearchEngine } from '@shared/search-engines.js'
 import { useChatStore } from '../../stores/chat-store.js'
 import { useCanvasPersistence } from '../../hooks/use-canvas-persistence.js'
@@ -123,11 +127,21 @@ export default function InfiniteCanvas() {
       }
       window.addEventListener('keydown', onKeyDown)
 
-      // IPC `browser.openUrl` : déclenché par le main process quand un lien
-      // est intercepté (setWindowOpenHandler, will-navigate) — typiquement
-      // depuis une iframe VSCode ou un clic `<a target="_blank">`. On spawne
-      // une BrowserShape pré-remplie avec l'URL.
-      const detachOpenUrl = window.blow.browser.onOpenUrl(({ url }) => {
+      // IPC `browser.openUrl` : déclenché par le main quand un lien est
+      // intercepté (setWindowOpenHandler, will-navigate). Deux cas :
+      //   - Le lien vient d'un webview de BrowserShape (sourceWebContentsId
+      //     enregistré dans le registre côté renderer) → on AJOUTE un
+      //     onglet à CETTE shape, au lieu d'en spawner une nouvelle.
+      //   - Sinon (Chat, Terminal, VSCode, will-navigate du root, etc.) →
+      //     comportement historique : nouvelle BrowserShape sur le canvas.
+      const detachOpenUrl = window.blow.browser.onOpenUrl(({ url, sourceWebContentsId }) => {
+        if (typeof sourceWebContentsId === 'number') {
+          const binding = lookupWebContentsBinding(sourceWebContentsId)
+          if (binding) {
+            addTabToShape(editor, binding.shapeId, url)
+            return
+          }
+        }
         spawnBrowserShape(editor, url)
       })
 
@@ -291,6 +305,10 @@ export function spawnBrowserShape(
   const engine = getSearchEngine(useUIStore.getState().searchEngine)
   const url = rawUrl ? resolveQuery(rawUrl, engine) : engine.homepage
   const id = createShapeId()
+  // Initialisation explicite de `tabsJson` + `activeTabId` avec l'URL
+  // demandée — `getDefaultProps` retomberait sinon sur FALLBACK_HOMEPAGE
+  // et le webview chargerait la mauvaise page initiale.
+  const tabId = `t_${Math.random().toString(36).slice(2, 10)}`
   editor.createShape<BrowserShape>({
     id,
     type: 'browser',
@@ -300,6 +318,8 @@ export function spawnBrowserShape(
       w: 900,
       h: 600,
       url,
+      tabsJson: JSON.stringify([{ id: tabId, url, title: '', favicon: null }]),
+      activeTabId: tabId,
       projectId: null
     }
   })

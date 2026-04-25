@@ -69,7 +69,11 @@ export function createMainWindow(): BrowserWindow {
   // tldraw n'est monté (cas limite au boot), le renderer peut choisir
   // de fallback sur `shell.openExternal` — mais par défaut la promesse
   // reste "navigateur interne".
-  const routeToInternalBrowser = (url: string): void => {
+  // `sourceWebContentsId` (optionnel) : id du webContents qui a émis le
+  // lien — sert au renderer à distinguer un lien venant d'une BrowserShape
+  // (à ajouter en onglet) d'un lien venant d'ailleurs (Chat / Terminal /
+  // VSCode → spawne une nouvelle shape).
+  const routeToInternalBrowser = (url: string, sourceWebContentsId?: number): void => {
     if (win.isDestroyed()) return
     try {
       const parsed = new URL(url)
@@ -81,7 +85,10 @@ export function createMainWindow(): BrowserWindow {
     } catch {
       return
     }
-    win.webContents.send(IPC_CHANNELS.browser.openUrlEvent, { url })
+    win.webContents.send(IPC_CHANNELS.browser.openUrlEvent, {
+      url,
+      sourceWebContentsId
+    })
   }
 
   win.webContents.setWindowOpenHandler((details) => {
@@ -144,7 +151,9 @@ export function createMainWindow(): BrowserWindow {
           }
         }
       }
-      routeToInternalBrowser(details.url)
+      // wc.id = webContents source (le webview lui-même). Le renderer
+      // l'utilise pour router le lien vers le bon onglet de la bonne shape.
+      routeToInternalBrowser(details.url, wc.id)
       return { action: 'deny' }
     })
   })

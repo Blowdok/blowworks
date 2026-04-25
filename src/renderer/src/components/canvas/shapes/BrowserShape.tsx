@@ -1,10 +1,14 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
   T,
+  createShapePropsMigrationIds,
+  createShapePropsMigrationSequence,
   useEditor,
+  type Editor,
   type TLBaseShape,
+  type TLShapeId,
   type RecordProps
 } from 'tldraw'
 import { useProjectStore } from '../../../stores/project-store.js'
@@ -20,21 +24,22 @@ import {
   type SearchEngineId
 } from '@shared/search-engines.js'
 
-// Shape "Browser" : navigateur web intégré via le tag <webview> Electron.
-// Contrairement à une iframe, <webview> n'est pas soumis aux blocages
-// X-Frame-Options / CSP frame-ancestors de la page cible — on peut
-// donc charger n'importe quel site (Google, GitHub, YouTube…).
-// Activé côté main via `webPreferences.webviewTag = true`.
-// Le tag `<webview>` est typé par @types/react (HTMLWebViewElement) ;
-// `allowpopups` est une string en HTML Electron bien que typée boolean
-// côté DOM — on passe par un cast léger à l'usage.
+// Shape "Browser" : navigateur web intégré via `<webview>` Electron, avec
+// onglets multiples comme un navigateur classique.
+//
+// Modèle multi-onglets :
+//   - `tabsJson` (JSON sérialisé `Tab[]`) : source de vérité des onglets.
+//     Pas validé par un schéma tldraw imbriqué pour rester souple sur la
+//     structure (ajout futur de favoris, pinned, etc.).
+//   - `activeTabId` : id de l'onglet actuellement visible.
+//   - `url` : LEGACY — URL de l'onglet actif, doublé en miroir pour rester
+//     compatible avec les snapshots / IPC qui lisaient `shape.props.url`.
+//
+// Stratégie de rendu : tous les onglets sont MONTÉS en parallèle (un
+// `<webview>` par onglet) ; seul l'actif est `display: block`, les autres
+// `display: none`. Conséquence : RAM × N (un process Chromium par onglet)
+// mais zéro lag de switch et aucun rechargement. C'est la stratégie Chrome.
 
-// Homepage de secours utilisée par `getDefaultProps()` (cas où une browser
-// shape est créée par la barre d'outils tldraw plutôt que via
-// `spawnBrowserShape`). Pour les vrais spawns (boutons, lien intercepté),
-// `spawnBrowserShape` lit le moteur courant dans `useUIStore` et utilise
-// `engine.homepage`. Ici on n'a pas accès au store (méthode statique de
-// la classe shape util), d'où le fallback figé sur le défaut DEFAULT_SEARCH_ENGINE_ID.
 const FALLBACK_HOMEPAGE = getSearchEngine(DEFAULT_SEARCH_ENGINE_ID).homepage
 
 type StopInteractiveProps = {
@@ -43,12 +48,22 @@ type StopInteractiveProps = {
   onTouchEnd: (e: React.TouchEvent) => void
 }
 
+export interface Tab {
+  id: string
+  url: string
+  title: string
+  // `null` = pas de favicon connu (on affichera un globe par défaut).
+  favicon: string | null
+}
+
 type BrowserShapeProps = {
   w: number
   h: number
-  // URL persistée : restaurée au reload de l'app (chaque shape reprend
-  // là où elle était). Initialisée à DDG au spawn.
+  // LEGACY : URL de l'onglet actif. Tenu en miroir avec activeTab.url pour
+  // rétrocompat avec les anciens snapshots / IPC. Source de vérité = tabsJson.
   url: string
+  tabsJson: string
+  activeTabId: string
   projectId: string | null
 }
 
@@ -60,20 +75,52 @@ declare module 'tldraw' {
   }
 }
 
+// Migrations tldraw : les shapes existantes pré-onglets n'ont pas
+// `tabsJson`/`activeTabId` → on les bootstrappe avec un seul onglet
+// dérivé de l'ancien `url`.
+const BrowserVersions = createShapePropsMigrationIds('browser', {
+  AddTabs: 1
+})
+
+const browserShapeMigrations = createShapePropsMigrationSequence({
+  sequence: [
+    {
+      id: BrowserVersions.AddTabs,
+      up: (props) => {
+        const p = props as { url?: string; tabsJson?: unknown; activeTabId?: unknown }
+        if (typeof p.tabsJson !== 'string') {
+          const id = generateTabId()
+          const url = typeof p.url === 'string' && p.url.length > 0 ? p.url : FALLBACK_HOMEPAGE
+          ;(p as { tabsJson: string }).tabsJson = JSON.stringify([
+            { id, url, title: '', favicon: null }
+          ])
+          ;(p as { activeTabId: string }).activeTabId = id
+        }
+      }
+    }
+  ]
+})
+
 export class BrowserShapeUtil extends BaseBoxShapeUtil<BrowserShape> {
   static override type = 'browser' as const
   static override props: RecordProps<BrowserShape> = {
     w: T.number,
     h: T.number,
     url: T.string,
+    tabsJson: T.string,
+    activeTabId: T.string,
     projectId: T.string.nullable()
   }
+  static override migrations = browserShapeMigrations
 
   override getDefaultProps(): BrowserShape['props'] {
+    const id = generateTabId()
     return {
       w: 900,
       h: 600,
       url: FALLBACK_HOMEPAGE,
+      tabsJson: JSON.stringify([{ id, url: FALLBACK_HOMEPAGE, title: '', favicon: null }]),
+      activeTabId: id,
       projectId: null
     }
   }
@@ -93,10 +140,6 @@ export class BrowserShapeUtil extends BaseBoxShapeUtil<BrowserShape> {
     }
   }
 
-  // Placeholder transparent : le vrai contenu (webview + barre d'URL)
-  // est rendu hors tldraw par `ShapePortalManager` pour que le webview
-  // survive aux switch de pages tldraw (sinon remount → rechargement
-  // complet de la page web).
   override component(shape: BrowserShape) {
     return (
       <HTMLContainer
@@ -120,15 +163,116 @@ export class BrowserShapeUtil extends BaseBoxShapeUtil<BrowserShape> {
   }
 }
 
-// Convertit une saisie utilisateur en URL navigable.
-// Règles :
-//   - texte avec espaces OU sans point               → recherche moteur courant
-//   - commence par http:// ou https://               → URL directe
-//   - sinon (ex: "github.com/foo")                   → préfixe https://
-//
-// Le moteur est passé en argument pour rester pur (pas d'accès store),
-// les appelants (BrowserHeader, spawnBrowserShape) lisent `useUIStore.searchEngine`
-// et résolvent le SearchEngine via `getSearchEngine`.
+// ──────────────────────────────────────────────────────────── Helpers tabs
+
+function generateTabId(): string {
+  return `t_${Math.random().toString(36).slice(2, 10)}`
+}
+
+// Lecture défensive des onglets : si `tabsJson` est vide/illisible,
+// fallback sur l'ancien `url` pour reconstituer un onglet unique.
+function readTabs(shape: BrowserShape): { tabs: Tab[]; activeTabId: string } {
+  const raw = shape.props.tabsJson
+  if (raw && raw.length > 0) {
+    try {
+      const parsed = JSON.parse(raw) as Tab[]
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        const activeTabId = parsed.some((t) => t.id === shape.props.activeTabId)
+          ? shape.props.activeTabId
+          : parsed[0].id
+        return { tabs: parsed, activeTabId }
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  const id = 't0'
+  return {
+    tabs: [{ id, url: shape.props.url || FALLBACK_HOMEPAGE, title: '', favicon: null }],
+    activeTabId: id
+  }
+}
+
+function commitTabs(
+  editor: Editor,
+  shape: BrowserShape,
+  tabs: Tab[],
+  activeTabId: string
+): void {
+  const active = tabs.find((t) => t.id === activeTabId) ?? tabs[0]
+  if (!active) return
+  editor.updateShape<BrowserShape>({
+    id: shape.id,
+    type: 'browser',
+    props: {
+      tabsJson: JSON.stringify(tabs),
+      activeTabId: active.id,
+      url: active.url
+    }
+  })
+}
+
+// Met à jour partiellement un onglet (titre, favicon, url) sans toucher
+// aux autres. Utilisé par les listeners did-navigate / page-title-updated /
+// page-favicon-updated du webview.
+function patchTab(
+  editor: Editor,
+  shapeId: TLShapeId,
+  tabId: string,
+  patch: Partial<Tab>
+): void {
+  const shape = editor.getShape(shapeId) as BrowserShape | undefined
+  if (!shape) return
+  const { tabs, activeTabId } = readTabs(shape)
+  const idx = tabs.findIndex((t) => t.id === tabId)
+  if (idx < 0) return
+  const current = tabs[idx]
+  // Aucun changement effectif → on évite l'écriture pour ne pas spammer
+  // le store tldraw (et la persistance SQLite derrière).
+  const next: Tab = { ...current, ...patch }
+  if (
+    next.url === current.url &&
+    next.title === current.title &&
+    next.favicon === current.favicon
+  ) {
+    return
+  }
+  const nextTabs = tabs.slice()
+  nextTabs[idx] = next
+  commitTabs(editor, shape, nextTabs, activeTabId)
+}
+
+// ──────────────────────────────────────────────────────────── Registre webContents → tab
+// Map (webContentsId → {shapeId, tabId}). Populée par chaque BrowserTabWebview
+// au `did-attach` via `wv.getWebContentsId()`. Utilisée par InfiniteCanvas
+// pour router les liens `target=_blank` (interceptés côté main) vers le bon
+// onglet de la bonne shape, au lieu de spawner une nouvelle BrowserShape.
+
+interface WebContentsBinding {
+  shapeId: TLShapeId
+  tabId: string
+}
+
+const webContentsRegistry = new Map<number, WebContentsBinding>()
+
+export function lookupWebContentsBinding(id: number): WebContentsBinding | null {
+  return webContentsRegistry.get(id) ?? null
+}
+
+// Ajoute un onglet à une shape EXISTANTE et active-le. Utilisé quand un
+// lien target=_blank est intercepté côté main et que sa source est un
+// webview connu via le registre.
+export function addTabToShape(editor: Editor, shapeId: TLShapeId, url: string): void {
+  const shape = editor.getShape(shapeId) as BrowserShape | undefined
+  if (!shape) return
+  const { tabs } = readTabs(shape)
+  const id = generateTabId()
+  const newTab: Tab = { id, url, title: '', favicon: null }
+  commitTabs(editor, shape, [...tabs, newTab], id)
+}
+
+// ──────────────────────────────────────────────────────────── Resolveurs URL
+
 export function resolveQuery(raw: string, engine: SearchEngine): string {
   const input = raw.trim()
   if (input.length === 0) return engine.homepage
@@ -141,29 +285,25 @@ export function resolveQuery(raw: string, engine: SearchEngine): string {
   return `https://${input}`
 }
 
-// Helper renderer-only : évite à chaque appelant de répéter le getState +
-// getSearchEngine. Lit l'état CURRENT du store (snapshot, sans subscription).
 export function resolveQueryWithCurrent(raw: string): string {
   const id: SearchEngineId = useUIStore.getState().searchEngine
   return resolveQuery(raw, getSearchEngine(id))
 }
 
-// Contenu réel de la shape Browser — rendu hors tldraw par ShapePortalManager.
-// Mémorisé strictement sur l'identité de la shape pour qu'un resize ou un
-// changement de projectId ne remount pas le <webview> (sinon rechargement
-// complet de la page en cours).
+// ──────────────────────────────────────────────────────────── Portail content
+
 export const BrowserPortalContent = memo(
   function BrowserPortalContentImpl({ shape }: { shape: BrowserShape }) {
     return <BrowserShapeView shape={shape} />
   },
-  // `projectId` DOIT figurer dans le comparator : sans lui, le memo bloque
-  // le re-render lors d'un changement d'assignation projet → la bordure
-  // colorée (dérivée de `assignedProject.color`) ne s'applique pas instant.
-  // `url` est inclus pour propager les navigations webview (did-navigate →
-  // commit store → prop).
+  // Le memo doit se déclencher à chaque changement de tabs/active/projectId
+  // (rerender du header + barre d'onglets) ET à chaque changement d'`url`
+  // (compat ancienne navigation externe).
   (prev, next) =>
     prev.shape.id === next.shape.id &&
     prev.shape.props.url === next.shape.props.url &&
+    prev.shape.props.tabsJson === next.shape.props.tabsJson &&
+    prev.shape.props.activeTabId === next.shape.props.activeTabId &&
     prev.shape.props.projectId === next.shape.props.projectId
 )
 
@@ -177,6 +317,46 @@ function BrowserShapeView({ shape }: { shape: BrowserShape }) {
   const borderState = useShapeBorderState(shape.id)
   const borderStyle = getShapeBorderStyle(borderState, assignedProject?.color ?? null)
 
+  // Recalcul memoïsé sur les 3 props qui décrivent l'état des onglets.
+  // Pas `shape` complet en dep (tldraw le ré-instancie à chaque update,
+  // ce qui annulerait le memo) — on liste explicitement les 3 inputs.
+  const { tabs, activeTabId } = useMemo(
+    () => readTabs(shape),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [shape.props.tabsJson, shape.props.activeTabId, shape.props.url]
+  )
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[0]
+
+  const setActiveTab = (id: string): void => {
+    if (id === activeTabId) return
+    commitTabs(editor, shape, tabs, id)
+  }
+
+  const closeTab = (id: string): void => {
+    const next = tabs.filter((t) => t.id !== id)
+    if (next.length === 0) {
+      // Dernier onglet fermé → ferme la shape (convention Chrome).
+      editor.deleteShape(shape.id)
+      return
+    }
+    // Si on fermait l'onglet actif, basculer sur le voisin de droite,
+    // sinon le voisin de gauche (comportement Chrome).
+    let nextActiveId = activeTabId
+    if (id === activeTabId) {
+      const closedIdx = tabs.findIndex((t) => t.id === id)
+      const candidate = tabs[closedIdx + 1] ?? tabs[closedIdx - 1]
+      nextActiveId = candidate.id
+    }
+    commitTabs(editor, shape, next, nextActiveId)
+  }
+
+  const openNewTab = (): void => {
+    const engine = getSearchEngine(useUIStore.getState().searchEngine)
+    const id = generateTabId()
+    const newTab: Tab = { id, url: engine.homepage, title: '', favicon: null }
+    commitTabs(editor, shape, [...tabs, newTab], id)
+  }
+
   function setProjectId(projectId: string | null): void {
     editor.updateShape<BrowserShape>({
       id: shape.id,
@@ -186,7 +366,7 @@ function BrowserShapeView({ shape }: { shape: BrowserShape }) {
     setProjectDropdownOpen(false)
   }
 
-  const stopInteractive = {
+  const stopInteractive: StopInteractiveProps = {
     onPointerDown: (e: React.PointerEvent) => e.stopPropagation(),
     onTouchStart: (e: React.TouchEvent) => e.stopPropagation(),
     onTouchEnd: (e: React.TouchEvent) => e.stopPropagation()
@@ -208,8 +388,17 @@ function BrowserShapeView({ shape }: { shape: BrowserShape }) {
         flexDirection: 'column'
       }}
     >
+      <BrowserTabBar
+        tabs={tabs}
+        activeTabId={activeTabId}
+        onSelect={setActiveTab}
+        onClose={closeTab}
+        onNew={openNewTab}
+        stopInteractive={stopInteractive}
+      />
       <BrowserHeader
         shape={shape}
+        activeTab={activeTab}
         assignedProject={assignedProject}
         stopInteractive={stopInteractive}
         projectDropdownOpen={projectDropdownOpen}
@@ -217,14 +406,168 @@ function BrowserShapeView({ shape }: { shape: BrowserShape }) {
         setProjectId={setProjectId}
         projects={projects}
       />
-      <BrowserWebview shape={shape} />
+      <BrowserTabsContainer
+        shapeId={shape.id}
+        tabs={tabs}
+        activeTabId={activeTabId}
+      />
     </div>
   )
 }
 
-// Header : barre de navigation (back / forward / reload / URL) + badge projet.
+// ──────────────────────────────────────────────────────────── Barre d'onglets
+
+function BrowserTabBar({
+  tabs,
+  activeTabId,
+  onSelect,
+  onClose,
+  onNew,
+  stopInteractive
+}: {
+  tabs: Tab[]
+  activeTabId: string
+  onSelect: (id: string) => void
+  onClose: (id: string) => void
+  onNew: () => void
+  stopInteractive: StopInteractiveProps
+}) {
+  return (
+    <div
+      data-shape-tabbar
+      className="flex h-7 items-end gap-0.5 border-b px-1 pt-1 text-[11px]"
+      style={{
+        background: 'var(--bg-primary, #000)',
+        borderColor: 'var(--border, #2a2a2a)',
+        // `pointer-events: none` sur le wrapper → les espaces vides entre
+        // onglets restent en drag zone tldraw (cohérent avec le header en
+        // dessous). Chaque onglet et le bouton + repassent en `auto`.
+        pointerEvents: 'none'
+      }}
+    >
+      <div
+        className="no-scrollbar flex flex-1 items-end gap-0.5 overflow-x-auto"
+        style={{ pointerEvents: 'auto' }}
+        {...stopInteractive}
+      >
+        {tabs.map((tab) => (
+          <BrowserTabItem
+            key={tab.id}
+            tab={tab}
+            active={tab.id === activeTabId}
+            onSelect={() => onSelect(tab.id)}
+            onClose={() => onClose(tab.id)}
+            stopInteractive={stopInteractive}
+          />
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={onNew}
+        title="Nouvel onglet"
+        aria-label="Nouvel onglet"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+        style={{ pointerEvents: 'auto' }}
+        {...stopInteractive}
+      >
+        <PlusIcon />
+      </button>
+    </div>
+  )
+}
+
+function BrowserTabItem({
+  tab,
+  active,
+  onSelect,
+  onClose,
+  stopInteractive
+}: {
+  tab: Tab
+  active: boolean
+  onSelect: () => void
+  onClose: () => void
+  stopInteractive: StopInteractiveProps
+}) {
+  // Affichage : favicon (ou globe par défaut) + titre tronqué + croix au
+  // hover. Largeur min 80, max 180 — comme Chrome, l'onglet rétrécit avec
+  // le nombre d'onglets ouverts.
+  const displayTitle = tab.title?.trim() || hostnameOf(tab.url) || 'Nouvel onglet'
+  return (
+    <div
+      role="tab"
+      aria-selected={active}
+      onClick={onSelect}
+      onAuxClick={(e) => {
+        // Middle-click → ferme l'onglet (convention navigateur).
+        if (e.button === 1) {
+          e.preventDefault()
+          onClose()
+        }
+      }}
+      className="group relative flex h-6 min-w-[80px] max-w-[180px] cursor-pointer items-center gap-1.5 rounded-t border border-b-0 px-2"
+      style={{
+        background: active ? 'var(--bg-secondary, #101010)' : 'transparent',
+        borderColor: active ? 'var(--border, #2a2a2a)' : 'transparent',
+        color: active ? 'var(--fg-primary, #e5e5e5)' : 'var(--fg-muted, #888)'
+      }}
+      {...stopInteractive}
+    >
+      <TabFavicon src={tab.favicon} />
+      <span className="min-w-0 flex-1 truncate text-[11px]">{displayTitle}</span>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation()
+          onClose()
+        }}
+        title="Fermer l'onglet"
+        aria-label={`Fermer ${displayTitle}`}
+        className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-[var(--fg-muted)] opacity-0 transition-opacity hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)] group-hover:opacity-100"
+        style={{ pointerEvents: 'auto' }}
+        {...stopInteractive}
+      >
+        <CloseIcon />
+      </button>
+    </div>
+  )
+}
+
+function TabFavicon({ src }: { src: string | null }) {
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt=""
+        width={12}
+        height={12}
+        // `referrerPolicy=no-referrer` : certains favicons (gstatic, etc.)
+        // refusent un cross-origin avec referrer; on l'omet pour maximiser
+        // les chances d'affichage. `onError` cache l'icône cassée.
+        referrerPolicy="no-referrer"
+        className="h-3 w-3 shrink-0"
+        onError={(e) => {
+          e.currentTarget.style.visibility = 'hidden'
+        }}
+      />
+    )
+  }
+  return <GlobeIcon />
+}
+
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
+
+// ──────────────────────────────────────────────────────────── Header (URL bar)
+
 function BrowserHeader({
   shape,
+  activeTab,
   assignedProject,
   stopInteractive,
   projectDropdownOpen,
@@ -233,6 +576,7 @@ function BrowserHeader({
   projects
 }: {
   shape: BrowserShape
+  activeTab: Tab
   assignedProject: { id: string; name: string; color: string } | null
   stopInteractive: StopInteractiveProps
   projectDropdownOpen: boolean
@@ -241,56 +585,40 @@ function BrowserHeader({
   projects: { id: string; name: string; color: string }[]
 }) {
   const editor = useEditor()
-  // Valeur locale du champ URL : éditable par l'utilisateur sans spammer
-  // le store tldraw. Synchronisée depuis `shape.props.url` via le pattern
-  // "reset state during render" de React 18 : quand l'URL prop change
-  // (did-navigate du webview, spawnBrowserShape externe), on reset le
-  // draft en même temps. Évite le cascade re-render d'un useEffect +
-  // setState (règle react-hooks/set-state-in-effect du repo).
-  const [draft, setDraft] = useState(shape.props.url)
-  const [lastSeenUrl, setLastSeenUrl] = useState(shape.props.url)
-  if (shape.props.url !== lastSeenUrl) {
-    setLastSeenUrl(shape.props.url)
-    setDraft(shape.props.url)
+  // Pattern "reset state during render" pour synchroniser draft <-> activeTab.url
+  // sans useEffect. Re-clé sur l'id de l'onglet actif : un switch d'onglet
+  // remet automatiquement l'URL bar à jour.
+  const [draft, setDraft] = useState(activeTab.url)
+  const [lastSeenKey, setLastSeenKey] = useState(`${activeTab.id}|${activeTab.url}`)
+  const currentKey = `${activeTab.id}|${activeTab.url}`
+  if (currentKey !== lastSeenKey) {
+    setLastSeenKey(currentKey)
+    setDraft(activeTab.url)
   }
 
-  // Lecture réactive du moteur courant : le placeholder (et donc l'UX de
-  // l'input) suit instantanément le changement dans Settings sans avoir à
-  // recharger la shape.
   const searchEngineId = useUIStore((s) => s.searchEngine)
   const searchEngine = getSearchEngine(searchEngineId)
 
   const commit = (): void => {
     const resolved = resolveQuery(draft, searchEngine)
-    if (resolved === shape.props.url) return
-    editor.updateShape<BrowserShape>({
-      id: shape.id,
-      type: 'browser',
-      props: { url: resolved }
-    })
+    if (resolved === activeTab.url) return
+    patchTab(editor, shape.id, activeTab.id, { url: resolved })
   }
 
-  // Actions webview : back / forward / reload exposés via un custom event
-  // que `BrowserWebview` écoute sur le slot portail. Permet au header de
-  // rester découplé du ref webview (montage indépendant).
   const dispatch = (action: 'back' | 'forward' | 'reload'): void => {
     const slot = document.querySelector<HTMLElement>(
       `[data-shape-portal="${shape.id}"]`
     )
-    slot?.dispatchEvent(new CustomEvent('blowworks-browser-action', { detail: action }))
+    slot?.dispatchEvent(
+      new CustomEvent('blowworks-browser-action', {
+        detail: { action, tabId: activeTab.id }
+      })
+    )
   }
 
   return (
     <div
       data-shape-header
-      // Grille 3 colonnes `[auto | 1fr | auto]` : les colonnes latérales
-      // s'auto-dimensionnent sur leurs enfants interactifs (boutons nav à
-      // gauche, bouton projet à droite), la colonne centrale reçoit
-      // l'input URL centré avec `max-width` borné. Résultat : le RESTE
-      // du header (espace vide autour de l'input et entre les boutons)
-      // hérite du `pointer-events: none` du parent → reste drag zone pour
-      // tldraw → facile de cliquer hors des contrôles pour faire apparaître
-      // la bordure bleue de sélection et les handles de resize.
       className="relative grid h-9 items-center gap-2 border-b px-2 text-[11px]"
       style={{
         background: 'var(--bg-secondary, #101010)',
@@ -301,25 +629,13 @@ function BrowserHeader({
       }}
     >
       <div className="flex items-center gap-0.5" style={{ pointerEvents: 'auto' }}>
-        <HeaderIconButton
-          title="Retour"
-          onClick={() => dispatch('back')}
-          stopInteractive={stopInteractive}
-        >
+        <HeaderIconButton title="Retour" onClick={() => dispatch('back')} stopInteractive={stopInteractive}>
           <BackIcon />
         </HeaderIconButton>
-        <HeaderIconButton
-          title="Avancer"
-          onClick={() => dispatch('forward')}
-          stopInteractive={stopInteractive}
-        >
+        <HeaderIconButton title="Avancer" onClick={() => dispatch('forward')} stopInteractive={stopInteractive}>
           <ForwardIcon />
         </HeaderIconButton>
-        <HeaderIconButton
-          title="Recharger"
-          onClick={() => dispatch('reload')}
-          stopInteractive={stopInteractive}
-        >
+        <HeaderIconButton title="Recharger" onClick={() => dispatch('reload')} stopInteractive={stopInteractive}>
           <ReloadIcon />
         </HeaderIconButton>
       </div>
@@ -338,9 +654,6 @@ function BrowserHeader({
           onBlur={commit}
           placeholder={`Rechercher sur ${searchEngine.label} ou saisir une URL…`}
           spellCheck={false}
-          // `max-w` borné pour laisser visible le reste du header en drag
-          // zone — l'utilisateur peut cliquer à gauche/droite de l'input
-          // pour sélectionner la shape sans tomber dans l'input.
           className="w-full max-w-[320px] min-w-0 rounded px-2 py-1 text-[11px] outline-none"
           style={{
             background: 'var(--bg-tertiary, #1a1a1a)',
@@ -448,56 +761,72 @@ function HeaderIconButton({
   )
 }
 
-// User-agent Chrome propre, dérivé de `navigator.userAgent` du renderer
-// principal (donc aligné sur la version Chromium réellement embarquée
-// par Electron — pas de drift avec les bumps Electron). On retire les
-// segments `Electron/x.y.z` et `BlowWorks/x.y.z` qui trahissent le
-// runtime : certains services (Claude.ai, Google login OAuth, …)
-// détectent ces marqueurs et refusent l'authentification.
-// Calculé une seule fois au chargement du module — `navigator.userAgent`
-// ne change pas pendant la vie du renderer.
+// ──────────────────────────────────────────────────────────── Container webviews
+
 const SPOOFED_WEB_USER_AGENT = navigator.userAgent
   .replace(/\s*BlowWorks\/\S+/g, '')
   .replace(/\s*Electron\/\S+/g, '')
   .trim()
 
-// `<webview>` Electron créé IMPÉRATIVEMENT via `document.createElement` :
-// React ne garantit pas l'ordre d'application des attributs JSX, or
-// `partition` DOIT être posée AVANT que le webview ne s'attache au DOM
-// (Chromium fige la session au moment de l'attach — si `src` est posé
-// avant `partition`, le webview ouvre la session par défaut et
-// `persist:browser` n'est plus jamais utilisée, d'où des logins /
-// cookies non partagés entre shapes). Ici on pose `partition` puis
-// `allowpopups` puis `useragent` puis `src`, dans cet ordre, avant
-// l'insertion DOM.
-//
-// Le tag est disponible car `webPreferences.webviewTag = true`
-// (voir `src/main/window.ts`). La partition `persist:browser` est
-// persistée sur disque (cookies/localStorage) et partagée par TOUTES
-// les BrowserShapes — isolée de l'origine du renderer principal.
-function BrowserWebview({ shape }: { shape: BrowserShape }) {
+// Stratégie : tous les webviews montés en parallèle, seul l'actif est
+// `display: block`. Les autres restent `display: none` pour préserver
+// leur état (process Chromium toujours vivant). Switch zéro-lag, RAM × N.
+function BrowserTabsContainer({
+  shapeId,
+  tabs,
+  activeTabId
+}: {
+  shapeId: TLShapeId
+  tabs: Tab[]
+  activeTabId: string
+}) {
+  return (
+    <div
+      className="relative flex-1"
+      style={{ minHeight: 0, pointerEvents: 'auto', background: '#fff' }}
+    >
+      {tabs.map((tab) => (
+        <div
+          key={tab.id}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: tab.id === activeTabId ? 'block' : 'none'
+          }}
+        >
+          <BrowserTabWebview shapeId={shapeId} tabId={tab.id} initialUrl={tab.url} url={tab.url} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Un webview par onglet. `initialUrl` fige la première URL du tag (avant
+// attach Chromium) ; les navigations ultérieures passent par `loadURL` ou
+// par les liens cliqués dans la page (sans rerender).
+function BrowserTabWebview({
+  shapeId,
+  tabId,
+  initialUrl,
+  url
+}: {
+  shapeId: TLShapeId
+  tabId: string
+  initialUrl: string
+  url: string
+}) {
   const editor = useEditor()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<HTMLElement | null>(null)
-  const lastCommittedUrlRef = useRef<string>(shape.props.url)
-
-  // URL initiale figée à la 1ʳᵉ création du webview — les navigations
-  // suivantes passent par `loadURL`, pas par un remount du tag. Sans
-  // cette ref, une mise à jour de `shape.props.url` avant le montage
-  // déclencherait un recréage complet du webview (perte de session).
-  const initialUrlRef = useRef<string>(shape.props.url)
+  const lastCommittedUrlRef = useRef<string>(initialUrl)
+  const initialUrlRef = useRef<string>(initialUrl)
 
   // Création / destruction du webview au (dé)montage UNIQUEMENT.
-  // `useLayoutEffect` pour que le webview existe avant les effets suivants
-  // qui attachent les listeners did-navigate / dom-ready.
   useEffect(() => {
     const container = containerRef.current
     if (!container) return
     const wv = document.createElement('webview') as HTMLElement
     // Ordre CRITIQUE : partition / allowpopups / useragent AVANT src.
-    // Le `useragent` doit être posé avant l'attach (comme `partition`) :
-    // c'est l'UA envoyé sur la toute première requête, sinon Claude.ai
-    // et autres détectent l'UA Electron par défaut et bloquent le login.
     wv.setAttribute('partition', 'persist:browser')
     wv.setAttribute('allowpopups', 'true')
     wv.setAttribute('useragent', SPOOFED_WEB_USER_AGENT)
@@ -508,49 +837,59 @@ function BrowserWebview({ shape }: { shape: BrowserShape }) {
     wv.style.background = '#fff'
     container.appendChild(wv)
     webviewRef.current = wv
+
+    // Enregistrement webContentsId → {shapeId, tabId} dès l'attach pour
+    // que les target=_blank émis par CE webview soient routés vers CET
+    // onglet (au lieu de spawner une nouvelle BrowserShape).
+    const onAttach = (): void => {
+      const wcId = (wv as unknown as { getWebContentsId?: () => number })
+        .getWebContentsId?.()
+      if (typeof wcId === 'number') {
+        webContentsRegistry.set(wcId, { shapeId, tabId })
+      }
+    }
+    wv.addEventListener('did-attach', onAttach)
+
     return () => {
+      wv.removeEventListener('did-attach', onAttach)
+      // Nettoyage du registre — on supprime toute entrée pointant vers ce tab.
+      for (const [k, v] of webContentsRegistry.entries()) {
+        if (v.shapeId === shapeId && v.tabId === tabId) {
+          webContentsRegistry.delete(k)
+        }
+      }
       wv.remove()
       webviewRef.current = null
     }
-  }, [])
+  }, [shapeId, tabId])
 
-  // Navigation vers l'URL du store tldraw quand elle change DE L'EXTÉRIEUR
-  // (barre d'URL, spawnBrowserShape). On ne re-navigue pas si le changement
-  // provient du webview lui-même (`did-navigate` → commit du store →
-  // nouvel url identique à `lastCommittedUrlRef`).
+  // Navigation externe (URL bar, addTabToShape) → loadURL si le tag est prêt.
   useEffect(() => {
-    const wv = webviewRef.current as (HTMLElement & {
-      loadURL?: (u: string) => Promise<void>
-      getURL?: () => string
-    }) | null
+    const wv = webviewRef.current as
+      | (HTMLElement & {
+          loadURL?: (u: string) => Promise<void>
+          getURL?: () => string
+        })
+      | null
     if (!wv) return
-    if (shape.props.url === lastCommittedUrlRef.current) return
-    lastCommittedUrlRef.current = shape.props.url
-    // `loadURL` peut être inexistant tant que le webview n'a pas émis
-    // `dom-ready`. Dans ce cas, l'attribut `src` initial est déjà la bonne
-    // URL — rien à faire, le webview chargera la bonne page au mount.
+    if (url === lastCommittedUrlRef.current) return
+    lastCommittedUrlRef.current = url
     if (typeof wv.loadURL === 'function') {
-      wv.loadURL(shape.props.url).catch((err) => {
+      wv.loadURL(url).catch((err) => {
         console.warn('[browser] loadURL échoué', err)
       })
     }
-  }, [shape.props.url])
+  }, [url])
 
-  // Écoute `did-navigate` / `did-navigate-in-page` pour synchroniser l'URL
-  // persistée dans tldraw avec l'URL réelle du webview (clic sur un lien,
-  // redirect serveur, etc.). Sans ça, la barre d'URL reste figée sur
-  // l'ancienne valeur et le reload de l'app reviendrait à la mauvaise page.
+  // did-navigate / did-navigate-in-page → met à jour l'URL du tab.
   const commitNavigatedUrl = useCallback(
-    (url: string): void => {
-      if (!url || url === shape.props.url) return
-      lastCommittedUrlRef.current = url
-      editor.updateShape<BrowserShape>({
-        id: shape.id,
-        type: 'browser',
-        props: { url }
-      })
+    (u: string): void => {
+      if (!u) return
+      if (u === lastCommittedUrlRef.current) return
+      lastCommittedUrlRef.current = u
+      patchTab(editor, shapeId, tabId, { url: u })
     },
-    [editor, shape.id, shape.props.url]
+    [editor, shapeId, tabId]
   )
 
   useEffect(() => {
@@ -560,36 +899,45 @@ function BrowserWebview({ shape }: { shape: BrowserShape }) {
       const ev = e as Event & { url?: string }
       if (typeof ev.url === 'string') commitNavigatedUrl(ev.url)
     }
+    const onTitle = (e: Event): void => {
+      const ev = e as Event & { title?: string }
+      if (typeof ev.title === 'string') {
+        patchTab(editor, shapeId, tabId, { title: ev.title })
+      }
+    }
+    const onFavicon = (e: Event): void => {
+      const ev = e as Event & { favicons?: string[] }
+      const first = ev.favicons?.[0]
+      if (typeof first === 'string') {
+        patchTab(editor, shapeId, tabId, { favicon: first })
+      }
+    }
     wv.addEventListener('did-navigate', onNavigate)
     wv.addEventListener('did-navigate-in-page', onNavigate)
+    wv.addEventListener('page-title-updated', onTitle)
+    wv.addEventListener('page-favicon-updated', onFavicon)
     return () => {
       wv.removeEventListener('did-navigate', onNavigate)
       wv.removeEventListener('did-navigate-in-page', onNavigate)
+      wv.removeEventListener('page-title-updated', onTitle)
+      wv.removeEventListener('page-favicon-updated', onFavicon)
     }
-  }, [commitNavigatedUrl])
+  }, [commitNavigatedUrl, editor, shapeId, tabId])
 
-  // Masque la scrollbar de la page chargée dans le webview pour une UX
-  // immersive cohérente avec le reste de BlowWorks (chat, terminaux,
-  // VSCode n'affichent pas non plus de scrollbar système). Scroll natif
-  // conservé (roulette, touchpad, clavier). Réinjecté à chaque navigation
-  // car `did-navigate` recharge un nouveau document qui perd le CSS.
+  // Masque la scrollbar interne pour cohérence UX (idem terminal/VSCode).
   useEffect(() => {
-    const wv = webviewRef.current as (HTMLElement & {
-      insertCSS?: (css: string) => Promise<string>
-    }) | null
+    const wv = webviewRef.current as
+      | (HTMLElement & { insertCSS?: (css: string) => Promise<string> })
+      | null
     if (!wv) return
     const hideScrollbarCSS =
       '::-webkit-scrollbar { width: 0 !important; height: 0 !important; background: transparent !important; } ' +
       'html { scrollbar-width: none !important; -ms-overflow-style: none !important; }'
     const inject = (): void => {
       wv.insertCSS?.(hideScrollbarCSS).catch(() => {
-        /* webview peut être détruit entre-temps — ignorer */
+        /* webview peut être détruit — ignorer */
       })
     }
-    // `dom-ready` est fire une seule fois par document ; `did-navigate`
-    // couvre les navigations top-level, `did-navigate-in-page` les SPAs
-    // qui mutent l'URL sans recharger (pas de rerun nécessaire, mais
-    // coût de l'injection négligeable).
     wv.addEventListener('dom-ready', inject)
     wv.addEventListener('did-navigate', inject)
     return () => {
@@ -598,35 +946,41 @@ function BrowserWebview({ shape }: { shape: BrowserShape }) {
     }
   }, [])
 
-  // Écoute les actions dispatchées par le header (back/forward/reload).
+  // Actions back/forward/reload : on filtre par tabId pour que le custom
+  // event dispatché par le header n'agisse que sur le tab actif.
   useEffect(() => {
     const slot = document.querySelector<HTMLElement>(
-      `[data-shape-portal="${shape.id}"]`
+      `[data-shape-portal="${shapeId}"]`
     )
     if (!slot) return
     const onAction = (e: Event): void => {
-      const detail = (e as CustomEvent).detail as 'back' | 'forward' | 'reload'
-      const wv = webviewRef.current as (HTMLElement & {
-        goBack?: () => void
-        goForward?: () => void
-        reload?: () => void
-        canGoBack?: () => boolean
-        canGoForward?: () => boolean
-      }) | null
+      const detail = (e as CustomEvent).detail as
+        | { action: 'back' | 'forward' | 'reload'; tabId: string }
+        | undefined
+      if (!detail || detail.tabId !== tabId) return
+      const wv = webviewRef.current as
+        | (HTMLElement & {
+            goBack?: () => void
+            goForward?: () => void
+            reload?: () => void
+            canGoBack?: () => boolean
+            canGoForward?: () => boolean
+          })
+        | null
       if (!wv) return
-      if (detail === 'back' && wv.canGoBack?.()) wv.goBack?.()
-      else if (detail === 'forward' && wv.canGoForward?.()) wv.goForward?.()
-      else if (detail === 'reload') wv.reload?.()
+      if (detail.action === 'back' && wv.canGoBack?.()) wv.goBack?.()
+      else if (detail.action === 'forward' && wv.canGoForward?.()) wv.goForward?.()
+      else if (detail.action === 'reload') wv.reload?.()
     }
     slot.addEventListener('blowworks-browser-action', onAction)
     return () => slot.removeEventListener('blowworks-browser-action', onAction)
-  }, [shape.id])
+  }, [shapeId, tabId])
 
   return (
     <div
       ref={containerRef}
-      className="flex-1"
-      style={{ minHeight: 0, pointerEvents: 'auto', background: '#fff' }}
+      className="h-full w-full"
+      style={{ pointerEvents: 'auto', background: '#fff' }}
       onPointerDown={(e) => e.stopPropagation()}
       onPointerMove={(e) => e.stopPropagation()}
       onTouchStart={(e) => e.stopPropagation()}
@@ -637,6 +991,7 @@ function BrowserWebview({ shape }: { shape: BrowserShape }) {
 }
 
 // ──────────────────────────────────────────────────────────── Icônes
+
 function BackIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -659,6 +1014,34 @@ function ReloadIcon() {
       <polyline points="23 4 23 10 17 10" />
       <polyline points="1 20 1 14 7 14" />
       <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+    </svg>
+  )
+}
+
+function PlusIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <line x1="12" y1="5" x2="12" y2="19" />
+      <line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+  )
+}
+
+function CloseIcon() {
+  return (
+    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <line x1="6" y1="6" x2="18" y2="18" />
+      <line x1="6" y1="18" x2="18" y2="6" />
+    </svg>
+  )
+}
+
+function GlobeIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
     </svg>
   )
 }

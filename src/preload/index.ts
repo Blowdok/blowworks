@@ -162,8 +162,13 @@ const api = {
     // Listener main → renderer : déclenché par `setWindowOpenHandler`
     // et `will-navigate` du process main. Le renderer crée une nouvelle
     // BrowserShape sur l'URL reçue.
-    onOpenUrl: (cb: (payload: { url: string }) => void) => {
-      const listener = (_: unknown, payload: { url: string }): void => cb(payload)
+    onOpenUrl: (
+      cb: (payload: { url: string; sourceWebContentsId?: number }) => void
+    ) => {
+      const listener = (
+        _: unknown,
+        payload: { url: string; sourceWebContentsId?: number }
+      ): void => cb(payload)
       ipcRenderer.on(IPC_CHANNELS.browser.openUrlEvent, listener)
       return () => ipcRenderer.off(IPC_CHANNELS.browser.openUrlEvent, listener)
     }
