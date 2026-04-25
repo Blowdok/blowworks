@@ -23,66 +23,86 @@ export default function CanvasBackground(): React.ReactElement {
     console.log('[canvas-bg] OnTheCanvas monté', { hydrated, hasImage: !!dataUrl, opacity, size })
   }, [hydrated, dataUrl, opacity, size])
 
+  // IMPORTANT — pattern de positionnement : le parent `.tl-html-layer.tl-shapes`
+  // a `contain: layout style size` + `width/height: 1px`. Les vraies shapes
+  // tldraw (`.tl-shape`) utilisent `position: absolute + transform-origin: top left
+  // + transform: translate(x, y)` plutôt que `top/left`. On suit exactement ce
+  // pattern : positionner via `transform` garantit que la coordonnée document
+  // (0,0) corresponde bien à la position visible du fond, malgré le containment
+  // CSS du parent.
+  const commonWrapperStyle: React.CSSProperties = {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    transformOrigin: 'top left',
+    pointerEvents: 'none',
+    userSelect: 'none'
+  }
+
   if (dataUrl) {
     return (
-      <img
-        src={dataUrl}
-        alt=""
-        // pointer-events: none pour ne JAMAIS intercepter les clics —
-        // c'est un visuel de repère, pas un élément interactif.
-        // user-select: none pour ne pas être attrapé dans une sélection
-        // de texte sur la page.
+      <div
         style={{
-          position: 'absolute',
-          left: -size / 2,
-          top: -size / 2,
+          ...commonWrapperStyle,
+          transform: `translate(${-size / 2}px, ${-size / 2}px)`,
           width: size,
           height: size,
-          opacity,
-          pointerEvents: 'none',
-          userSelect: 'none',
-          objectFit: 'contain'
+          opacity
         }}
-        draggable={false}
-      />
+      >
+        <img
+          src={dataUrl}
+          alt=""
+          draggable={false}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'contain',
+            pointerEvents: 'none',
+            userSelect: 'none'
+          }}
+        />
+      </div>
     )
   }
 
   // Fallback : marqueur de centre. Volontairement bien visible pour que
-  // l'utilisateur LE TROUVE quand il configure pour la 1re fois (avant ça
-  // il n'a aucun repère pour savoir où est le centre dans son canvas
-  // infini, donc le réticule doit attirer l'œil quand on revient sur (0,0)).
-  // L'opacité reste modérée pour ne pas distraire.
+  // l'utilisateur LE TROUVE quand il recentre la caméra et n'a pas encore
+  // configuré son image custom.
   const r = 200
   return (
-    <svg
-      width={2 * r}
-      height={2 * r}
-      viewBox={`-${r} -${r} ${2 * r} ${2 * r}`}
+    <div
       style={{
-        position: 'absolute',
-        left: -r,
-        top: -r,
-        pointerEvents: 'none',
-        opacity: 0.45,
+        ...commonWrapperStyle,
+        transform: `translate(${-r}px, ${-r}px)`,
+        width: 2 * r,
+        height: 2 * r,
+        opacity: 0.5,
         color: 'var(--fg-secondary, #e5e5e5)'
       }}
-      aria-hidden
     >
-      <circle cx={0} cy={0} r={r - 8} fill="none" stroke="currentColor" strokeWidth={2} strokeDasharray="8 8" />
-      <circle cx={0} cy={0} r={28} fill="none" stroke="currentColor" strokeWidth={1.5} />
-      <line x1={-40} y1={0} x2={40} y2={0} stroke="currentColor" strokeWidth={1.5} />
-      <line x1={0} y1={-40} x2={0} y2={40} stroke="currentColor" strokeWidth={1.5} />
-      <text
-        x={0}
-        y={r - 28}
-        textAnchor="middle"
-        fontSize={14}
-        fontFamily="monospace"
-        fill="currentColor"
+      <svg
+        width={2 * r}
+        height={2 * r}
+        viewBox={`-${r} -${r} ${2 * r} ${2 * r}`}
+        aria-hidden
+        style={{ display: 'block' }}
       >
-        centre du canvas (0, 0)
-      </text>
-    </svg>
+        <circle cx={0} cy={0} r={r - 8} fill="none" stroke="currentColor" strokeWidth={2} strokeDasharray="8 8" />
+        <circle cx={0} cy={0} r={28} fill="none" stroke="currentColor" strokeWidth={1.5} />
+        <line x1={-40} y1={0} x2={40} y2={0} stroke="currentColor" strokeWidth={1.5} />
+        <line x1={0} y1={-40} x2={0} y2={40} stroke="currentColor" strokeWidth={1.5} />
+        <text
+          x={0}
+          y={r - 28}
+          textAnchor="middle"
+          fontSize={14}
+          fontFamily="monospace"
+          fill="currentColor"
+        >
+          centre du canvas (0, 0)
+        </text>
+      </svg>
+    </div>
   )
 }
