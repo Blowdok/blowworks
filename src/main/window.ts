@@ -104,12 +104,46 @@ export function createMainWindow(): BrowserWindow {
   })
 
   // Les shapes <webview> héritent d'un `webContents` propre. On intercepte
-  // `will-navigate` sur chaque nouvelle webview pour que les clics à
-  // l'intérieur restent dans la même webview (comportement navigateur
-  // normal), MAIS les `window.open` depuis une webview (target=_blank)
-  // créent une nouvelle BrowserShape au lieu d'une fenêtre Electron.
+  // les `window.open(...)` selon leur disposition :
+  //
+  //   - `disposition === 'new-window'` : popup type OAuth (claude.ai
+  //     "Continuer avec Google", GitHub login, etc.). On AUTORISE une
+  //     vraie BrowserWindow fille qui partage la partition `persist:browser`
+  //     du webview parent (cookies/session communs) ET garde la relation
+  //     `window.opener` intacte côté renderer — sans ça, la popup OAuth
+  //     ne peut pas appeler `window.opener.postMessage(...)` ni
+  //     `window.close()` après avoir reçu le callback, et tourne en boucle.
+  //
+  //   - autres dispositions (`foreground-tab`, `background-tab`, `default`,
+  //     etc.) : c'est un clic `<a target="_blank">` ou middle-click → on
+  //     veut garder le lien dans BlowWorks, donc nouvelle BrowserShape.
+  //
+  // `did-attach-webview` est aussi le bon endroit pour brancher d'autres
+  // listeners par-webview à l'avenir (cf. `will-navigate`, `permission-request`).
   win.webContents.on('did-attach-webview', (_event, wc) => {
     wc.setWindowOpenHandler((details) => {
+      if (details.disposition === 'new-window') {
+        return {
+          action: 'allow',
+          overrideBrowserWindowOptions: {
+            width: 520,
+            height: 720,
+            parent: win,
+            modal: false,
+            autoHideMenuBar: true,
+            backgroundColor: '#000000',
+            webPreferences: {
+              // CRUCIAL : même partition que le webview parent pour que
+              // les cookies de session (claude.ai, accounts.google.com,
+              // etc.) soient partagés entre la shape et la popup OAuth.
+              partition: 'persist:browser',
+              nodeIntegration: false,
+              contextIsolation: true,
+              sandbox: true
+            }
+          }
+        }
+      }
       routeToInternalBrowser(details.url)
       return { action: 'deny' }
     })
