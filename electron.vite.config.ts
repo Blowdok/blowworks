@@ -77,7 +77,19 @@ export default defineConfig({
       }
     },
     server: {
-      port: 5173
+      // `host: '127.0.0.1'` (et pas `localhost`) : sur Windows, `localhost`
+      // peut résoudre vers `::1` (IPv6 loopback) tandis que le bind par
+      // défaut de Vite v7 reste IPv4 → ERR_CONNECTION_REFUSED côté Electron
+      // qui tente de se connecter via le nom. En forçant l'écoute sur
+      // 127.0.0.1, on garantit l'alignement IPv4 partout (electron-vite
+      // génère alors `ELECTRON_RENDERER_URL=http://localhost:5173/` mais
+      // la résolution DNS tombera sur 127.0.0.1, qui est servi).
+      host: '127.0.0.1',
+      port: 5173,
+      // `strictPort: true` : si 5173 est déjà occupé, on échoue brutalement
+      // au lieu de glisser silencieusement sur 5174 (auquel cas
+      // ELECTRON_RENDERER_URL pointerait sur le mauvais port).
+      strictPort: true
     }
   }
 })
