@@ -1,5 +1,10 @@
 import { create } from 'zustand'
 import type { ShellKindT } from '@shared/ipc-contract.js'
+import {
+  DEFAULT_SEARCH_ENGINE_ID,
+  isSearchEngineId,
+  type SearchEngineId
+} from '@shared/search-engines.js'
 
 // État UI persisté dans les settings SQLite (via IPC `window.blow.settings`).
 // Hydrate() est appelée une fois au mount de l'App ; tout changement
@@ -21,6 +26,11 @@ interface UIState {
   // chaque spawn.
   lastShell: ShellKindT
   setLastShell: (shell: ShellKindT) => void
+  // Moteur de recherche par défaut utilisé par BrowserShape (homepage de
+  // toute nouvelle shape + résolution des requêtes barre d'URL). L'utilisateur
+  // peut le changer dans Settings > Navigateur. Brave par défaut.
+  searchEngine: SearchEngineId
+  setSearchEngine: (id: SearchEngineId) => void
   hydrate: () => Promise<void>
 }
 
@@ -28,6 +38,7 @@ const KEY_SIDEBAR = 'ui.sidebar.collapsed'
 const KEY_STYLE_PANEL = 'ui.stylePanel.visible'
 const KEY_TOOLBAR = 'ui.toolbar.visible'
 const KEY_LAST_SHELL = 'ui.terminal.lastShell'
+const KEY_SEARCH_ENGINE = 'browser.searchEngine'
 
 const VALID_SHELLS: readonly ShellKindT[] = ['powershell', 'pwsh', 'cmd', 'bash']
 
@@ -54,6 +65,15 @@ async function readShell(key: string, fallback: ShellKindT): Promise<ShellKindT>
   }
 }
 
+async function readSearchEngine(key: string, fallback: SearchEngineId): Promise<SearchEngineId> {
+  try {
+    const raw = await window.blow.settings.get(key)
+    return isSearchEngineId(raw) ? raw : fallback
+  } catch {
+    return fallback
+  }
+}
+
 function writeBool(key: string, value: boolean): void {
   void window.blow.settings.set(key, value ? '1' : '0').catch(() => {
     /* best-effort, ne bloque pas l'UI */
@@ -72,6 +92,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   stylePanelVisible: true,
   toolbarVisible: true,
   lastShell: 'powershell',
+  searchEngine: DEFAULT_SEARCH_ENGINE_ID,
 
   toggleSidebar: () => {
     const next = !get().sidebarCollapsed
@@ -97,19 +118,26 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({ lastShell })
     if (get().hydrated) writeString(KEY_LAST_SHELL, lastShell)
   },
+  setSearchEngine: (searchEngine) => {
+    if (get().searchEngine === searchEngine) return
+    set({ searchEngine })
+    if (get().hydrated) writeString(KEY_SEARCH_ENGINE, searchEngine)
+  },
 
   hydrate: async () => {
-    const [sidebar, stylePanel, toolbar, lastShell] = await Promise.all([
+    const [sidebar, stylePanel, toolbar, lastShell, searchEngine] = await Promise.all([
       readBool(KEY_SIDEBAR, false),
       readBool(KEY_STYLE_PANEL, true),
       readBool(KEY_TOOLBAR, true),
-      readShell(KEY_LAST_SHELL, 'powershell')
+      readShell(KEY_LAST_SHELL, 'powershell'),
+      readSearchEngine(KEY_SEARCH_ENGINE, DEFAULT_SEARCH_ENGINE_ID)
     ])
     set({
       sidebarCollapsed: sidebar,
       stylePanelVisible: stylePanel,
       toolbarVisible: toolbar,
       lastShell,
+      searchEngine,
       hydrated: true
     })
   }

@@ -8,10 +8,17 @@ import {
   type RecordProps
 } from 'tldraw'
 import { useProjectStore } from '../../../stores/project-store.js'
+import { useUIStore } from '../../../stores/ui-store.js'
 import {
   useShapeBorderState,
   getShapeBorderStyle
 } from '../../../lib/use-shape-border-state.js'
+import {
+  DEFAULT_SEARCH_ENGINE_ID,
+  getSearchEngine,
+  type SearchEngine,
+  type SearchEngineId
+} from '@shared/search-engines.js'
 
 // Shape "Browser" : navigateur web intégré via le tag <webview> Electron.
 // Contrairement à une iframe, <webview> n'est pas soumis aux blocages
@@ -22,7 +29,13 @@ import {
 // `allowpopups` est une string en HTML Electron bien que typée boolean
 // côté DOM — on passe par un cast léger à l'usage.
 
-export const DUCKDUCKGO_HOMEPAGE = 'https://duckduckgo.com/'
+// Homepage de secours utilisée par `getDefaultProps()` (cas où une browser
+// shape est créée par la barre d'outils tldraw plutôt que via
+// `spawnBrowserShape`). Pour les vrais spawns (boutons, lien intercepté),
+// `spawnBrowserShape` lit le moteur courant dans `useUIStore` et utilise
+// `engine.homepage`. Ici on n'a pas accès au store (méthode statique de
+// la classe shape util), d'où le fallback figé sur le défaut DEFAULT_SEARCH_ENGINE_ID.
+const FALLBACK_HOMEPAGE = getSearchEngine(DEFAULT_SEARCH_ENGINE_ID).homepage
 
 type StopInteractiveProps = {
   onPointerDown: (e: React.PointerEvent) => void
@@ -60,7 +73,7 @@ export class BrowserShapeUtil extends BaseBoxShapeUtil<BrowserShape> {
     return {
       w: 900,
       h: 600,
-      url: DUCKDUCKGO_HOMEPAGE,
+      url: FALLBACK_HOMEPAGE,
       projectId: null
     }
   }
@@ -109,19 +122,30 @@ export class BrowserShapeUtil extends BaseBoxShapeUtil<BrowserShape> {
 
 // Convertit une saisie utilisateur en URL navigable.
 // Règles :
-//   - texte avec espaces OU sans point               → recherche DDG
+//   - texte avec espaces OU sans point               → recherche moteur courant
 //   - commence par http:// ou https://               → URL directe
 //   - sinon (ex: "github.com/foo")                   → préfixe https://
-export function resolveQuery(raw: string): string {
+//
+// Le moteur est passé en argument pour rester pur (pas d'accès store),
+// les appelants (BrowserHeader, spawnBrowserShape) lisent `useUIStore.searchEngine`
+// et résolvent le SearchEngine via `getSearchEngine`.
+export function resolveQuery(raw: string, engine: SearchEngine): string {
   const input = raw.trim()
-  if (input.length === 0) return DUCKDUCKGO_HOMEPAGE
+  if (input.length === 0) return engine.homepage
   const hasSpace = /\s/.test(input)
   const hasDot = input.includes('.')
   if (hasSpace || !hasDot) {
-    return `https://duckduckgo.com/?q=${encodeURIComponent(input)}`
+    return engine.buildSearchUrl(input)
   }
   if (/^https?:\/\//i.test(input)) return input
   return `https://${input}`
+}
+
+// Helper renderer-only : évite à chaque appelant de répéter le getState +
+// getSearchEngine. Lit l'état CURRENT du store (snapshot, sans subscription).
+export function resolveQueryWithCurrent(raw: string): string {
+  const id: SearchEngineId = useUIStore.getState().searchEngine
+  return resolveQuery(raw, getSearchEngine(id))
 }
 
 // Contenu réel de la shape Browser — rendu hors tldraw par ShapePortalManager.
@@ -230,8 +254,14 @@ function BrowserHeader({
     setDraft(shape.props.url)
   }
 
+  // Lecture réactive du moteur courant : le placeholder (et donc l'UX de
+  // l'input) suit instantanément le changement dans Settings sans avoir à
+  // recharger la shape.
+  const searchEngineId = useUIStore((s) => s.searchEngine)
+  const searchEngine = getSearchEngine(searchEngineId)
+
   const commit = (): void => {
-    const resolved = resolveQuery(draft)
+    const resolved = resolveQuery(draft, searchEngine)
     if (resolved === shape.props.url) return
     editor.updateShape<BrowserShape>({
       id: shape.id,
@@ -306,7 +336,7 @@ function BrowserHeader({
             }
           }}
           onBlur={commit}
-          placeholder="Rechercher sur DuckDuckGo ou saisir une URL…"
+          placeholder={`Rechercher sur ${searchEngine.label} ou saisir une URL…`}
           spellCheck={false}
           // `max-w` borné pour laisser visible le reste du header en drag
           // zone — l'utilisateur peut cliquer à gauche/droite de l'input

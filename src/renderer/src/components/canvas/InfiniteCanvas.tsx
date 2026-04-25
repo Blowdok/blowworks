@@ -9,7 +9,8 @@ import {
   type ChatShape,
   type BrowserShape
 } from './shapes/index.js'
-import { DUCKDUCKGO_HOMEPAGE, resolveQuery } from './shapes/BrowserShape.js'
+import { resolveQuery } from './shapes/BrowserShape.js'
+import { getSearchEngine } from '@shared/search-engines.js'
 import { useChatStore } from '../../stores/chat-store.js'
 import { useCanvasPersistence } from '../../hooks/use-canvas-persistence.js'
 import { useEditorStore } from '../../stores/editor-store.js'
@@ -275,16 +276,20 @@ export async function spawnChatShape(
 }
 
 // Crée une nouvelle BrowserShape au centre du viewport. URL par défaut =
-// DuckDuckGo homepage. Si `rawUrl` est fourni (lien intercepté, bouton
-// header avec pré-saisie, etc.), on le résout via `resolveQuery` : URL
-// nue / avec schéma / texte de recherche sont tous acceptés.
+// homepage du moteur courant (Settings > Navigateur). Si `rawUrl` est
+// fourni (lien intercepté, bouton header avec pré-saisie, etc.), on le
+// résout via `resolveQuery` : URL nue / avec schéma / texte de recherche
+// sont tous acceptés et utilisent le moteur courant pour les recherches.
 export function spawnBrowserShape(
   editor: Editor,
   rawUrl?: string,
   at?: { x: number; y: number }
 ): void {
   const { x: cx, y: cy } = resolveSpawnCenter(editor, at)
-  const url = rawUrl ? resolveQuery(rawUrl) : DUCKDUCKGO_HOMEPAGE
+  // `getState()` plutôt qu'un hook : `spawnBrowserShape` n'est pas un
+  // composant React, on lit juste un snapshot ponctuel.
+  const engine = getSearchEngine(useUIStore.getState().searchEngine)
+  const url = rawUrl ? resolveQuery(rawUrl, engine) : engine.homepage
   const id = createShapeId()
   editor.createShape<BrowserShape>({
     id,
