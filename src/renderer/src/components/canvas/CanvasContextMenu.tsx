@@ -6,6 +6,7 @@ import {
   spawnTerminalShape,
   spawnVSCodeShape
 } from './InfiniteCanvas.js'
+import { AI_SERVICES, type AIService } from '@shared/ai-services.js'
 
 // Menu contextuel custom déclenché au clic droit sur l'espace VIDE du
 // canvas (pas sur une shape — dans ce cas tldraw garde son menu natif).
@@ -40,6 +41,10 @@ const INITIAL_STATE: MenuState = {
 export default function CanvasContextMenu(): React.ReactElement | null {
   const editor = useEditorStore((s) => s.editor)
   const [state, setState] = useState<MenuState>(INITIAL_STATE)
+  // Drill-down dans le menu : 'main' = items shape principaux,
+  // 'ai' = liste des assistants IA (Claude, ChatGPT, …). Reset à 'main'
+  // à chaque ouverture pour repartir d'un état propre.
+  const [view, setView] = useState<'main' | 'ai'>('main')
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -67,6 +72,7 @@ export default function CanvasContextMenu(): React.ReactElement | null {
       // Vide : on prend la main.
       e.preventDefault()
       e.stopPropagation()
+      setView('main')
       setState({
         open: true,
         screenX: e.clientX,
@@ -109,9 +115,12 @@ export default function CanvasContextMenu(): React.ReactElement | null {
 
   if (!editor || !state.open) return null
 
-  // Clamp le menu aux bords viewport (menu d'env. 220×220 px).
-  const MENU_W = 220
-  const MENU_H = 220
+  // Clamp le menu aux bords viewport. Hauteur estimée plus généreuse pour
+  // la vue 'ai' (liste de 10 services). MENU_H sert juste au clamping —
+  // si le menu réel est plus petit, c'est OK (left/top sont déjà bornés
+  // au minimum, on n'a juste pas un gap parfait en bas).
+  const MENU_W = 240
+  const MENU_H = view === 'ai' ? 460 : 220
   const vw = window.innerWidth
   const vh = window.innerHeight
   const left = Math.min(state.screenX, vw - MENU_W - 8)
@@ -136,28 +145,71 @@ export default function CanvasContextMenu(): React.ReactElement | null {
     }
   }
 
+  function handleSpawnAI(service: AIService): () => void {
+    return () => {
+      setState(INITIAL_STATE)
+      if (editor) spawnBrowserShape(editor, service.homepage, at)
+    }
+  }
+
   return (
     <div
       ref={menuRef}
       role="menu"
-      className="pointer-events-auto fixed z-[60] flex min-w-[200px] flex-col gap-0.5 rounded-[var(--radius-sm)] border p-1 shadow-xl"
+      className="pointer-events-auto fixed z-[60] flex flex-col gap-0.5 rounded-[var(--radius-sm)] border p-1 shadow-xl"
       style={{
         left,
         top,
+        width: MENU_W,
         borderColor: 'var(--border)',
         background: 'var(--bg-secondary)'
       }}
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div
-        className="px-2 pb-1 pt-0.5 text-[9px] uppercase tracking-widest text-[var(--fg-muted)]"
-      >
-        Ajouter ici
-      </div>
-      <MenuItem icon="💬" label="Conversation IA" shortcut="Ctrl+K" onClick={handle(() => spawnChatShape(editor!, at))} />
-      <MenuItem icon="⌨" label="Terminal" shortcut="Ctrl+T" onClick={handle(() => spawnTerminalShape(editor!, at))} />
-      <MenuItem icon="🌐" label="Navigateur" shortcut="Ctrl+B" onClick={handle(() => spawnBrowserShape(editor!, undefined, at))} />
-      <MenuItem icon="📝" label="VSCode (dossier…)" onClick={handle(openFolderAndSpawn)} />
+      {view === 'main' ? (
+        <>
+          <div
+            className="px-2 pb-1 pt-0.5 text-[9px] uppercase tracking-widest text-[var(--fg-muted)]"
+          >
+            Ajouter ici
+          </div>
+          <MenuItem icon="💬" label="Conversation IA" shortcut="Ctrl+K" onClick={handle(() => spawnChatShape(editor!, at))} />
+          <MenuItem icon="⌨" label="Terminal" shortcut="Ctrl+T" onClick={handle(() => spawnTerminalShape(editor!, at))} />
+          <MenuItem icon="🌐" label="Navigateur" shortcut="Ctrl+B" onClick={handle(() => spawnBrowserShape(editor!, undefined, at))} />
+          <MenuItem icon="📝" label="VSCode (dossier…)" onClick={handle(openFolderAndSpawn)} />
+          <MenuItem icon="✨" label="IA" trailing="▸" onClick={() => setView('ai')} />
+        </>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={() => setView('main')}
+            className="flex items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1 text-left text-[10px] uppercase tracking-widest text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+          >
+            <span aria-hidden>←</span>
+            <span>Assistants IA</span>
+          </button>
+          <div className="my-0.5 h-px" style={{ background: 'var(--border)' }} />
+          {AI_SERVICES.map((svc) => (
+            <button
+              key={svc.id}
+              type="button"
+              role="menuitem"
+              onClick={handleSpawnAI(svc)}
+              className="flex items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[12px] text-[var(--fg-primary)] transition-colors hover:bg-[var(--bg-tertiary)]"
+            >
+              <span
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+                style={{ background: svc.color }}
+                aria-hidden
+              >
+                {svc.label[0]}
+              </span>
+              <span className="flex-1 truncate">{svc.label}</span>
+            </button>
+          ))}
+        </>
+      )}
     </div>
   )
 }
@@ -166,11 +218,16 @@ function MenuItem({
   icon,
   label,
   shortcut,
+  trailing,
   onClick
 }: {
   icon: string
   label: string
   shortcut?: string
+  // Glyphe en bout de ligne, ex: '▸' pour signaler un sous-menu. Mutuellement
+  // exclusif avec `shortcut` côté usage (un item est soit un raccourci soit
+  // un drill-down), mais on ne le force pas en typage pour rester souple.
+  trailing?: string
   onClick: () => void
 }): React.ReactElement {
   return (
@@ -184,6 +241,9 @@ function MenuItem({
       <span className="flex-1">{label}</span>
       {shortcut && (
         <span className="text-[10px] text-[var(--fg-muted)]">{shortcut}</span>
+      )}
+      {trailing && (
+        <span className="text-[10px] text-[var(--fg-muted)]">{trailing}</span>
       )}
     </button>
   )
