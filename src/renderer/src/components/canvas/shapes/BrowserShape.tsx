@@ -448,6 +448,19 @@ function HeaderIconButton({
   )
 }
 
+// User-agent Chrome propre, dérivé de `navigator.userAgent` du renderer
+// principal (donc aligné sur la version Chromium réellement embarquée
+// par Electron — pas de drift avec les bumps Electron). On retire les
+// segments `Electron/x.y.z` et `BlowWorks/x.y.z` qui trahissent le
+// runtime : certains services (Claude.ai, Google login OAuth, …)
+// détectent ces marqueurs et refusent l'authentification.
+// Calculé une seule fois au chargement du module — `navigator.userAgent`
+// ne change pas pendant la vie du renderer.
+const SPOOFED_WEB_USER_AGENT = navigator.userAgent
+  .replace(/\s*BlowWorks\/\S+/g, '')
+  .replace(/\s*Electron\/\S+/g, '')
+  .trim()
+
 // `<webview>` Electron créé IMPÉRATIVEMENT via `document.createElement` :
 // React ne garantit pas l'ordre d'application des attributs JSX, or
 // `partition` DOIT être posée AVANT que le webview ne s'attache au DOM
@@ -455,7 +468,8 @@ function HeaderIconButton({
 // avant `partition`, le webview ouvre la session par défaut et
 // `persist:browser` n'est plus jamais utilisée, d'où des logins /
 // cookies non partagés entre shapes). Ici on pose `partition` puis
-// `allowpopups` puis `src`, dans cet ordre, avant l'insertion DOM.
+// `allowpopups` puis `useragent` puis `src`, dans cet ordre, avant
+// l'insertion DOM.
 //
 // Le tag est disponible car `webPreferences.webviewTag = true`
 // (voir `src/main/window.ts`). La partition `persist:browser` est
@@ -480,9 +494,13 @@ function BrowserWebview({ shape }: { shape: BrowserShape }) {
     const container = containerRef.current
     if (!container) return
     const wv = document.createElement('webview') as HTMLElement
-    // Ordre CRITIQUE : partition/allowpopups AVANT src.
+    // Ordre CRITIQUE : partition / allowpopups / useragent AVANT src.
+    // Le `useragent` doit être posé avant l'attach (comme `partition`) :
+    // c'est l'UA envoyé sur la toute première requête, sinon Claude.ai
+    // et autres détectent l'UA Electron par défaut et bloquent le login.
     wv.setAttribute('partition', 'persist:browser')
     wv.setAttribute('allowpopups', 'true')
+    wv.setAttribute('useragent', SPOOFED_WEB_USER_AGENT)
     wv.setAttribute('src', initialUrlRef.current)
     wv.style.width = '100%'
     wv.style.height = '100%'

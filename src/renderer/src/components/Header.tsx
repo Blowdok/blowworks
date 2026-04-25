@@ -7,6 +7,7 @@ import {
   spawnChatShape,
   spawnBrowserShape
 } from './canvas/InfiniteCanvas.js'
+import { AI_SERVICES, type AIService } from '@shared/ai-services.js'
 
 // Barre supérieure : drag region native + actions rapides + branding.
 // Regroupe toutes les actions globales (nouveau terminal, toggle styles, pages)
@@ -104,6 +105,36 @@ export default function Header() {
     if (editor) spawnBrowserShape(editor)
   }
 
+  function handleSpawnAI(service: AIService): void {
+    if (!editor) return
+    // `spawnBrowserShape(editor, url)` accepte une URL libre — on lui
+    // passe la homepage du service. Le webview gère l'auth via la
+    // partition `persist:browser` partagée (login persistant).
+    spawnBrowserShape(editor, service.homepage)
+    setAIMenuOpen(false)
+  }
+
+  // État du menu déroulant "IA". Click extérieur / Échap referme.
+  const [aiMenuOpen, setAIMenuOpen] = useState(false)
+  const aiMenuWrapperRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!aiMenuOpen) return
+    function onMouseDown(e: MouseEvent): void {
+      if (aiMenuWrapperRef.current?.contains(e.target as Node)) return
+      setAIMenuOpen(false)
+    }
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === 'Escape') setAIMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown, true)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown, true)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [aiMenuOpen])
+
   return (
     <header className="drag-region grid h-12 grid-cols-[1fr_auto_1fr] items-center border-b border-[var(--border)] bg-[var(--bg-secondary)] px-3 text-[var(--fg-primary)]">
       {/* Zone gauche : sidebar + brand + pages */}
@@ -184,6 +215,66 @@ export default function Header() {
             </span>
           )}
         </button>
+
+        {/* Bouton IA + menu déroulant : spawne une BrowserShape sur la
+            homepage du service choisi. Tous les services sont rendus
+            dans le même webview Electron — login partagé entre eux. */}
+        <div ref={aiMenuWrapperRef} className="relative">
+          <button
+            type="button"
+            onClick={() => setAIMenuOpen((v) => !v)}
+            disabled={!editor}
+            className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border-[0.5px] border-[var(--border)] px-2.5 py-1 font-medium transition-colors hover:border-[var(--fg-secondary)] hover:bg-[var(--bg-tertiary)] disabled:cursor-not-allowed disabled:opacity-40"
+            style={{
+              color: aiMenuOpen ? activeColor : inactiveColor,
+              background: aiMenuOpen ? 'var(--bg-tertiary)' : undefined
+            }}
+            title="Lancer un assistant IA"
+            aria-haspopup="menu"
+            aria-expanded={aiMenuOpen}
+          >
+            <SparkIcon />
+            <span>IA</span>
+            <ChevronDownIcon open={aiMenuOpen} />
+          </button>
+          {aiMenuOpen && (
+            <div
+              role="menu"
+              aria-label="Choisir un assistant IA"
+              className="absolute left-0 top-full z-50 mt-1 flex min-w-[260px] flex-col rounded-[var(--radius-sm)] border p-1 shadow-2xl"
+              style={{
+                background: 'var(--bg-secondary)',
+                borderColor: 'var(--border)'
+              }}
+            >
+              {AI_SERVICES.map((svc) => (
+                <button
+                  key={svc.id}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => handleSpawnAI(svc)}
+                  className="flex items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-[var(--bg-tertiary)]"
+                >
+                  <span
+                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
+                    style={{ background: svc.color }}
+                    aria-hidden
+                  >
+                    {svc.label[0]}
+                  </span>
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-[var(--fg-primary)]">
+                      {svc.label}
+                    </span>
+                    <span className="truncate text-[10px] text-[var(--fg-muted)]">
+                      {svc.tagline}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         <button
           type="button"
@@ -455,6 +546,49 @@ function WrenchIcon() {
       aria-hidden="true"
     >
       <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+    </svg>
+  )
+}
+
+function SparkIcon() {
+  // Étincelle 4 branches : symbole IA générique, neutre vis-à-vis des
+  // marques (chacun a son icône dans le menu déroulant).
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3 L13.5 9 L19.5 10.5 L13.5 12 L12 18 L10.5 12 L4.5 10.5 L10.5 9 Z" />
+      <path d="M19 17 L19.6 19 L21.5 19.5 L19.6 20 L19 22 L18.4 20 L16.5 19.5 L18.4 19 Z" />
+    </svg>
+  )
+}
+
+function ChevronDownIcon({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{
+        transform: open ? 'rotate(180deg)' : undefined,
+        transition: 'transform 120ms ease-out'
+      }}
+    >
+      <polyline points="6 9 12 15 18 9" />
     </svg>
   )
 }
