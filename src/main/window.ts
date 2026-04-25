@@ -160,7 +160,41 @@ export function createMainWindow(): BrowserWindow {
 
   // Chargement du renderer : URL Vite en dev, fichier HTML en prod.
   if (is.dev && process.env.ELECTRON_RENDERER_URL) {
-    win.loadURL(process.env.ELECTRON_RENDERER_URL)
+    const devUrl = process.env.ELECTRON_RENDERER_URL
+    win.loadURL(devUrl)
+
+    // Race condition `electron-vite` : Electron démarre parfois AVANT que
+    // Vite n'ait fini d'attacher son port → ERR_CONNECTION_REFUSED, la
+    // fenêtre reste sur `chrome-error://`. On retry l'URL toutes les 500 ms
+    // pendant ~10 s, jusqu'à ce que Vite réponde. En prod ce listener
+    // n'existe pas (autre branche du if).
+    let retries = 0
+    const MAX_RETRIES = 20
+    const onFailLoad = (
+      _event: Electron.Event,
+      errorCode: number,
+      _errorDescription: string,
+      validatedURL: string,
+      isMainFrame: boolean
+    ): void => {
+      if (!isMainFrame) return
+      // -102 = ERR_CONNECTION_REFUSED (Vite pas encore prêt). On retry
+      // uniquement sur ce code, pas sur d'autres erreurs (404, SSL, …).
+      if (errorCode !== -102) return
+      if (validatedURL !== devUrl && !validatedURL.startsWith(devUrl)) return
+      if (retries >= MAX_RETRIES) {
+        console.warn(`[main] Vite indisponible après ${MAX_RETRIES} tentatives — abandon`)
+        return
+      }
+      retries++
+      setTimeout(() => {
+        if (!win.isDestroyed()) win.loadURL(devUrl)
+      }, 500)
+    }
+    win.webContents.on('did-fail-load', onFailLoad)
+    win.webContents.once('did-finish-load', () => {
+      win.webContents.off('did-fail-load', onFailLoad)
+    })
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
