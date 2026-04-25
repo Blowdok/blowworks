@@ -5,6 +5,7 @@ import ModelSelector from './chat/ModelSelector.js'
 import WikiSettingsTab from './settings/WikiSettingsTab.js'
 import AgentsSettingsTab from './settings/AgentsSettingsTab.js'
 import BrowserSettingsTab from './settings/BrowserSettingsTab.js'
+import CanvasSettingsTab from './settings/CanvasSettingsTab.js'
 
 // Modale Paramètres plein écran : sidebar verticale à gauche + panneau
 // de réglages à droite. Rendue via `createPortal(document.body)` — même
@@ -16,7 +17,7 @@ import BrowserSettingsTab from './settings/BrowserSettingsTab.js'
 //   - IA · Recherche web Tavily (clé API)
 //   - Placeholders grisés : Agents, MCP, Presets (lots 3/4)
 
-type Tab = 'openrouter' | 'tavily' | 'defaults' | 'wiki' | 'agents' | 'browser'
+type Tab = 'openrouter' | 'tavily' | 'defaults' | 'wiki' | 'agents' | 'browser' | 'canvas'
 
 interface SettingsModalProps {
   open: boolean
@@ -132,6 +133,9 @@ export default function SettingsModal({
             <TabButton active={tab === 'browser'} onClick={() => setTab('browser')}>
               Navigateur
             </TabButton>
+            <TabButton active={tab === 'canvas'} onClick={() => setTab('canvas')}>
+              Canvas
+            </TabButton>
             <div className="mt-3 border-t px-2 pt-3 text-[10px] uppercase tracking-widest text-[var(--fg-muted)]" style={{ borderColor: 'var(--border)' }}>
               À venir
             </div>
@@ -155,6 +159,7 @@ export default function SettingsModal({
           {tab === 'wiki' && <WikiSettingsTab />}
           {tab === 'agents' && <AgentsSettingsTab />}
           {tab === 'browser' && <BrowserSettingsTab />}
+          {tab === 'canvas' && <CanvasSettingsTab />}
         </section>
       </div>
     </div>,

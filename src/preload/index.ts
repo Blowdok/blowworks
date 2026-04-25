@@ -64,7 +64,11 @@ const api = {
   },
   dialog: {
     pickFolder: (options?: { title?: string; defaultPath?: string }): Promise<string | null> =>
-      ipcRenderer.invoke(IPC_CHANNELS.dialog.pickFolder, options ?? {})
+      ipcRenderer.invoke(IPC_CHANNELS.dialog.pickFolder, options ?? {}),
+    pickImage: (
+      options?: { title?: string }
+    ): Promise<{ dataUrl: string; name: string } | null> =>
+      ipcRenderer.invoke(IPC_CHANNELS.dialog.pickImage, options ?? {})
   },
   github: {
     getStatus: () => ipcRenderer.invoke(IPC_CHANNELS.github.getStatus),

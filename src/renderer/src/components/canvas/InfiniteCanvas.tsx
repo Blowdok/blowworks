@@ -21,6 +21,13 @@ import { useEditorStore } from '../../stores/editor-store.js'
 import { useUIStore } from '../../stores/ui-store.js'
 import ShapePortalManager from '../shape-portal/ShapePortalManager.js'
 import CanvasContextMenu from './CanvasContextMenu.js'
+import CanvasBackground from './CanvasBackground.js'
+
+// Slot tldraw `OnTheCanvas` : rendu DERRIÈRE les shapes mais DANS le
+// repère caméra (zoom + pan appliqués). Idéal pour notre image de fond
+// centrée à l'origine. Référence stable pour ne pas faire remount le
+// slot à chaque rerender de InfiniteCanvas.
+const TLDRAW_COMPONENTS = { OnTheCanvas: CanvasBackground } as const
 
 // Canvas infini tldraw + shape utils custom (Terminal, VSCode).
 export default function InfiniteCanvas() {
@@ -171,6 +178,7 @@ export default function InfiniteCanvas() {
         persistenceKey="blowworks-canvas"
         shapeUtils={customShapeUtils}
         assetUrls={assetUrls}
+        components={TLDRAW_COMPONENTS}
         onMount={handleMount}
         inferDarkMode
       >

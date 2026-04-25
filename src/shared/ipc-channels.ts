@@ -32,7 +32,8 @@ export const IPC_CHANNELS = {
     set: 'settings.set'
   },
   dialog: {
-    pickFolder: 'dialog.pickFolder'
+    pickFolder: 'dialog.pickFolder',
+    pickImage: 'dialog.pickImage'
   },
   github: {
     setToken: 'github.setToken',

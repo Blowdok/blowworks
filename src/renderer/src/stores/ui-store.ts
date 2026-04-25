@@ -31,6 +31,15 @@ interface UIState {
   // peut le changer dans Settings > Navigateur. Brave par défaut.
   searchEngine: SearchEngineId
   setSearchEngine: (id: SearchEngineId) => void
+  // Fond du canvas tldraw : image custom centrée à (0,0), suit la caméra.
+  // dataUrl = string base64 (data:image/...;base64,...) ou null si désactivé.
+  // opacity = 0..1 ; size = côté carré en pixels (centré sur l'origine).
+  canvasBgDataUrl: string | null
+  canvasBgOpacity: number
+  canvasBgSize: number
+  setCanvasBgDataUrl: (url: string | null) => void
+  setCanvasBgOpacity: (v: number) => void
+  setCanvasBgSize: (v: number) => void
   hydrate: () => Promise<void>
 }
 
@@ -39,6 +48,12 @@ const KEY_STYLE_PANEL = 'ui.stylePanel.visible'
 const KEY_TOOLBAR = 'ui.toolbar.visible'
 const KEY_LAST_SHELL = 'ui.terminal.lastShell'
 const KEY_SEARCH_ENGINE = 'browser.searchEngine'
+const KEY_CANVAS_BG_DATAURL = 'canvas.background.dataUrl'
+const KEY_CANVAS_BG_OPACITY = 'canvas.background.opacity'
+const KEY_CANVAS_BG_SIZE = 'canvas.background.size'
+
+const DEFAULT_CANVAS_BG_OPACITY = 0.25
+const DEFAULT_CANVAS_BG_SIZE = 800
 
 const VALID_SHELLS: readonly ShellKindT[] = ['powershell', 'pwsh', 'cmd', 'bash']
 
@@ -74,6 +89,26 @@ async function readSearchEngine(key: string, fallback: SearchEngineId): Promise<
   }
 }
 
+async function readNumber(key: string, fallback: number): Promise<number> {
+  try {
+    const raw = await window.blow.settings.get(key)
+    if (raw === null) return fallback
+    const n = Number(raw)
+    return Number.isFinite(n) ? n : fallback
+  } catch {
+    return fallback
+  }
+}
+
+async function readMaybeString(key: string): Promise<string | null> {
+  try {
+    const raw = await window.blow.settings.get(key)
+    return raw && raw.length > 0 ? raw : null
+  } catch {
+    return null
+  }
+}
+
 function writeBool(key: string, value: boolean): void {
   void window.blow.settings.set(key, value ? '1' : '0').catch(() => {
     /* best-effort, ne bloque pas l'UI */
@@ -93,6 +128,9 @@ export const useUIStore = create<UIState>((set, get) => ({
   toolbarVisible: true,
   lastShell: 'powershell',
   searchEngine: DEFAULT_SEARCH_ENGINE_ID,
+  canvasBgDataUrl: null,
+  canvasBgOpacity: DEFAULT_CANVAS_BG_OPACITY,
+  canvasBgSize: DEFAULT_CANVAS_BG_SIZE,
 
   toggleSidebar: () => {
     const next = !get().sidebarCollapsed
@@ -123,14 +161,42 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({ searchEngine })
     if (get().hydrated) writeString(KEY_SEARCH_ENGINE, searchEngine)
   },
+  setCanvasBgDataUrl: (canvasBgDataUrl) => {
+    set({ canvasBgDataUrl })
+    if (get().hydrated) writeString(KEY_CANVAS_BG_DATAURL, canvasBgDataUrl ?? '')
+  },
+  setCanvasBgOpacity: (canvasBgOpacity) => {
+    const clamped = Math.max(0, Math.min(1, canvasBgOpacity))
+    if (get().canvasBgOpacity === clamped) return
+    set({ canvasBgOpacity: clamped })
+    if (get().hydrated) writeString(KEY_CANVAS_BG_OPACITY, clamped.toString())
+  },
+  setCanvasBgSize: (canvasBgSize) => {
+    const clamped = Math.max(100, Math.min(4000, Math.round(canvasBgSize)))
+    if (get().canvasBgSize === clamped) return
+    set({ canvasBgSize: clamped })
+    if (get().hydrated) writeString(KEY_CANVAS_BG_SIZE, clamped.toString())
+  },
 
   hydrate: async () => {
-    const [sidebar, stylePanel, toolbar, lastShell, searchEngine] = await Promise.all([
+    const [
+      sidebar,
+      stylePanel,
+      toolbar,
+      lastShell,
+      searchEngine,
+      canvasBgDataUrl,
+      canvasBgOpacity,
+      canvasBgSize
+    ] = await Promise.all([
       readBool(KEY_SIDEBAR, false),
       readBool(KEY_STYLE_PANEL, true),
       readBool(KEY_TOOLBAR, true),
       readShell(KEY_LAST_SHELL, 'powershell'),
-      readSearchEngine(KEY_SEARCH_ENGINE, DEFAULT_SEARCH_ENGINE_ID)
+      readSearchEngine(KEY_SEARCH_ENGINE, DEFAULT_SEARCH_ENGINE_ID),
+      readMaybeString(KEY_CANVAS_BG_DATAURL),
+      readNumber(KEY_CANVAS_BG_OPACITY, DEFAULT_CANVAS_BG_OPACITY),
+      readNumber(KEY_CANVAS_BG_SIZE, DEFAULT_CANVAS_BG_SIZE)
     ])
     set({
       sidebarCollapsed: sidebar,
@@ -138,6 +204,9 @@ export const useUIStore = create<UIState>((set, get) => ({
       toolbarVisible: toolbar,
       lastShell,
       searchEngine,
+      canvasBgDataUrl,
+      canvasBgOpacity,
+      canvasBgSize,
       hydrated: true
     })
   }
