@@ -145,6 +145,18 @@ export default function CanvasContextMenu(): React.ReactElement | null {
     }
   }
 
+  function recenterCamera(): void {
+    if (!editor) return
+    // Décale la caméra de la moitié du viewport pour que l'origine
+    // (0, 0) du document soit pile au milieu de l'écran. Animation
+    // 320 ms pour donner un contexte de mouvement au lieu d'un teleport.
+    const vb = editor.getViewportScreenBounds()
+    editor.setCamera(
+      { x: vb.w / 2, y: vb.h / 2, z: 1 },
+      { animation: { duration: 320 } }
+    )
+  }
+
   function handleSpawnAI(service: AIService): () => void {
     return () => {
       setState(INITIAL_STATE)
@@ -178,6 +190,8 @@ export default function CanvasContextMenu(): React.ReactElement | null {
           <MenuItem icon="🌐" label="Navigateur" shortcut="Ctrl+B" onClick={handle(() => spawnBrowserShape(editor!, undefined, at))} />
           <MenuItem icon="📝" label="VSCode (dossier…)" onClick={handle(openFolderAndSpawn)} />
           <MenuItem icon="✨" label="IA" trailing="▸" onClick={() => setView('ai')} />
+          <div className="my-0.5 h-px" style={{ background: 'var(--border)' }} />
+          <MenuItem icon="⊕" label="Centrer le canvas" onClick={handle(recenterCamera)} />
         </>
       ) : (
         <>
