@@ -85,7 +85,10 @@ export async function loadExtensionsAtBoot(): Promise<void> {
       // `allowFileAccess: true` permet aux extensions d'accéder à des
       // file:// URLs (utile pour des extensions de dev). Sinon Chromium
       // refuse l'accès par défaut (comportement Chrome).
-      await ses.loadExtension(folder, { allowFileAccess: true })
+      // `session.extensions.*` (introduit en Electron 35+) remplace les
+      // anciennes méthodes `session.loadExtension` etc. — mêmes signatures,
+      // juste un namespace dédié pour regrouper les APIs extensions.
+      await ses.extensions.loadExtension(folder, { allowFileAccess: true })
     } catch (err) {
       console.warn(`[browser-extensions] Échec chargement ${entry}`, err)
     }
@@ -94,7 +97,7 @@ export async function loadExtensionsAtBoot(): Promise<void> {
 
 export function listExtensions(): ExtensionInfo[] {
   const ses = session.fromPartition('persist:browser')
-  const all = ses.getAllExtensions()
+  const all = ses.extensions.getAllExtensions()
   return all.map((ext) => ({
     id: ext.id,
     name: ext.name,
@@ -146,7 +149,7 @@ export async function loadExtensionFromFolder(
 
   try {
     const ses = session.fromPartition('persist:browser')
-    const ext = await ses.loadExtension(target, { allowFileAccess: true })
+    const ext = await ses.extensions.loadExtension(target, { allowFileAccess: true })
     return { ok: true, id: ext.id, name: ext.name, version: ext.version }
   } catch (err) {
     // Cleanup en cas d'échec — on ne laisse pas un dossier orphelin
@@ -166,10 +169,10 @@ export async function loadExtensionFromFolder(
 // Désinstalle : supprime de la session ET du disque.
 export function removeExtensionById(id: string): { ok: boolean; error?: string } {
   const ses = session.fromPartition('persist:browser')
-  const ext = ses.getAllExtensions().find((e) => e.id === id)
+  const ext = ses.extensions.getAllExtensions().find((e) => e.id === id)
   if (!ext) return { ok: false, error: 'Extension introuvable.' }
 
-  ses.removeExtension(id)
+  ses.extensions.removeExtension(id)
   try {
     rmSync(ext.path, { recursive: true, force: true })
   } catch (err) {
