@@ -123,7 +123,55 @@ function runMigrations(db: Database.Database): void {
 
   addAgentColumnsIfMissing(db)
   addMessageColumnsIfMissing(db)
+  addBrowserTablesIfMissing(db)
   seedSystemAgents(db)
+}
+
+// Tables pour le navigateur intégré (BrowserShape) : historique global +
+// favoris globaux. Partagés entre tous les projets et toutes les shapes —
+// même comportement que Chrome. Création conditionnelle (idempotent) pour
+// rester compatible avec les installs antérieures sans bumper la version
+// de schéma globale.
+function addBrowserTablesIfMissing(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS browser_history (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      url         TEXT NOT NULL,
+      title       TEXT NOT NULL DEFAULT '',
+      favicon     TEXT,
+      visited_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_browser_history_visited_at
+      ON browser_history(visited_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_browser_history_url
+      ON browser_history(url);
+
+    CREATE TABLE IF NOT EXISTS browser_bookmarks (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      url         TEXT NOT NULL UNIQUE,
+      title       TEXT NOT NULL DEFAULT '',
+      favicon     TEXT,
+      sort_order  INTEGER NOT NULL DEFAULT 0,
+      created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_browser_bookmarks_sort
+      ON browser_bookmarks(sort_order, created_at);
+
+    CREATE TABLE IF NOT EXISTS browser_downloads (
+      id            TEXT PRIMARY KEY,
+      url           TEXT NOT NULL,
+      filename      TEXT NOT NULL,
+      save_path     TEXT NOT NULL,
+      mime_type     TEXT,
+      total_bytes   INTEGER NOT NULL DEFAULT 0,
+      received_bytes INTEGER NOT NULL DEFAULT 0,
+      state         TEXT NOT NULL DEFAULT 'progressing',
+      started_at    INTEGER NOT NULL,
+      ended_at      INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_browser_downloads_started
+      ON browser_downloads(started_at DESC);
+  `)
 }
 
 // Migration ALTER TABLE conditionnelle pour la table `ai_messages`.

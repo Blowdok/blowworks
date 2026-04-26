@@ -9,6 +9,7 @@ import { useProjectStore } from './stores/project-store.js'
 import { useUIStore } from './stores/ui-store.js'
 import { useChatStore } from './stores/chat-store.js'
 import { useWikiStore } from './stores/wiki-store.js'
+import { useBrowserStore } from './stores/browser-store.js'
 
 // Layout BlowWorks :
 // ┌──────────────────────── Header (48px) ────────────────────────┐
@@ -22,6 +23,7 @@ export default function App() {
   const hydrateUI = useUIStore((s) => s.hydrate)
   const hydrateChat = useChatStore((s) => s.hydrate)
   const refreshWiki = useWikiStore((s) => s.refresh)
+  const hydrateBrowser = useBrowserStore((s) => s.hydrate)
 
   useEffect(() => {
     loadProjects()
@@ -34,7 +36,11 @@ export default function App() {
     // 📚 (chat) et la section Mémoire de la sidebar. Réagit aux mutations
     // via `useWikiStore.setStatus` côté chooseFolder/reconstruire.
     void refreshWiki()
-  }, [loadProjects, hydrateUI, hydrateChat, refreshWiki])
+    // Charge la liste des favoris du navigateur intégré + souscrit au
+    // push event `bookmarks.onChanged` pour rester synchro entre les
+    // BrowserShapes (étoile remplie/vide).
+    void hydrateBrowser()
+  }, [loadProjects, hydrateUI, hydrateChat, refreshWiki, hydrateBrowser])
 
   return (
     <div className="grid h-full w-full grid-rows-[48px_1fr] bg-[var(--bg-primary)]">

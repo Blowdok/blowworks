@@ -71,7 +71,37 @@ export const IPC_CHANNELS = {
     // Push main → renderer : demander l'ouverture d'une URL dans une
     // nouvelle BrowserShape. Émis depuis `setWindowOpenHandler` et
     // `will-navigate` (voir `src/main/window.ts`).
-    openUrlEvent: 'browser.openUrl'
+    openUrlEvent: 'browser.openUrl',
+    // Historique global (toutes shapes confondues, partagé entre projets).
+    // `record` retourne l'id de l'entrée créée pour permettre au renderer
+    // de patcher titre/favicon plus tard (les events Chromium arrivent
+    // décorrélés de did-navigate).
+    historyRecord: 'browser.history.record',
+    historyPatch: 'browser.history.patch',
+    historyList: 'browser.history.list',
+    historyDelete: 'browser.history.delete',
+    historyClear: 'browser.history.clear',
+    // Favoris globaux (toggle par URL). Push event pour que toutes les
+    // shapes mettent à jour leur étoile en temps réel quand un favori
+    // est ajouté/retiré depuis n'importe quelle autre shape.
+    bookmarkToggle: 'browser.bookmark.toggle',
+    bookmarkList: 'browser.bookmark.list',
+    bookmarkDelete: 'browser.bookmark.delete',
+    bookmarkUpdate: 'browser.bookmark.update',
+    bookmarkChangedEvent: 'browser.bookmark.changed',
+    // Téléchargements (Palier 2). Capturés côté main via
+    // session.on('will-download') sur la partition persist:browser.
+    downloadList: 'browser.download.list',
+    downloadCancel: 'browser.download.cancel',
+    downloadOpen: 'browser.download.open',
+    downloadShowInFolder: 'browser.download.showInFolder',
+    downloadClear: 'browser.download.clear',
+    downloadProgressEvent: 'browser.download.progress',
+    // Extensions Chrome (Palier 3) — chargées au boot depuis
+    // userData/extensions/ via session.loadExtension().
+    extensionList: 'browser.extension.list',
+    extensionLoad: 'browser.extension.load',
+    extensionRemove: 'browser.extension.remove'
   },
   agents: {
     // CRUD + exécution des agents (lot 3). Les agents system ('synthesizer',

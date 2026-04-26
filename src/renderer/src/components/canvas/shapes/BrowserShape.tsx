@@ -13,6 +13,7 @@ import {
 } from 'tldraw'
 import { useProjectStore } from '../../../stores/project-store.js'
 import { useUIStore } from '../../../stores/ui-store.js'
+import { useBrowserStore } from '../../../stores/browser-store.js'
 import {
   useShapeBorderState,
   getShapeBorderStyle
@@ -617,15 +618,61 @@ function BrowserHeader({
     patchTab(editor, shape.id, activeTab.id, { url: resolved })
   }
 
-  const dispatch = (action: 'back' | 'forward' | 'reload'): void => {
+  // Dispatch d'action vers le webview de l'onglet actif. Pour `navigate`,
+  // l'URL cible est passée dans le payload (utilisé par le bouton Accueil
+  // et les clics sur favoris/historique → ouverture dans l'onglet courant).
+  const dispatch = (
+    action: 'back' | 'forward' | 'reload' | 'navigate',
+    extra?: { url?: string }
+  ): void => {
     const slot = document.querySelector<HTMLElement>(
       `[data-shape-portal="${shape.id}"]`
     )
     slot?.dispatchEvent(
       new CustomEvent('blowworks-browser-action', {
-        detail: { action, tabId: activeTab.id }
+        detail: { action, tabId: activeTab.id, ...extra }
       })
     )
+  }
+
+  const goHome = (): void => {
+    const url = searchEngine.homepage
+    // Mise à jour de l'URL côté state (URL bar) ET commande loadURL
+    // côté webview. `patchTab` à elle seule déclenche aussi loadURL via
+    // l'effet de re-render du BrowserTabWebview.
+    patchTab(editor, shape.id, activeTab.id, { url })
+  }
+
+  // ── Étoile (favori sur l'URL courante) ─────────────────────────
+  const bookmarkedUrls = useBrowserStore((s) => s.bookmarkedUrls)
+  const toggleBookmarkAction = useBrowserStore((s) => s.toggleBookmark)
+  const isBookmarked = bookmarkedUrls.has(activeTab.url)
+
+  const onToggleBookmark = (): void => {
+    void toggleBookmarkAction({
+      url: activeTab.url,
+      title: activeTab.title || hostnameOf(activeTab.url),
+      favicon: activeTab.favicon
+    })
+  }
+
+  // ── Dropdowns Historique / Favoris / Téléchargements ──────────
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [bookmarksOpen, setBookmarksOpen] = useState(false)
+  const [downloadsOpen, setDownloadsOpen] = useState(false)
+  const activeDownloadsCount = useBrowserStore((s) => s.activeDownloadsCount)
+
+  const openInActiveTab = (url: string): void => {
+    patchTab(editor, shape.id, activeTab.id, { url })
+    setHistoryOpen(false)
+    setBookmarksOpen(false)
+    setDownloadsOpen(false)
+  }
+
+  const closeAllDropdowns = (): void => {
+    setHistoryOpen(false)
+    setBookmarksOpen(false)
+    setDownloadsOpen(false)
   }
 
   return (
@@ -650,9 +697,12 @@ function BrowserHeader({
         <HeaderIconButton title="Recharger" onClick={() => dispatch('reload')} stopInteractive={stopInteractive}>
           <ReloadIcon />
         </HeaderIconButton>
+        <HeaderIconButton title={`Accueil (${searchEngine.label})`} onClick={goHome} stopInteractive={stopInteractive}>
+          <HomeIcon />
+        </HeaderIconButton>
       </div>
 
-      <div className="flex min-w-0 justify-center">
+      <div className="flex min-w-0 items-center justify-center gap-1">
         <input
           type="text"
           value={draft}
@@ -675,6 +725,72 @@ function BrowserHeader({
           }}
           {...stopInteractive}
         />
+        <HeaderIconButton
+          title={isBookmarked ? 'Retirer des favoris' : 'Ajouter aux favoris'}
+          onClick={onToggleBookmark}
+          stopInteractive={stopInteractive}
+        >
+          <StarIcon filled={isBookmarked} />
+        </HeaderIconButton>
+        <HeaderIconButton
+          title="Favoris"
+          onClick={() => {
+            const next = !bookmarksOpen
+            closeAllDropdowns()
+            setBookmarksOpen(next)
+          }}
+          stopInteractive={stopInteractive}
+        >
+          <BookmarksIcon />
+        </HeaderIconButton>
+        <HeaderIconButton
+          title="Historique"
+          onClick={() => {
+            const next = !historyOpen
+            closeAllDropdowns()
+            setHistoryOpen(next)
+          }}
+          stopInteractive={stopInteractive}
+        >
+          <HistoryIcon />
+        </HeaderIconButton>
+        <div style={{ position: 'relative', display: 'inline-flex' }}>
+          <HeaderIconButton
+            title="Téléchargements"
+            onClick={() => {
+              const next = !downloadsOpen
+              closeAllDropdowns()
+              setDownloadsOpen(next)
+            }}
+            stopInteractive={stopInteractive}
+          >
+            <DownloadIcon />
+          </HeaderIconButton>
+          {activeDownloadsCount > 0 && (
+            <span
+              aria-hidden
+              style={{
+                position: 'absolute',
+                top: 0,
+                right: 0,
+                minWidth: 14,
+                height: 14,
+                padding: '0 3px',
+                borderRadius: 7,
+                background: '#22c55e',
+                color: '#000',
+                fontSize: 9,
+                fontWeight: 700,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                pointerEvents: 'none'
+              }}
+            >
+              {activeDownloadsCount}
+            </span>
+          )}
+        </div>
       </div>
 
       <button
@@ -690,6 +806,29 @@ function BrowserHeader({
       >
         {assignedProject ? `● ${assignedProject.name}` : '○ aucun projet'}
       </button>
+
+      {historyOpen && (
+        <HistoryPanel
+          onOpen={openInActiveTab}
+          onClose={() => setHistoryOpen(false)}
+          stopInteractive={stopInteractive}
+        />
+      )}
+
+      {bookmarksOpen && (
+        <BookmarksPanel
+          onOpen={openInActiveTab}
+          onClose={() => setBookmarksOpen(false)}
+          stopInteractive={stopInteractive}
+        />
+      )}
+
+      {downloadsOpen && (
+        <DownloadsPanel
+          onClose={() => setDownloadsOpen(false)}
+          stopInteractive={stopInteractive}
+        />
+      )}
 
       {projectDropdownOpen && (
         <div
@@ -832,6 +971,13 @@ function BrowserTabWebview({
   const webviewRef = useRef<HTMLElement | null>(null)
   const lastCommittedUrlRef = useRef<string>(initialUrl)
   const initialUrlRef = useRef<string>(initialUrl)
+  // Id de l'entrée d'historique de la NAVIGATION en cours pour cet onglet.
+  // Mis à jour à chaque did-navigate (nouvelle entrée), puis patché par
+  // les events page-title-updated / page-favicon-updated qui arrivent
+  // de manière asynchrone après did-navigate.
+  const currentHistoryIdRef = useRef<number | null>(null)
+  const recordVisit = useBrowserStore((s) => s.recordVisit)
+  const patchVisit = useBrowserStore((s) => s.patchVisit)
 
   // Création / destruction du webview au (dé)montage UNIQUEMENT.
   useEffect(() => {
@@ -893,15 +1039,28 @@ function BrowserTabWebview({
     }
   }, [url])
 
-  // did-navigate / did-navigate-in-page → met à jour l'URL du tab.
+  // did-navigate / did-navigate-in-page → met à jour l'URL du tab +
+  // enregistre une nouvelle entrée d'historique. L'id retourné par
+  // recordVisit est conservé en ref pour permettre aux events
+  // page-title-updated / page-favicon-updated (qui arrivent ensuite)
+  // de patcher la MÊME entrée d'historique.
   const commitNavigatedUrl = useCallback(
     (u: string): void => {
       if (!u) return
       if (u === lastCommittedUrlRef.current) return
       lastCommittedUrlRef.current = u
       patchTab(editor, shapeId, tabId, { url: u })
+      // about:blank, chrome-error://, et les schémas non-web n'ont pas
+      // d'intérêt dans l'historique utilisateur — on filtre ici.
+      if (/^https?:\/\//i.test(u)) {
+        void recordVisit({ url: u }).then((id) => {
+          currentHistoryIdRef.current = id
+        })
+      } else {
+        currentHistoryIdRef.current = null
+      }
     },
-    [editor, shapeId, tabId]
+    [editor, shapeId, tabId, recordVisit]
   )
 
   useEffect(() => {
@@ -915,6 +1074,10 @@ function BrowserTabWebview({
       const ev = e as Event & { title?: string }
       if (typeof ev.title === 'string') {
         patchTab(editor, shapeId, tabId, { title: ev.title })
+        const histId = currentHistoryIdRef.current
+        if (histId !== null) {
+          void patchVisit(histId, { title: ev.title })
+        }
       }
     }
     const onFavicon = (e: Event): void => {
@@ -922,6 +1085,10 @@ function BrowserTabWebview({
       const first = ev.favicons?.[0]
       if (typeof first === 'string') {
         patchTab(editor, shapeId, tabId, { favicon: first })
+        const histId = currentHistoryIdRef.current
+        if (histId !== null) {
+          void patchVisit(histId, { favicon: first })
+        }
       }
     }
     wv.addEventListener('did-navigate', onNavigate)
@@ -934,7 +1101,7 @@ function BrowserTabWebview({
       wv.removeEventListener('page-title-updated', onTitle)
       wv.removeEventListener('page-favicon-updated', onFavicon)
     }
-  }, [commitNavigatedUrl, editor, shapeId, tabId])
+  }, [commitNavigatedUrl, editor, shapeId, tabId, patchVisit])
 
   // Masque la scrollbar interne pour cohérence UX (idem terminal/VSCode).
   useEffect(() => {
@@ -967,7 +1134,11 @@ function BrowserTabWebview({
     if (!slot) return
     const onAction = (e: Event): void => {
       const detail = (e as CustomEvent).detail as
-        | { action: 'back' | 'forward' | 'reload'; tabId: string }
+        | {
+            action: 'back' | 'forward' | 'reload' | 'navigate'
+            tabId: string
+            url?: string
+          }
         | undefined
       if (!detail || detail.tabId !== tabId) return
       const wv = webviewRef.current as
@@ -977,12 +1148,18 @@ function BrowserTabWebview({
             reload?: () => void
             canGoBack?: () => boolean
             canGoForward?: () => boolean
+            loadURL?: (u: string) => Promise<void>
           })
         | null
       if (!wv) return
       if (detail.action === 'back' && wv.canGoBack?.()) wv.goBack?.()
       else if (detail.action === 'forward' && wv.canGoForward?.()) wv.goForward?.()
       else if (detail.action === 'reload') wv.reload?.()
+      else if (detail.action === 'navigate' && typeof detail.url === 'string') {
+        wv.loadURL?.(detail.url).catch((err) => {
+          console.warn('[browser] loadURL (navigate) échoué', err)
+        })
+      }
     }
     slot.addEventListener('blowworks-browser-action', onAction)
     return () => slot.removeEventListener('blowworks-browser-action', onAction)
@@ -1056,4 +1233,502 @@ function GlobeIcon() {
       <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
     </svg>
   )
+}
+
+function HomeIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 12 12 3l9 9" />
+      <path d="M5 10v10h14V10" />
+    </svg>
+  )
+}
+
+function StarIcon({ filled }: { filled: boolean }) {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill={filled ? 'currentColor' : 'none'}
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      style={{ color: filled ? '#facc15' : 'currentColor' }}
+    >
+      <polygon points="12 2 15 9 22 9.5 16.5 14.5 18 22 12 18 6 22 7.5 14.5 2 9.5 9 9" />
+    </svg>
+  )
+}
+
+function BookmarksIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
+    </svg>
+  )
+}
+
+function HistoryIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+      <polyline points="3 3 3 8 8 8" />
+      <polyline points="12 7 12 12 16 14" />
+    </svg>
+  )
+}
+
+function TrashIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    </svg>
+  )
+}
+
+function DownloadIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+      <polyline points="7 10 12 15 17 10" />
+      <line x1="12" y1="15" x2="12" y2="3" />
+    </svg>
+  )
+}
+
+function FolderIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+    </svg>
+  )
+}
+
+// ──────────────────────────────────────────────────────────── Panneau Historique
+
+// Dropdown ancré sous le bouton Historique de la barre URL. Charge la
+// liste à l'ouverture, recherche LIKE côté SQLite. Ouvre un clic dans
+// l'onglet courant (pas de nouvel onglet — convention Chrome : Ctrl+clic
+// pour nouvel onglet, qu'on n'implémente pas ici par simplicité).
+function HistoryPanel({
+  onOpen,
+  onClose,
+  stopInteractive
+}: {
+  onOpen: (url: string) => void
+  onClose: () => void
+  stopInteractive: StopInteractiveProps
+}) {
+  const [entries, setEntries] = useState<
+    Array<{
+      id: number
+      url: string
+      title: string
+      favicon: string | null
+      visitedAt: number
+    }>
+  >([])
+  const [search, setSearch] = useState('')
+  const listHistory = useBrowserStore((s) => s.listHistory)
+  const deleteEntry = useBrowserStore((s) => s.deleteHistoryEntry)
+  const clear = useBrowserStore((s) => s.clearHistory)
+
+  // Charge la liste à chaque changement de recherche. Pattern annulable :
+  // un fetch lent ne peut pas écraser un fetch plus récent (StrictMode-safe).
+  useEffect(() => {
+    let cancelled = false
+    listHistory({ limit: 200, search }).then((list) => {
+      if (!cancelled) setEntries(list)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [listHistory, search])
+
+  // Helper pour rafraîchir manuellement après une mutation (delete/clear).
+  const refreshNow = useCallback(async () => {
+    const list = await listHistory({ limit: 200, search })
+    setEntries(list)
+  }, [listHistory, search])
+
+  return (
+    <div
+      className="absolute right-2 top-9 z-20 max-h-[420px] w-[360px] overflow-hidden rounded border text-[11px] shadow-lg"
+      style={{
+        background: 'var(--bg-secondary, #101010)',
+        borderColor: 'var(--border, #2a2a2a)',
+        pointerEvents: 'auto',
+        display: 'flex',
+        flexDirection: 'column'
+      }}
+      {...stopInteractive}
+    >
+      <div
+        className="flex items-center gap-2 border-b px-2 py-1.5"
+        style={{ borderColor: 'var(--border, #2a2a2a)' }}
+      >
+        <span className="text-[var(--fg-muted)]">Historique</span>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Rechercher…"
+          className="flex-1 rounded px-2 py-1 outline-none"
+          style={{
+            background: 'var(--bg-tertiary, #1a1a1a)',
+            border: '1px solid var(--border, #2a2a2a)',
+            color: 'var(--fg-primary, #e5e5e5)'
+          }}
+          {...stopInteractive}
+        />
+        <button
+          type="button"
+          onClick={async () => {
+            await clear()
+            setSearch('')
+            void refreshNow()
+          }}
+          className="rounded px-1.5 py-1 text-[10px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+          title="Tout effacer"
+          {...stopInteractive}
+        >
+          Effacer
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex h-5 w-5 items-center justify-center rounded text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+          title="Fermer"
+          {...stopInteractive}
+        >
+          <CloseIcon />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {entries.length === 0 && (
+          <div className="px-3 py-4 text-center text-[var(--fg-muted)]">
+            {search ? 'Aucun résultat' : 'Aucune visite'}
+          </div>
+        )}
+        {entries.map((entry) => (
+          <div
+            key={entry.id}
+            className="group flex items-center gap-2 border-b px-2 py-1.5 hover:bg-[var(--bg-tertiary)]"
+            style={{ borderColor: 'var(--border, #2a2a2a)' }}
+          >
+            <button
+              type="button"
+              onClick={() => onOpen(entry.url)}
+              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+              {...stopInteractive}
+            >
+              <TabFavicon src={entry.favicon} />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[var(--fg-primary)]">
+                  {entry.title || hostnameOf(entry.url) || entry.url}
+                </div>
+                <div className="truncate text-[10px] text-[var(--fg-muted)]">
+                  {hostnameOf(entry.url)} · {formatRelativeTime(entry.visitedAt)}
+                </div>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                await deleteEntry(entry.id)
+                void refreshNow()
+              }}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--fg-muted)] opacity-0 hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)] group-hover:opacity-100"
+              title="Supprimer"
+              {...stopInteractive}
+            >
+              <TrashIcon />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────── Panneau Favoris
+
+function BookmarksPanel({
+  onOpen,
+  onClose,
+  stopInteractive
+}: {
+  onOpen: (url: string) => void
+  onClose: () => void
+  stopInteractive: StopInteractiveProps
+}) {
+  const bookmarks = useBrowserStore((s) => s.bookmarks)
+  const removeBookmark = useBrowserStore((s) => s.removeBookmark)
+
+  return (
+    <div
+      className="absolute right-2 top-9 z-20 max-h-[420px] w-[320px] overflow-hidden rounded border text-[11px] shadow-lg"
+      style={{
+        background: 'var(--bg-secondary, #101010)',
+        borderColor: 'var(--border, #2a2a2a)',
+        pointerEvents: 'auto',
+        display: 'flex',
+        flexDirection: 'column'
+      }}
+      {...stopInteractive}
+    >
+      <div
+        className="flex items-center gap-2 border-b px-2 py-1.5"
+        style={{ borderColor: 'var(--border, #2a2a2a)' }}
+      >
+        <span className="flex-1 text-[var(--fg-muted)]">Favoris</span>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex h-5 w-5 items-center justify-center rounded text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+          title="Fermer"
+          {...stopInteractive}
+        >
+          <CloseIcon />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {bookmarks.length === 0 && (
+          <div className="px-3 py-4 text-center text-[var(--fg-muted)]">
+            Aucun favori. Clique sur ⭐ pour en ajouter.
+          </div>
+        )}
+        {bookmarks.map((bm) => (
+          <div
+            key={bm.id}
+            className="group flex items-center gap-2 border-b px-2 py-1.5 hover:bg-[var(--bg-tertiary)]"
+            style={{ borderColor: 'var(--border, #2a2a2a)' }}
+          >
+            <button
+              type="button"
+              onClick={() => onOpen(bm.url)}
+              className="flex min-w-0 flex-1 items-center gap-2 text-left"
+              {...stopInteractive}
+            >
+              <TabFavicon src={bm.favicon} />
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[var(--fg-primary)]">
+                  {bm.title || hostnameOf(bm.url) || bm.url}
+                </div>
+                <div className="truncate text-[10px] text-[var(--fg-muted)]">
+                  {hostnameOf(bm.url)}
+                </div>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => void removeBookmark(bm.id)}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--fg-muted)] opacity-0 hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)] group-hover:opacity-100"
+              title="Retirer"
+              {...stopInteractive}
+            >
+              <TrashIcon />
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ──────────────────────────────────────────────────────────── Panneau Téléchargements
+
+function DownloadsPanel({
+  onClose,
+  stopInteractive
+}: {
+  onClose: () => void
+  stopInteractive: StopInteractiveProps
+}) {
+  const downloads = useBrowserStore((s) => s.downloads)
+  const cancelDl = useBrowserStore((s) => s.cancelDownload)
+  const openDl = useBrowserStore((s) => s.openDownload)
+  const showDl = useBrowserStore((s) => s.showDownloadInFolder)
+  const clearDl = useBrowserStore((s) => s.clearDownloads)
+  const refresh = useBrowserStore((s) => s.refreshDownloads)
+
+  // Refresh à l'ouverture pour s'aligner sur la DB (le store accumule via
+  // onProgress mais peut manquer un download spawné dans une autre fenêtre).
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  return (
+    <div
+      className="absolute right-2 top-9 z-20 max-h-[420px] w-[380px] overflow-hidden rounded border text-[11px] shadow-lg"
+      style={{
+        background: 'var(--bg-secondary, #101010)',
+        borderColor: 'var(--border, #2a2a2a)',
+        pointerEvents: 'auto',
+        display: 'flex',
+        flexDirection: 'column'
+      }}
+      {...stopInteractive}
+    >
+      <div
+        className="flex items-center gap-2 border-b px-2 py-1.5"
+        style={{ borderColor: 'var(--border, #2a2a2a)' }}
+      >
+        <span className="flex-1 text-[var(--fg-muted)]">Téléchargements</span>
+        <button
+          type="button"
+          onClick={() => void clearDl()}
+          className="rounded px-1.5 py-1 text-[10px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+          title="Effacer les terminés"
+          {...stopInteractive}
+        >
+          Effacer
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex h-5 w-5 items-center justify-center rounded text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+          title="Fermer"
+          {...stopInteractive}
+        >
+          <CloseIcon />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {downloads.length === 0 && (
+          <div className="px-3 py-4 text-center text-[var(--fg-muted)]">
+            Aucun téléchargement
+          </div>
+        )}
+        {downloads.map((dl) => (
+          <DownloadRow
+            key={dl.id}
+            dl={dl}
+            onCancel={() => void cancelDl(dl.id)}
+            onOpen={() => void openDl(dl.id)}
+            onShow={() => void showDl(dl.id)}
+            stopInteractive={stopInteractive}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function DownloadRow({
+  dl,
+  onCancel,
+  onOpen,
+  onShow,
+  stopInteractive
+}: {
+  dl: import('../../../stores/browser-store.js').DownloadEntry
+  onCancel: () => void
+  onOpen: () => void
+  onShow: () => void
+  stopInteractive: StopInteractiveProps
+}) {
+  const pct = dl.totalBytes > 0 ? Math.min(100, (dl.receivedBytes / dl.totalBytes) * 100) : 0
+  const stateLabel =
+    dl.state === 'progressing'
+      ? `${formatBytes(dl.receivedBytes)} / ${dl.totalBytes > 0 ? formatBytes(dl.totalBytes) : '?'}`
+      : dl.state === 'completed'
+        ? formatBytes(dl.totalBytes)
+        : dl.state === 'cancelled'
+          ? 'Annulé'
+          : 'Interrompu'
+
+  return (
+    <div
+      className="border-b px-2 py-1.5"
+      style={{ borderColor: 'var(--border, #2a2a2a)' }}
+    >
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[var(--fg-primary)]">{dl.filename}</div>
+          <div className="truncate text-[10px] text-[var(--fg-muted)]">
+            {hostnameOf(dl.url)} · {stateLabel}
+          </div>
+        </div>
+        {dl.state === 'progressing' && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded px-1.5 py-0.5 text-[10px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+            title="Annuler"
+            {...stopInteractive}
+          >
+            Annuler
+          </button>
+        )}
+        {dl.state === 'completed' && (
+          <>
+            <button
+              type="button"
+              onClick={onOpen}
+              className="rounded px-1.5 py-0.5 text-[10px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+              title="Ouvrir le fichier"
+              {...stopInteractive}
+            >
+              Ouvrir
+            </button>
+            <button
+              type="button"
+              onClick={onShow}
+              className="flex h-5 w-5 items-center justify-center rounded text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+              title="Afficher dans le dossier"
+              {...stopInteractive}
+            >
+              <FolderIcon />
+            </button>
+          </>
+        )}
+      </div>
+      {dl.state === 'progressing' && (
+        <div
+          className="mt-1 h-1 w-full overflow-hidden rounded"
+          style={{ background: 'var(--bg-tertiary, #1a1a1a)' }}
+        >
+          <div
+            style={{
+              width: `${pct}%`,
+              height: '100%',
+              background: '#22c55e',
+              transition: 'width 0.15s ease-out'
+            }}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} o`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} Ko`
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} Mo`
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} Go`
+}
+
+// Format de date relatif court adapté à un dropdown : "à l'instant",
+// "il y a 5 min", "il y a 2 h", "hier", "il y a N j", puis date complète.
+function formatRelativeTime(ts: number): string {
+  const diff = Date.now() - ts
+  if (diff < 60_000) return "à l'instant"
+  const min = Math.floor(diff / 60_000)
+  if (min < 60) return `il y a ${min} min`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `il y a ${hr} h`
+  const day = Math.floor(hr / 24)
+  if (day === 1) return 'hier'
+  if (day < 7) return `il y a ${day} j`
+  try {
+    return new Date(ts).toLocaleDateString('fr-FR')
+  } catch {
+    return ''
+  }
 }

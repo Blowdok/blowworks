@@ -175,6 +175,129 @@ const api = {
       ): void => cb(payload)
       ipcRenderer.on(IPC_CHANNELS.browser.openUrlEvent, listener)
       return () => ipcRenderer.off(IPC_CHANNELS.browser.openUrlEvent, listener)
+    },
+    // Historique global (toutes shapes/projets confondus). `record`
+    // retourne l'id pour que l'appelant puisse patcher titre/favicon
+    // une fois reçus de Chromium.
+    history: {
+      record: (input: {
+        url: string
+        title?: string | null
+        favicon?: string | null
+      }): Promise<number> =>
+        ipcRenderer.invoke(IPC_CHANNELS.browser.historyRecord, input),
+      patch: (input: {
+        id: number
+        title?: string
+        favicon?: string | null
+      }): Promise<void> =>
+        ipcRenderer.invoke(IPC_CHANNELS.browser.historyPatch, input),
+      list: (
+        opts?: { limit?: number; offset?: number; search?: string }
+      ): Promise<
+        Array<{
+          id: number
+          url: string
+          title: string
+          favicon: string | null
+          visitedAt: number
+        }>
+      > => ipcRenderer.invoke(IPC_CHANNELS.browser.historyList, opts ?? {}),
+      delete: (id: number): Promise<void> =>
+        ipcRenderer.invoke(IPC_CHANNELS.browser.historyDelete, { id }),
+      clear: (): Promise<void> =>
+        ipcRenderer.invoke(IPC_CHANNELS.browser.historyClear)
+    },
+    // Favoris globaux. Toggle = ajoute si absent, retire si présent.
+    // `onChanged` est broadcasté à toutes les BrowserShapes pour qu'elles
+    // rafraîchissent l'icône étoile en temps réel.
+    bookmarks: {
+      toggle: (input: {
+        url: string
+        title?: string | null
+        favicon?: string | null
+      }): Promise<{ bookmarked: boolean }> =>
+        ipcRenderer.invoke(IPC_CHANNELS.browser.bookmarkToggle, input),
+      list: (): Promise<
+        Array<{
+          id: number
+          url: string
+          title: string
+          favicon: string | null
+          sortOrder: number
+          createdAt: number
+        }>
+      > => ipcRenderer.invoke(IPC_CHANNELS.browser.bookmarkList),
+      delete: (id: number): Promise<void> =>
+        ipcRenderer.invoke(IPC_CHANNELS.browser.bookmarkDelete, { id }),
+      update: (input: { id: number; title?: string; url?: string }): Promise<void> =>
+        ipcRenderer.invoke(IPC_CHANNELS.browser.bookmarkUpdate, input),
+      onChanged: (cb: () => void) => {
+        const listener = (): void => cb()
+        ipcRenderer.on(IPC_CHANNELS.browser.bookmarkChangedEvent, listener)
+        return () =>
+          ipcRenderer.off(IPC_CHANNELS.browser.bookmarkChangedEvent, listener)
+      }
+    },
+    // Téléchargements gérés côté main sur la partition `persist:browser`.
+    // Le renderer reçoit les progress events via `onProgress` pour mettre
+    // à jour la UI dropdown en temps réel (barre de progression).
+    downloads: {
+      list: (): Promise<
+        Array<{
+          id: string
+          url: string
+          filename: string
+          savePath: string
+          mimeType: string | null
+          totalBytes: number
+          receivedBytes: number
+          state: 'progressing' | 'completed' | 'cancelled' | 'interrupted'
+          startedAt: number
+          endedAt: number | null
+        }>
+      > => ipcRenderer.invoke(IPC_CHANNELS.browser.downloadList),
+      cancel: (id: string): Promise<{ cancelled: boolean }> =>
+        ipcRenderer.invoke(IPC_CHANNELS.browser.downloadCancel, { id }),
+      open: (id: string): Promise<{ ok: boolean; reason?: string }> =>
+        ipcRenderer.invoke(IPC_CHANNELS.browser.downloadOpen, { id }),
+      showInFolder: (id: string): Promise<{ ok: boolean; reason?: string }> =>
+        ipcRenderer.invoke(IPC_CHANNELS.browser.downloadShowInFolder, { id }),
+      clear: (): Promise<void> =>
+        ipcRenderer.invoke(IPC_CHANNELS.browser.downloadClear),
+      onProgress: (
+        cb: (payload: {
+          id: string
+          url: string
+          filename: string
+          savePath: string
+          mimeType: string | null
+          totalBytes: number
+          receivedBytes: number
+          state: 'progressing' | 'completed' | 'cancelled' | 'interrupted'
+          startedAt: number
+          endedAt: number | null
+        }) => void
+      ) => {
+        const listener = (_: unknown, payload: unknown): void =>
+          cb(payload as Parameters<typeof cb>[0])
+        ipcRenderer.on(IPC_CHANNELS.browser.downloadProgressEvent, listener)
+        return () =>
+          ipcRenderer.off(IPC_CHANNELS.browser.downloadProgressEvent, listener)
+      }
+    },
+    // Extensions Chrome (Palier 3). API exposée mais l'UI est en
+    // Settings > Navigateur, pas dans la BrowserShape.
+    extensions: {
+      list: (): Promise<
+        Array<{ id: string; name: string; version: string; path: string; manifestUrl: string | null }>
+      > => ipcRenderer.invoke(IPC_CHANNELS.browser.extensionList),
+      load: (folderPath: string): Promise<
+        { ok: true; id: string; name: string; version: string }
+        | { ok: false; error: string }
+      > => ipcRenderer.invoke(IPC_CHANNELS.browser.extensionLoad, { folderPath }),
+      remove: (id: string): Promise<{ ok: boolean; error?: string }> =>
+        ipcRenderer.invoke(IPC_CHANNELS.browser.extensionRemove, { id })
     }
   },
   agents: {

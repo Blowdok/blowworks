@@ -11,6 +11,9 @@ import { registerGitHubHandlers } from './ipc/github.js'
 import { registerAIHandlers } from './ipc/ai.js'
 import { registerWikiHandlers } from './ipc/wiki.js'
 import { registerAgentsHandlers } from './ipc/agents.js'
+import { registerBrowserHandlers } from './ipc/browser.js'
+import { attachDownloadHandlers } from './services/browser-downloads.js'
+import { loadExtensionsAtBoot } from './services/browser-extensions.js'
 import { initDatabase } from './services/db.js'
 import { ptyManager } from './services/pty-manager.js'
 import { vscodeServer } from './services/vscode-server.js'
@@ -68,6 +71,22 @@ app.whenReady().then(async () => {
   registerAIHandlers()
   registerWikiHandlers()
   registerAgentsHandlers()
+  registerBrowserHandlers()
+
+  // Capture les téléchargements de la partition `persist:browser` (utilisée
+  // par tous les <webview> des BrowserShape). DOIT être attaché APRÈS
+  // app.whenReady() et AVANT que les webviews n'aient déclenché leur
+  // premier will-download — pratiquement, attacher juste après les
+  // handlers IPC suffit largement (les shapes prennent quelques secondes
+  // à apparaître au boot).
+  attachDownloadHandlers()
+
+  // Charge les extensions Chrome présentes dans userData/extensions/
+  // dans la session `persist:browser`. Non bloquant — si une extension
+  // échoue, on log et on continue (les autres se chargent quand même).
+  loadExtensionsAtBoot().catch((err) => {
+    console.warn('[main] Chargement extensions boot a renvoyé une erreur', err)
+  })
 
   // Démarrage du sidecar openvscode-server en tâche de fond (non bloquant).
   // Démarrage paresseux déclenché à la première demande VSCode.
