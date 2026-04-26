@@ -11,6 +11,17 @@ import { usePortalHoverStore } from '../../stores/portal-hover-store.js'
 // tous les filtres (portalShapes, isShapeAlreadyTop, sélection, etc.).
 const PORTAL_SHAPE_TYPES = new Set<string>(['vscode', 'terminal', 'chat', 'browser'])
 
+// Vérifie si une shape est imbriquée dans un groupe tldraw (parent.id qui
+// commence par `shape:` au lieu de `page:`). Lecture directe du store editor
+// pour éviter les closure stale dans les listeners globaux long-vie.
+function isShapeIdInsideGroup(editor: Editor, shapeId: string): boolean {
+  const shape = editor.getShape(shapeId as never) as
+    | (TLShape & { parentId: string })
+    | undefined
+  if (!shape) return false
+  return shape.parentId.startsWith('shape:')
+}
+
 // Manager global qui maintient en DOM un portail par shape "lourde" (VSCode,
 // Terminal). Les portails survivent aux switch de pages tldraw car ce
 // composant vit au niveau `<Tldraw>` et itère sur le store entier (toutes
@@ -29,7 +40,8 @@ const PORTAL_SHAPE_TYPES = new Set<string>(['vscode', 'terminal', 'chat', 'brows
 export default function ShapePortalManager(): React.ReactElement {
   const editor = useEditor()
 
-  // Liste des shapes portail à rendre + rang z-order de chaque shape.
+  // Liste des shapes portail à rendre + rang z-order de chaque shape +
+  // map shapeId → pageId résolue (qui REMONTE les groupes parents).
   //
   // CRITIQUE : l'ordre de sortie est STABLE (trié par `shape.id`) car tout
   // réordonnancement du DOM parent fait que Chromium RECHARGE les iframes
@@ -38,37 +50,100 @@ export default function ShapePortalManager(): React.ReactElement {
   // varie. Le stacking visuel et le hit-testing (`elementFromPoint`)
   // respectent le z-index, donc la sémantique tldraw est préservée sans
   // jamais remount une iframe VSCode ou une instance xterm.
-  const { portalShapes, zIndexById, topIdByPage } = useValue(
+  //
+  // GROUPAGE : tldraw permet à l'utilisateur de regrouper plusieurs shapes
+  // via `Modifier > Grouper` — le `parentId` des shapes devient alors l'id
+  // du group (`shape:groupXXX`) au lieu de la page (`page:XXX`). Sans
+  // résolution, le test `parentId === currentPageId` retourne false pour
+  // toutes les shapes groupées et le slot passe en `visibility: hidden`
+  // (iframe disparaît, fond canvas visible à travers le placeholder
+  // transparent rendu par tldraw). On remonte donc la chaîne parents
+  // jusqu'à atteindre un id qui commence par `page:` pour calculer la
+  // VRAIE page d'appartenance — robuste aussi aux groupes imbriqués.
+  const { portalShapes, zIndexById, topIdByPage, pageIdByShapeId, groupedShapeIds } = useValue(
     'portal-shapes',
     () => {
-      const shapes: TLShape[] = []
+      const allShapes = new Map<string, TLShape & { parentId: string }>()
       for (const record of editor.store.allRecords()) {
         if (record.typeName !== 'shape') continue
-        const shape = record as TLShape
-        if (PORTAL_SHAPE_TYPES.has(shape.type)) {
-          shapes.push(shape)
+        const s = record as TLShape & { parentId: string }
+        allShapes.set(s.id, s)
+      }
+
+      // Cache mémoïsé pour ne remonter chaque chaîne qu'une seule fois.
+      // Un groupe peut contenir plusieurs portail shapes — on évite N
+      // remontées identiques.
+      const resolved = new Map<string, string>()
+      const resolvePageId = (id: string): string => {
+        const cached = resolved.get(id)
+        if (cached) return cached
+        let current: string = id
+        // Garde-fou anti-cycle : 32 niveaux de groupage imbriqué = bien
+        // au-delà de tout cas réaliste. Cycle théorique impossible côté
+        // tldraw mais belt-and-suspenders pour ne jamais boucler.
+        for (let i = 0; i < 32; i++) {
+          if (current.startsWith('page:')) {
+            resolved.set(id, current)
+            return current
+          }
+          const parent = allShapes.get(current)
+          if (!parent) break
+          current = parent.parentId
+        }
+        // Chaîne orpheline (ne devrait pas arriver) : retombe sur le
+        // parentId direct — fallback safe qui préserve l'ancien
+        // comportement pour les cas pathologiques.
+        const fallback =
+          (allShapes.get(id)?.parentId as string | undefined) ?? ''
+        resolved.set(id, fallback)
+        return fallback
+      }
+
+      const shapes: TLShape[] = []
+      const pageIdByShapeId = new Map<string, string>()
+      // Set des shapes portail qui ont un GROUPE comme ancêtre (pas
+      // directement la page). Pour ces shapes on désactive nos comportements
+      // custom (click-shield, immersion par désélection, bring-to-front
+      // automatique) car ils empêcheraient le drag/select natif tldraw du
+      // groupe entier — l'utilisateur cliquerait sur le body et notre
+      // pointerdown global désélectionnerait le groupe avant que tldraw
+      // n'ait pu démarrer un drag.
+      const groupedShapeIds = new Set<string>()
+      for (const s of allShapes.values()) {
+        if (!PORTAL_SHAPE_TYPES.has(s.type)) continue
+        shapes.push(s)
+        pageIdByShapeId.set(s.id, resolvePageId(s.id))
+        if (s.parentId.startsWith('shape:')) {
+          groupedShapeIds.add(s.id)
         }
       }
+
       // Ordre z : par `shape.index` tldraw (IndexKey lexicographique).
       const zSorted = [...shapes].sort((a, b) =>
         a.index > b.index ? 1 : a.index < b.index ? -1 : 0
       )
       const rank = new Map<string, number>()
       zSorted.forEach((s, i) => rank.set(s.id, i))
-      // Top par page : la dernière shape itérée (ordre croissant) avec ce
-      // parentId est celle au plus haut `shape.index` de la page, donc au
-      // premier plan. Utilisé pour activer le "click-shield" sur toutes
-      // les autres shapes portail de la même page.
+      // Top par page : la dernière shape itérée (ordre croissant) dont la
+      // VRAIE page (groupes remontés) est cette pageId est celle au plus
+      // haut `shape.index` de la page → au premier plan. Utilisé pour
+      // activer le "click-shield" sur toutes les autres shapes portail.
       const topIdByPage = new Map<string, string>()
       for (const s of zSorted) {
-        const pageId = (s as TLShape & { parentId: string }).parentId
-        topIdByPage.set(pageId, s.id)
+        const pageId = pageIdByShapeId.get(s.id)
+        if (pageId) topIdByPage.set(pageId, s.id)
       }
       // Ordre DOM : STABLE par `shape.id`. Nouvelles shapes ajoutées à la
       // fin, supprimées sans bouger les autres. Garantit qu'aucune iframe
-      // ne change de position DOM lors d'un bringToFront.
+      // ne change de position DOM lors d'un bringToFront ou d'un groupage.
       shapes.sort((a, b) => (a.id > b.id ? 1 : a.id < b.id ? -1 : 0))
-      return { portalShapes: shapes, zIndexById: rank, topIdByPage }
+      return {
+        portalShapes: shapes,
+        zIndexById: rank,
+        topIdByPage,
+        pageIdByShapeId,
+        groupedShapeIds
+      }
     },
     [editor]
   )
@@ -77,19 +152,24 @@ export default function ShapePortalManager(): React.ReactElement {
   const canvasRect = useCanvasRect()
 
   // Helper : vérifie si une shape portail est DÉJÀ au top de la pile
-  // des shapes portail de la page courante (vscode/terminal uniquement).
+  // des shapes portail de la page courante (vscode/terminal/chat/browser).
   // Évite les writes redondants au store tldraw (un bringToFront sur une
   // shape déjà top déclenche quand même un changement d'index + save).
+  //
+  // Utilise `pageIdByShapeId` (mémoïsé via useValue) qui REMONTE les
+  // groupes parents — sinon une shape regroupée (parentId = shape:groupXXX)
+  // serait considérée hors-page et `isShapeAlreadyTop` retournerait true
+  // par défaut (cas où aucune shape ne matche), causant des bringToFront
+  // ratés post-groupage.
   const isShapeAlreadyTop = (shapeId: string): boolean => {
-    const pageId = editor.getCurrentPageId()
+    const currentPageId = editor.getCurrentPageId()
+    const targetPageId = pageIdByShapeId.get(shapeId)
+    if (targetPageId !== currentPageId) return false
     let top: { id: string; index: string } | null = null
-    for (const record of editor.store.allRecords()) {
-      if (record.typeName !== 'shape') continue
-      const s = record as TLShape & { parentId: string }
-      if (s.parentId !== pageId) continue
-      if (!PORTAL_SHAPE_TYPES.has(s.type)) continue
-      if (!top || s.index > top.index) {
-        top = { id: s.id, index: s.index as string }
+    for (const portalShape of portalShapes) {
+      if (pageIdByShapeId.get(portalShape.id) !== currentPageId) continue
+      if (!top || portalShape.index > top.index) {
+        top = { id: portalShape.id, index: portalShape.index as string }
       }
     }
     return top?.id === shapeId
@@ -125,6 +205,12 @@ export default function ShapePortalManager(): React.ReactElement {
           const slot = active.closest<HTMLElement>('[data-shape-portal]')
           const shapeId = slot?.getAttribute('data-shape-portal')
           if (!shapeId) return
+          // Si la shape est dans un groupe tldraw, on laisse tldraw gérer
+          // entièrement la sélection / le drag du groupe. Pas d'immersion,
+          // pas de bring-to-front (qui changerait l'index dans le groupe).
+          // Lecture directe du store editor (toujours frais) pour éviter
+          // un closure stale sur le Set `groupedShapeIds`.
+          if (isShapeIdInsideGroup(editor, shapeId)) return
           const alreadyTop = isShapeAlreadyTop(shapeId)
           // Immersion : l'utilisateur clique DANS une iframe (VSCode) →
           // il veut travailler dedans SANS chrome tldraw (ni bordure
@@ -174,6 +260,10 @@ export default function ShapePortalManager(): React.ReactElement {
     const shape = editor.getShape(shapeId)
     if (!shape) return
     if (!PORTAL_SHAPE_TYPES.has(shape.type)) return
+    // Skip si la shape est dans un groupe tldraw : `bringToFront` modifierait
+    // son `shape.index` à l'intérieur du groupe et casserait le z-order
+    // attendu par l'utilisateur (et donc le drag du groupe entier).
+    if (isShapeIdInsideGroup(editor, shapeId)) return
     if (isShapeAlreadyTop(shapeId)) return
     editor.bringToFront([shapeId])
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -217,6 +307,15 @@ export default function ShapePortalManager(): React.ReactElement {
         const shapeId = slot.getAttribute('data-shape-portal')
         if (shapeId === null) return
         const store = usePortalHoverStore.getState()
+        // Shape dans un groupe tldraw : on laisse TOUS les pointerdown
+        // remonter à tldraw nativement (sélection du groupe, drag du
+        // groupe). On clear juste l'active work pour que les bordures
+        // tldraw natives restent visibles (sinon notre useShapeBorderState
+        // les masquerait via le state d'immersion).
+        if (isShapeIdInsideGroup(editor, shapeId)) {
+          store.setActiveWorkShapeId(null)
+          return
+        }
         if (e.clientY < rect.top + HEADER_HEIGHT) {
           store.setActiveWorkShapeId(null)
         } else {
@@ -264,22 +363,35 @@ export default function ShapePortalManager(): React.ReactElement {
   return (
     <div style={clipStyle} data-shape-portal-clip="">
       {portalShapes.map((shape) => {
-        const pageId = (shape as TLShape & { parentId: string }).parentId
+        // Page d'appartenance RÉSOLUE (remonte les groupes éventuels) —
+        // pas le `parentId` direct qui pointe vers le group quand l'user
+        // a fait Modifier > Grouper. Sans cette résolution, le slot
+        // passerait en `visibility: hidden` dès qu'on regroupe la shape,
+        // faisant disparaître l'iframe (bug visible : fond noir du canvas
+        // à travers le placeholder transparent).
+        const resolvedPageId = pageIdByShapeId.get(shape.id) ?? ''
         // `isTop` : cette shape portail est-elle la shape portail la plus
         // haute (`shape.index` max) de sa page ? Seule la shape top reçoit
         // les événements pointeur directement vers son iframe. Les autres
         // sont protégées par un "click-shield" (voir commentaire dans
         // ShapePortalSlot).
-        const isTop = topIdByPage.get(pageId) === shape.id
+        const isTop = topIdByPage.get(resolvedPageId) === shape.id
+        // Shape dans un groupe tldraw : neutralise notre click-shield
+        // (qui sélectionnerait la shape interne au lieu du groupe et
+        // empêcherait le drag du groupe) et toute logique de sélection
+        // custom — tldraw gère nativement.
+        const isInGroup = groupedShapeIds.has(shape.id)
         return (
           <ShapePortalSlot
             key={shape.id}
             shape={shape}
+            resolvedPageId={resolvedPageId}
             currentPageId={currentPageId}
             canvasRect={canvasRect}
             zIndex={zIndexById.get(shape.id) ?? 0}
             isSelected={selectedSet.has(shape.id)}
             isTop={isTop}
+            isInGroup={isInGroup}
             editor={editor}
           />
         )
@@ -404,19 +516,29 @@ function sameRectList(a: LocalRect[], b: LocalRect[]): boolean {
 
 function ShapePortalSlot({
   shape,
+  resolvedPageId,
   currentPageId,
   canvasRect,
   zIndex,
   isSelected,
   isTop,
+  isInGroup,
   editor
 }: {
   shape: TLShape
+  // Page d'appartenance RÉSOLUE (remonte les groupes parents éventuels) —
+  // distincte de `shape.parentId` qui pointe vers le group quand l'user
+  // a fait Modifier > Grouper. Voir commentaire dans le manager parent
+  // pour le détail du bug évité.
+  resolvedPageId: string
   currentPageId: string
   canvasRect: { left: number; top: number }
   zIndex: number
   isSelected: boolean
   isTop: boolean
+  // Shape dans un groupe tldraw : pas de click-shield, on laisse tldraw
+  // gérer le drag/select du groupe entier nativement.
+  isInGroup: boolean
   editor: Editor
 }): React.ReactElement | null {
   const [bounds, setBounds] = useState<Bounds | null>(null)
@@ -429,7 +551,7 @@ function ShapePortalSlot({
   const [shieldRects, setShieldRects] = useState<LocalRect[]>([])
   const lastShieldRef = useRef<LocalRect[]>([])
 
-  const visible = (shape as TLShape & { parentId: string }).parentId === currentPageId
+  const visible = resolvedPageId === currentPageId
 
   useEffect(() => {
     if (!visible) return
@@ -601,7 +723,7 @@ function ShapePortalSlot({
       {shape.type === 'terminal' && <TerminalPortalContent shape={shape as TerminalShape} />}
       {shape.type === 'chat' && <ChatPortalContent shape={shape as ChatShape} />}
       {shape.type === 'browser' && <BrowserPortalContent shape={shape as BrowserShape} />}
-      {!isTop && visible && shieldRects.length > 0 && (
+      {!isTop && visible && !isInGroup && shieldRects.length > 0 && (
         <div
           aria-hidden
           data-shape-portal-shield=""
