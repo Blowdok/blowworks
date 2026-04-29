@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import {
   BaseBoxShapeUtil,
@@ -652,6 +652,11 @@ function MenuBar({
   const [openMenu, setOpenMenu] = useState<'edit' | 'format' | null>(null)
   const editBtnRef = useRef<HTMLButtonElement>(null)
   const formatBtnRef = useRef<HTMLButtonElement>(null)
+  // Référence stable pour le close handler — évite de recréer la fonction
+  // à chaque render, ce qui fait re-tirer le useEffect du MenuDropdown
+  // (et avec son defer setTimeout(0), peut empêcher l'attachement effectif
+  // du listener "click outside" si MenuBar re-render avant le tick).
+  const closeMenu = useCallback(() => setOpenMenu(null), [])
 
   return (
     <div
@@ -686,7 +691,7 @@ function MenuBar({
       {openMenu === 'edit' && (
         <MenuDropdown
           anchorRef={editBtnRef}
-          onClose={() => setOpenMenu(null)}
+          onClose={closeMenu}
         >
           <DropdownItem label="Annuler" shortcut="Ctrl+Z" onClick={() => { onUndo(); setOpenMenu(null) }} />
           <DropdownItem label="Rétablir" shortcut="Ctrl+Y" onClick={() => { onRedo(); setOpenMenu(null) }} />
@@ -706,7 +711,7 @@ function MenuBar({
       {openMenu === 'format' && (
         <MenuDropdown
           anchorRef={formatBtnRef}
-          onClose={() => setOpenMenu(null)}
+          onClose={closeMenu}
         >
           <DropdownItem
             label="Retour automatique à la ligne"
@@ -802,12 +807,24 @@ function MenuDropdown({
   children: React.ReactNode
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement>(null)
-  const [pos, setPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 })
+  // Position INITIALE calculée dès le premier render via useState lazy
+  // initializer : sans ça, le menu est rendu à (0, 0) puis re-positionné
+  // au tick suivant via useEffect, ce qui crée un flash visible en haut
+  // à gauche de l'écran ("menu fantôme"). L'initializer s'exécute une
+  // fois au mount, donc anchorRef.current est déjà disponible (le bouton
+  // ancre est rendu avant l'ouverture du dropdown).
+  const [pos, setPos] = useState<{ left: number; top: number }>(() => {
+    const a = anchorRef.current
+    if (!a) return { left: -9999, top: -9999 } // hors écran si non ancré
+    const r = a.getBoundingClientRect()
+    return { left: r.left, top: r.bottom }
+  })
 
-  // Calcul de position : juste sous le bouton ancre, aligné à gauche.
-  // `getBoundingClientRect` renvoie des coords écran (post-transform du
-  // canvas tldraw), exactement ce que veut `position: fixed`.
-  useEffect(() => {
+  // Recalcul de position avant la peinture du browser (useLayoutEffect)
+  // pour couvrir le cas où l'ancre s'est déplacée entre le mount et le
+  // commit (resize, scroll, drag de la shape). useEffect serait async
+  // après peinture → flash visible.
+  useLayoutEffect(() => {
     if (!anchorRef.current) return
     const r = anchorRef.current.getBoundingClientRect()
     setPos({ left: r.left, top: r.bottom })
