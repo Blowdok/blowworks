@@ -1,4 +1,5 @@
-import { memo, useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   BaseBoxShapeUtil,
   HTMLContainer,
@@ -9,8 +10,8 @@ import {
   type RecordProps
 } from 'tldraw'
 
-// Shape Bloc-notes : éditeur texte simple (style Notepad Windows) pour
-// prendre des notes sur le canvas OU éditer un fichier texte du disque.
+// Shape Bloc-notes : éditeur texte simple (style Notepad Windows) avec
+// barre de menu (Édition / Format) et barre Rechercher/Remplacer.
 //
 // Deux modes coexistent :
 //   • Note libre  : `filePath === null`, le contenu vit dans
@@ -21,13 +22,18 @@ import {
 //
 // Auto-save : 500 ms après la dernière frappe, on flush vers la cible
 // appropriée (props tldraw pour note libre, disque pour note liée).
-// Affiche un statut "Enregistré" / "…" / "Erreur" dans le header.
 
 const HEADER_HEIGHT = 36
+const MENUBAR_HEIGHT = 28
 
 // Délai d'auto-save : assez court pour ne pas perdre 30 s de frappe en
 // cas de crash, assez long pour pas spam fs.writeFile à chaque touche.
 const AUTOSAVE_DEBOUNCE_MS = 500
+
+// Bornes de taille de police accessibles via le menu Format.
+const FONT_SIZE_MIN = 9
+const FONT_SIZE_MAX = 32
+const FONT_SIZE_STEP = 1
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -39,6 +45,11 @@ type NotepadShapeProps = {
   // Contenu pour les notes libres. Ignoré quand filePath != null.
   // Persisté dans le snapshot tldraw → la note survit au reload du canvas.
   content: string
+  // Retour automatique à la ligne (Format > Retour à la ligne). Quand
+  // false, la textarea scroll horizontalement (mode "code" notepad).
+  wordWrap: boolean
+  // Taille de police de la textarea. Bornée à [9, 32] via le menu.
+  fontSize: number
 }
 
 export type NotepadShape = TLBaseShape<'notepad', NotepadShapeProps>
@@ -60,11 +71,14 @@ export class NotepadShapeUtil extends BaseBoxShapeUtil<NotepadShape> {
     w: T.number,
     h: T.number,
     filePath: T.nullable(T.string),
-    content: T.string
+    content: T.string,
+    wordWrap: T.boolean,
+    fontSize: T.number
   }
 
-  // Migration v1 : pour les snapshots futurs où on aurait omis ces props.
-  // Pas de v0 historique car la shape est neuve.
+  // Migrations :
+  //   v1 : schéma initial (filePath, content)
+  //   v2 : ajout wordWrap + fontSize (menu Format)
   static override migrations = createShapePropsMigrationSequence({
     sequence: [
       {
@@ -76,6 +90,14 @@ export class NotepadShapeUtil extends BaseBoxShapeUtil<NotepadShape> {
           }
           if (typeof p.content !== 'string') p.content = ''
         }
+      },
+      {
+        id: 'com.tldraw.shape.notepad/2',
+        up(props) {
+          const p = props as Record<string, unknown>
+          if (typeof p.wordWrap !== 'boolean') p.wordWrap = true
+          if (typeof p.fontSize !== 'number') p.fontSize = 13
+        }
       }
     ]
   })
@@ -85,7 +107,9 @@ export class NotepadShapeUtil extends BaseBoxShapeUtil<NotepadShape> {
       w: 480,
       h: 360,
       filePath: null,
-      content: ''
+      content: '',
+      wordWrap: true,
+      fontSize: 13
     }
   }
 
@@ -98,8 +122,8 @@ export class NotepadShapeUtil extends BaseBoxShapeUtil<NotepadShape> {
   ): { props: { w: number; h: number } } {
     return {
       props: {
-        w: Math.max(240, shape.props.w * info.scaleX),
-        h: Math.max(160, shape.props.h * info.scaleY)
+        w: Math.max(280, shape.props.w * info.scaleX),
+        h: Math.max(180, shape.props.h * info.scaleY)
       }
     }
   }
@@ -130,24 +154,27 @@ export class NotepadShapeUtil extends BaseBoxShapeUtil<NotepadShape> {
 const NotepadView = memo(
   function NotepadViewImpl({ shape }: { shape: NotepadShape }) {
     const editor = useEditor()
-    const { filePath, content: persistedContent } = shape.props
+    const { filePath, content: persistedContent, wordWrap, fontSize } = shape.props
 
     // Buffer édité localement. Source de vérité pendant la frappe — le
     // flush vers props/disque est debounced. Initialisé depuis props
     // pour les notes libres, vide en attendant le load pour les liées.
     const [buffer, setBuffer] = useState<string>(filePath === null ? persistedContent : '')
     const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
-    // Erreur de lecture du fichier (note liée). null = pas d'erreur.
     const [loadError, setLoadError] = useState<string | null>(null)
-    // Loading uniquement le temps de la première lecture en mode fichier.
     const [loading, setLoading] = useState<boolean>(filePath !== null)
+
+    // Référence vers la textarea pour exécuter les actions du menu
+    // (cut/copy/paste/undo/redo, selectAll, insertText, setSelectionRange).
+    const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+    // Recherche/Remplacement : null = barre fermée, sinon mode actif.
+    const [searchMode, setSearchMode] = useState<'find' | 'replace' | null>(null)
 
     // ── Chargement initial (mode fichier) ───────────────────────────
 
     useEffect(() => {
       if (filePath === null) {
-        // Mode note libre : on resync le buffer si props.content a changé
-        // de manière externe (édition concurrentielle, undo tldraw…).
         setBuffer(persistedContent)
         setLoadError(null)
         setLoading(false)
@@ -158,9 +185,8 @@ const NotepadView = memo(
       setLoadError(null)
       void window.blow.fs.readFile(filePath).then((res) => {
         if (cancelled) return
-        if (res.ok) {
-          setBuffer(res.content)
-        } else {
+        if (res.ok) setBuffer(res.content)
+        else {
           setLoadError(res.reason)
           setBuffer('')
         }
@@ -169,46 +195,27 @@ const NotepadView = memo(
       return () => {
         cancelled = true
       }
-      // Dépend uniquement du chemin : on recharge si l'utilisateur change
-      // le fichier ciblé. Le persistedContent n'est pas pertinent en
-      // mode fichier (props.content est ignoré).
     }, [filePath, persistedContent])
 
     // ── Auto-save debounce ──────────────────────────────────────────
 
-    // Référence stable au timer pour le clear quand le composant unmount
-    // ou que le buffer change avant que le timer n'expire.
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-    // Flag pour ignorer le tout premier render (sinon on flush avec le
-    // contenu initial à chaque mount, ce qui est inutile et marquerait
-    // "saving" sans raison).
     const skipNextFlushRef = useRef<boolean>(true)
 
     useEffect(() => {
-      // Skip le flush au mount initial (buffer chargé du disque ou
-      // initialisé depuis props : pas une vraie modif user).
       if (skipNextFlushRef.current) {
         skipNextFlushRef.current = false
         return
       }
-      // En mode fichier, pas de flush tant que le contenu n'est pas
-      // chargé (sinon on overwrite le fichier avec une string vide).
       if (loading) return
-      // En mode fichier, ne pas écrire si on a une erreur de lecture
-      // (le fichier n'existe peut-être pas / lecture refusée — préserver
-      // au cas où l'utilisateur n'aurait pas voulu écraser).
       if (filePath !== null && loadError !== null) return
 
       setSaveStatus('pending')
-      if (saveTimerRef.current !== null) {
-        clearTimeout(saveTimerRef.current)
-      }
+      if (saveTimerRef.current !== null) clearTimeout(saveTimerRef.current)
       saveTimerRef.current = setTimeout(() => {
         saveTimerRef.current = null
         setSaveStatus('saving')
         if (filePath === null) {
-          // Note libre : flush vers les props tldraw. updateShape déclenche
-          // un re-snapshot du canvas (auto-save debounced côté store).
           editor.updateShape<NotepadShape>({
             id: shape.id,
             type: 'notepad',
@@ -216,10 +223,8 @@ const NotepadView = memo(
           })
           setSaveStatus('saved')
         } else {
-          // Note liée : write disque.
           void window.blow.fs.writeFile(filePath, buffer).then((res) => {
-            if (res.ok) setSaveStatus('saved')
-            else setSaveStatus('error')
+            setSaveStatus(res.ok ? 'saved' : 'error')
           })
         }
       }, AUTOSAVE_DEBOUNCE_MS)
@@ -230,15 +235,8 @@ const NotepadView = memo(
           saveTimerRef.current = null
         }
       }
-      // editor / shape.id sont stables sur la durée de vie du composant —
-      // pas la peine de re-armer le timer pour ça.
     }, [buffer, filePath, loading, loadError, editor, shape.id])
 
-    // Flush forcé : Ctrl+S ou unmount imminent. Pour le moment seulement
-    // raccourci clavier — l'unmount garde le timer en attente, ce qui
-    // est OK car React l'annule via le cleanup et le buffer perdu est
-    // celui qui n'avait pas atteint AUTOSAVE_DEBOUNCE_MS — soit < 500 ms
-    // de frappe.
     const flushNow = useCallback(() => {
       if (saveTimerRef.current !== null) {
         clearTimeout(saveTimerRef.current)
@@ -259,11 +257,120 @@ const NotepadView = memo(
       }
     }, [buffer, filePath, editor, shape.id])
 
-    // ── Désélection tldraw au focus textarea ───────────────────────
+    // ── Actions menu Édition ────────────────────────────────────────
 
-    // Quand l'utilisateur clique dans la textarea, on désélectionne la
-    // shape pour éviter que tldraw n'intercepte les touches (Suppr →
-    // delete shape, etc.). Pattern miroir à ExplorerShape et aux portails.
+    // Insère du texte à la position du curseur (remplace la sélection si
+    // présente). Met à jour `buffer` en synchro et déplace le curseur
+    // après le texte inséré.
+    const insertAtCursor = useCallback((text: string) => {
+      const ta = textareaRef.current
+      if (!ta) return
+      const start = ta.selectionStart ?? buffer.length
+      const end = ta.selectionEnd ?? buffer.length
+      const next = buffer.slice(0, start) + text + buffer.slice(end)
+      setBuffer(next)
+      // Repositionne le curseur après l'insertion. Doit être fait après
+      // que React ait re-rendu (sinon la valeur change après notre call).
+      requestAnimationFrame(() => {
+        if (textareaRef.current) {
+          const pos = start + text.length
+          textareaRef.current.focus()
+          textareaRef.current.setSelectionRange(pos, pos)
+        }
+      })
+    }, [buffer])
+
+    const doUndo = useCallback(() => {
+      textareaRef.current?.focus()
+      // execCommand est déprécié mais reste le seul moyen pratique de
+      // déclencher l'undo natif d'une textarea sans maintenir notre
+      // propre pile d'historique. Marche dans tous les Chromium.
+      document.execCommand('undo')
+    }, [])
+
+    const doRedo = useCallback(() => {
+      textareaRef.current?.focus()
+      document.execCommand('redo')
+    }, [])
+
+    const doCut = useCallback(() => {
+      textareaRef.current?.focus()
+      document.execCommand('cut')
+    }, [])
+
+    const doCopy = useCallback(() => {
+      textareaRef.current?.focus()
+      document.execCommand('copy')
+    }, [])
+
+    const doPaste = useCallback(async () => {
+      const ta = textareaRef.current
+      if (!ta) return
+      ta.focus()
+      try {
+        const text = await navigator.clipboard.readText()
+        insertAtCursor(text)
+      } catch {
+        // Fallback si l'API Clipboard n'est pas dispo (rare sur Electron) :
+        // on tente execCommand('paste') même s'il est très limité côté
+        // sécurité Chromium hors gesture user.
+        document.execCommand('paste')
+      }
+    }, [insertAtCursor])
+
+    const doSelectAll = useCallback(() => {
+      const ta = textareaRef.current
+      if (!ta) return
+      ta.focus()
+      ta.setSelectionRange(0, ta.value.length)
+    }, [])
+
+    // Insère la date/heure courante au format Notepad Windows, fuseau
+    // utilisateur. Asia/Dubai (UTC+4, sans DST) est le fuseau projet.
+    const doInsertDateTime = useCallback(() => {
+      const fmt = new Intl.DateTimeFormat('fr-FR', {
+        timeZone: 'Asia/Dubai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      })
+      const parts = fmt.formatToParts(new Date())
+      const get = (type: Intl.DateTimeFormatPartTypes): string =>
+        parts.find((p) => p.type === type)?.value ?? ''
+      const stamp = `${get('hour')}:${get('minute')} ${get('day')}/${get('month')}/${get('year')}`
+      insertAtCursor(stamp)
+    }, [insertAtCursor])
+
+    // ── Actions menu Format ─────────────────────────────────────────
+
+    const setWordWrap = useCallback(
+      (next: boolean) => {
+        editor.updateShape<NotepadShape>({
+          id: shape.id,
+          type: 'notepad',
+          props: { wordWrap: next }
+        })
+      },
+      [editor, shape.id]
+    )
+
+    const setFontSize = useCallback(
+      (next: number) => {
+        const clamped = Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, next))
+        editor.updateShape<NotepadShape>({
+          id: shape.id,
+          type: 'notepad',
+          props: { fontSize: clamped }
+        })
+      },
+      [editor, shape.id]
+    )
+
+    // ── Désélection tldraw / Wheel propre ──────────────────────────
+
     const onInteractivePointerDown = useCallback(
       (e: React.PointerEvent) => {
         e.stopPropagation()
@@ -274,9 +381,6 @@ const NotepadView = memo(
       [editor]
     )
 
-    // Listener natif `wheel` : laisse passer le scroll de la textarea
-    // sans que tldraw ne le transforme en zoom canvas. Cf. ExplorerShape
-    // pour le rationnel.
     const interactiveRef = useRef<HTMLDivElement>(null)
     useEffect(() => {
       const el = interactiveRef.current
@@ -288,18 +392,28 @@ const NotepadView = memo(
       return () => el.removeEventListener('wheel', onWheel)
     }, [])
 
-    // Raccourcis : Ctrl+S = flush immédiat. La textarea capture le reste.
-    const onKeyDown = useCallback(
+    // ── Raccourcis clavier ──────────────────────────────────────────
+
+    const onTextareaKeyDown = useCallback(
       (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
         if (e.ctrlKey && e.key.toLowerCase() === 's') {
           e.preventDefault()
           flushNow()
+        } else if (e.ctrlKey && e.key.toLowerCase() === 'f') {
+          e.preventDefault()
+          setSearchMode('find')
+        } else if (e.ctrlKey && e.key.toLowerCase() === 'h') {
+          e.preventDefault()
+          setSearchMode('replace')
+        } else if (e.key === 'F5') {
+          e.preventDefault()
+          doInsertDateTime()
         }
-        // Empêche tldraw de capturer les touches de navigation/édition
-        // (notamment Suppr qui supprimerait la shape).
+        // Empêche tldraw de capturer les touches (sinon Suppr supprime
+        // la shape, etc.).
         e.stopPropagation()
       },
-      [flushNow]
+      [flushNow, doInsertDateTime]
     )
 
     // ── Render ──────────────────────────────────────────────────────
@@ -367,13 +481,33 @@ const NotepadView = memo(
           <SaveStatusBadge status={saveStatus} hasError={loadError !== null} />
         </div>
 
-        {/* Zone éditable : textarea plein-écran. */}
+        {/* Barre de menu : Édition / Format. pointer-events auto pour les
+            boutons (chacun stoppe propagation pour ne pas trigger drag). */}
+        <MenuBar
+          disabled={loading || loadError !== null}
+          wordWrap={wordWrap}
+          fontSize={fontSize}
+          onUndo={doUndo}
+          onRedo={doRedo}
+          onCut={doCut}
+          onCopy={doCopy}
+          onPaste={doPaste}
+          onSelectAll={doSelectAll}
+          onInsertDateTime={doInsertDateTime}
+          onOpenFind={() => setSearchMode('find')}
+          onOpenReplace={() => setSearchMode('replace')}
+          onToggleWordWrap={() => setWordWrap(!wordWrap)}
+          onSetFontSize={setFontSize}
+        />
+
+        {/* Zone éditable. */}
         <div
           ref={interactiveRef}
           onPointerDown={onInteractivePointerDown}
           style={{
             flex: 1,
             minHeight: 0,
+            position: 'relative',
             display: 'flex',
             pointerEvents: 'auto'
           }}
@@ -405,13 +539,13 @@ const NotepadView = memo(
             </div>
           ) : (
             <textarea
+              ref={textareaRef}
               value={buffer}
               onChange={(e) => setBuffer(e.target.value)}
-              onKeyDown={onKeyDown}
+              onKeyDown={onTextareaKeyDown}
               spellCheck={false}
-              placeholder={
-                filePath === null ? 'Écrivez votre note ici…' : ''
-              }
+              wrap={wordWrap ? 'soft' : 'off'}
+              placeholder={filePath === null ? 'Écrivez votre note ici…' : ''}
               style={{
                 flex: 1,
                 resize: 'none',
@@ -420,12 +554,29 @@ const NotepadView = memo(
                 border: 'none',
                 outline: 'none',
                 padding: 12,
+                paddingBottom: searchMode !== null ? 56 : 12,
                 fontFamily:
                   'ui-monospace, "Cascadia Mono", "Consolas", "Menlo", monospace',
-                fontSize: 13,
+                fontSize,
                 lineHeight: 1.5,
-                tabSize: 4
+                tabSize: 4,
+                whiteSpace: wordWrap ? 'pre-wrap' : 'pre',
+                overflowWrap: wordWrap ? 'break-word' : 'normal'
               }}
+            />
+          )}
+
+          {searchMode !== null && !loading && loadError === null && (
+            <SearchBar
+              mode={searchMode}
+              buffer={buffer}
+              setBuffer={setBuffer}
+              textareaRef={textareaRef}
+              onClose={() => {
+                setSearchMode(null)
+                textareaRef.current?.focus()
+              }}
+              onSwitchMode={(m) => setSearchMode(m)}
             />
           )}
         </div>
@@ -437,8 +588,608 @@ const NotepadView = memo(
     prev.shape.props.w === next.shape.props.w &&
     prev.shape.props.h === next.shape.props.h &&
     prev.shape.props.filePath === next.shape.props.filePath &&
-    prev.shape.props.content === next.shape.props.content
+    prev.shape.props.content === next.shape.props.content &&
+    prev.shape.props.wordWrap === next.shape.props.wordWrap &&
+    prev.shape.props.fontSize === next.shape.props.fontSize
 )
+
+// ── MenuBar ───────────────────────────────────────────────────────────
+
+function MenuBar({
+  disabled,
+  wordWrap,
+  fontSize,
+  onUndo,
+  onRedo,
+  onCut,
+  onCopy,
+  onPaste,
+  onSelectAll,
+  onInsertDateTime,
+  onOpenFind,
+  onOpenReplace,
+  onToggleWordWrap,
+  onSetFontSize
+}: {
+  disabled: boolean
+  wordWrap: boolean
+  fontSize: number
+  onUndo: () => void
+  onRedo: () => void
+  onCut: () => void
+  onCopy: () => void
+  onPaste: () => void
+  onSelectAll: () => void
+  onInsertDateTime: () => void
+  onOpenFind: () => void
+  onOpenReplace: () => void
+  onToggleWordWrap: () => void
+  onSetFontSize: (next: number) => void
+}): React.ReactElement {
+  // Quel menu est actuellement ouvert (null = aucun). Single-source pour
+  // que cliquer sur "Format" ferme "Édition" automatiquement.
+  const [openMenu, setOpenMenu] = useState<'edit' | 'format' | null>(null)
+  const editBtnRef = useRef<HTMLButtonElement>(null)
+  const formatBtnRef = useRef<HTMLButtonElement>(null)
+
+  return (
+    <div
+      data-shape-header
+      style={{
+        height: MENUBAR_HEIGHT,
+        flexShrink: 0,
+        display: 'flex',
+        alignItems: 'stretch',
+        background: 'var(--bg-secondary, #101010)',
+        borderBottom: '1px solid var(--border, #2a2a2a)',
+        // Le fond de la menubar laisse passer le drag tldraw, mais les
+        // boutons enfants sont en `auto`.
+        pointerEvents: 'none'
+      }}
+    >
+      <MenuBarButton
+        ref={editBtnRef}
+        label="Édition"
+        active={openMenu === 'edit'}
+        disabled={disabled}
+        onClick={() => setOpenMenu(openMenu === 'edit' ? null : 'edit')}
+      />
+      <MenuBarButton
+        ref={formatBtnRef}
+        label="Format"
+        active={openMenu === 'format'}
+        disabled={disabled}
+        onClick={() => setOpenMenu(openMenu === 'format' ? null : 'format')}
+      />
+
+      {openMenu === 'edit' && (
+        <MenuDropdown
+          anchorRef={editBtnRef}
+          onClose={() => setOpenMenu(null)}
+        >
+          <DropdownItem label="Annuler" shortcut="Ctrl+Z" onClick={() => { onUndo(); setOpenMenu(null) }} />
+          <DropdownItem label="Rétablir" shortcut="Ctrl+Y" onClick={() => { onRedo(); setOpenMenu(null) }} />
+          <DropdownSeparator />
+          <DropdownItem label="Couper" shortcut="Ctrl+X" onClick={() => { onCut(); setOpenMenu(null) }} />
+          <DropdownItem label="Copier" shortcut="Ctrl+C" onClick={() => { onCopy(); setOpenMenu(null) }} />
+          <DropdownItem label="Coller" shortcut="Ctrl+V" onClick={() => { onPaste(); setOpenMenu(null) }} />
+          <DropdownItem label="Tout sélectionner" shortcut="Ctrl+A" onClick={() => { onSelectAll(); setOpenMenu(null) }} />
+          <DropdownSeparator />
+          <DropdownItem label="Heure/Date" shortcut="F5" onClick={() => { onInsertDateTime(); setOpenMenu(null) }} />
+          <DropdownSeparator />
+          <DropdownItem label="Rechercher…" shortcut="Ctrl+F" onClick={() => { onOpenFind(); setOpenMenu(null) }} />
+          <DropdownItem label="Remplacer…" shortcut="Ctrl+H" onClick={() => { onOpenReplace(); setOpenMenu(null) }} />
+        </MenuDropdown>
+      )}
+
+      {openMenu === 'format' && (
+        <MenuDropdown
+          anchorRef={formatBtnRef}
+          onClose={() => setOpenMenu(null)}
+        >
+          <DropdownItem
+            label="Retour automatique à la ligne"
+            checked={wordWrap}
+            onClick={() => { onToggleWordWrap(); setOpenMenu(null) }}
+          />
+          <DropdownSeparator />
+          <DropdownItem
+            label={`Taille du texte : ${fontSize} px`}
+            disabled
+          />
+          <DropdownItem
+            label="Augmenter (A+)"
+            shortcut="Ctrl++"
+            onClick={() => onSetFontSize(fontSize + FONT_SIZE_STEP)}
+            disabled={fontSize >= FONT_SIZE_MAX}
+          />
+          <DropdownItem
+            label="Diminuer (A−)"
+            shortcut="Ctrl+−"
+            onClick={() => onSetFontSize(fontSize - FONT_SIZE_STEP)}
+            disabled={fontSize <= FONT_SIZE_MIN}
+          />
+          <DropdownItem
+            label="Taille par défaut (13)"
+            onClick={() => { onSetFontSize(13); setOpenMenu(null) }}
+            disabled={fontSize === 13}
+          />
+        </MenuDropdown>
+      )}
+    </div>
+  )
+}
+
+// Bouton de la menubar (titre + caret implicite). Stop propagation pointer
+// pour ne pas démarrer un drag tldraw.
+const MenuBarButton = ({
+  ref,
+  label,
+  active,
+  disabled,
+  onClick
+}: {
+  ref: React.RefObject<HTMLButtonElement | null>
+  label: string
+  active: boolean
+  disabled: boolean
+  onClick: () => void
+}): React.ReactElement => (
+  <button
+    ref={ref}
+    type="button"
+    disabled={disabled}
+    onClick={(e) => {
+      e.stopPropagation()
+      if (!disabled) onClick()
+    }}
+    onPointerDown={(e) => e.stopPropagation()}
+    onMouseDown={(e) => e.stopPropagation()}
+    style={{
+      background: active ? 'var(--bg-tertiary, #1a1a1a)' : 'transparent',
+      color: disabled ? 'var(--fg-muted)' : 'var(--fg-primary)',
+      border: 'none',
+      padding: '0 10px',
+      fontFamily: 'inherit',
+      fontSize: 12,
+      cursor: disabled ? 'default' : 'pointer',
+      opacity: disabled ? 0.5 : 1,
+      pointerEvents: 'auto'
+    }}
+    onMouseEnter={(e) => {
+      if (!disabled && !active) e.currentTarget.style.background = 'var(--bg-tertiary)'
+    }}
+    onMouseLeave={(e) => {
+      if (!active) e.currentTarget.style.background = 'transparent'
+    }}
+  >
+    {label}
+  </button>
+)
+
+// Dropdown portallé vers document.body : nécessaire car la shape est
+// rendue dans le canvas tldraw qui applique `transform: scale()` pour
+// le zoom — `position: fixed` n'échappe pas à un containing block créé
+// par transform. Pattern identique au menu contextuel de l'Explorer.
+function MenuDropdown({
+  anchorRef,
+  onClose,
+  children
+}: {
+  anchorRef: React.RefObject<HTMLButtonElement | null>
+  onClose: () => void
+  children: React.ReactNode
+}): React.ReactElement {
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ left: number; top: number }>({ left: 0, top: 0 })
+
+  // Calcul de position : juste sous le bouton ancre, aligné à gauche.
+  // `getBoundingClientRect` renvoie des coords écran (post-transform du
+  // canvas tldraw), exactement ce que veut `position: fixed`.
+  useEffect(() => {
+    if (!anchorRef.current) return
+    const r = anchorRef.current.getBoundingClientRect()
+    setPos({ left: r.left, top: r.bottom })
+  }, [anchorRef])
+
+  useEffect(() => {
+    function onDown(e: MouseEvent): void {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        // Si le clic vient du bouton ancre lui-même, ne pas fermer ici
+        // (le bouton va toggle on→off via son onClick).
+        if (anchorRef.current && anchorRef.current.contains(e.target as Node)) {
+          return
+        }
+        onClose()
+      }
+    }
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', onDown, true)
+    document.addEventListener('keydown', onKey, true)
+    return () => {
+      document.removeEventListener('mousedown', onDown, true)
+      document.removeEventListener('keydown', onKey, true)
+    }
+  }, [onClose, anchorRef])
+
+  return createPortal(
+    <div
+      ref={ref}
+      role="menu"
+      style={{
+        position: 'fixed',
+        left: pos.left,
+        top: pos.top,
+        minWidth: 220,
+        background: 'var(--bg-secondary)',
+        border: '1px solid var(--border)',
+        borderRadius: 4,
+        boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+        zIndex: 1000,
+        padding: 4,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 1,
+        fontSize: 12,
+        pointerEvents: 'auto',
+        color: 'var(--fg-primary)',
+        fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif'
+      }}
+    >
+      {children}
+    </div>,
+    document.body
+  )
+}
+
+function DropdownItem({
+  label,
+  shortcut,
+  checked,
+  disabled,
+  onClick
+}: {
+  label: string
+  shortcut?: string
+  checked?: boolean
+  disabled?: boolean
+  onClick?: () => void
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      onClick={(e) => {
+        e.stopPropagation()
+        if (!disabled && onClick) onClick()
+      }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '6px 8px',
+        background: 'transparent',
+        color: disabled ? 'var(--fg-muted)' : 'var(--fg-primary)',
+        border: 'none',
+        borderRadius: 3,
+        cursor: disabled ? 'default' : 'pointer',
+        fontFamily: 'inherit',
+        fontSize: 12,
+        textAlign: 'left',
+        opacity: disabled ? 0.5 : 1
+      }}
+      onMouseEnter={(e) => {
+        if (!disabled) e.currentTarget.style.background = 'var(--bg-tertiary)'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.background = 'transparent'
+      }}
+    >
+      <span style={{ width: 14, textAlign: 'center', color: 'var(--fg-muted)' }}>
+        {checked ? '✓' : ''}
+      </span>
+      <span style={{ flex: 1 }}>{label}</span>
+      {shortcut && (
+        <span style={{ fontSize: 10, color: 'var(--fg-muted)' }}>{shortcut}</span>
+      )}
+    </button>
+  )
+}
+
+function DropdownSeparator(): React.ReactElement {
+  return (
+    <div
+      style={{
+        height: 1,
+        background: 'var(--border)',
+        margin: '4px 0'
+      }}
+    />
+  )
+}
+
+// ── Search bar ────────────────────────────────────────────────────────
+
+function SearchBar({
+  mode,
+  buffer,
+  setBuffer,
+  textareaRef,
+  onClose,
+  onSwitchMode
+}: {
+  mode: 'find' | 'replace'
+  buffer: string
+  setBuffer: (s: string) => void
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>
+  onClose: () => void
+  onSwitchMode: (m: 'find' | 'replace') => void
+}): React.ReactElement {
+  const [query, setQuery] = useState<string>('')
+  const [replaceValue, setReplaceValue] = useState<string>('')
+  const [caseSensitive, setCaseSensitive] = useState<boolean>(false)
+  const queryInputRef = useRef<HTMLInputElement>(null)
+
+  // Focus auto à l'ouverture / changement de mode.
+  useEffect(() => {
+    queryInputRef.current?.focus()
+    queryInputRef.current?.select()
+  }, [mode])
+
+  // Cherche la prochaine occurrence depuis la position courante du
+  // curseur (ou la sélection courante en mode "next after current match").
+  const findOccurrence = useCallback(
+    (direction: 1 | -1) => {
+      if (!query) return
+      const ta = textareaRef.current
+      if (!ta) return
+      const haystack = caseSensitive ? buffer : buffer.toLowerCase()
+      const needle = caseSensitive ? query : query.toLowerCase()
+      if (!needle) return
+      const cursor =
+        direction === 1
+          ? (ta.selectionEnd ?? 0)
+          : (ta.selectionStart ?? buffer.length)
+      let idx: number
+      if (direction === 1) {
+        idx = haystack.indexOf(needle, cursor)
+        if (idx === -1) idx = haystack.indexOf(needle, 0) // wrap
+      } else {
+        idx = haystack.lastIndexOf(needle, cursor - 1)
+        if (idx === -1) idx = haystack.lastIndexOf(needle) // wrap
+      }
+      if (idx === -1) return
+      ta.focus()
+      ta.setSelectionRange(idx, idx + needle.length)
+    },
+    [query, buffer, caseSensitive, textareaRef]
+  )
+
+  // Remplace la sélection courante SI elle correspond au pattern, puis
+  // avance à l'occurrence suivante. Comportement attendu de Notepad.
+  const replaceCurrent = useCallback(() => {
+    if (!query) return
+    const ta = textareaRef.current
+    if (!ta) return
+    const start = ta.selectionStart ?? 0
+    const end = ta.selectionEnd ?? 0
+    const selected = buffer.slice(start, end)
+    const matches = caseSensitive
+      ? selected === query
+      : selected.toLowerCase() === query.toLowerCase()
+    if (matches) {
+      const next = buffer.slice(0, start) + replaceValue + buffer.slice(end)
+      setBuffer(next)
+      requestAnimationFrame(() => {
+        const newPos = start + replaceValue.length
+        if (textareaRef.current) {
+          textareaRef.current.focus()
+          textareaRef.current.setSelectionRange(newPos, newPos)
+          // Cherche la prochaine occurrence après le remplacement.
+          findOccurrence(1)
+        }
+      })
+    } else {
+      // Sélection courante ne matche pas : on cherche la prochaine.
+      findOccurrence(1)
+    }
+  }, [buffer, query, replaceValue, caseSensitive, setBuffer, textareaRef, findOccurrence])
+
+  const replaceAll = useCallback(() => {
+    if (!query) return
+    const flags = caseSensitive ? 'g' : 'gi'
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const re = new RegExp(escaped, flags)
+    const next = buffer.replace(re, replaceValue)
+    setBuffer(next)
+  }, [buffer, query, replaceValue, caseSensitive, setBuffer])
+
+  // Compteur de matches (informatif).
+  const matchCount = useMemo(() => {
+    if (!query) return 0
+    const haystack = caseSensitive ? buffer : buffer.toLowerCase()
+    const needle = caseSensitive ? query : query.toLowerCase()
+    let count = 0
+    let pos = 0
+    while (true) {
+      const idx = haystack.indexOf(needle, pos)
+      if (idx === -1) break
+      count++
+      pos = idx + needle.length
+      if (count > 9999) break // garde-fou
+    }
+    return count
+  }, [buffer, query, caseSensitive])
+
+  const onQueryKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>) => {
+      e.stopPropagation()
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        findOccurrence(e.shiftKey ? -1 : 1)
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        onClose()
+      }
+    },
+    [findOccurrence, onClose]
+  )
+
+  return (
+    <div
+      // stopPropagation pour qu'un clic dans la barre ne désélectionne pas
+      // la zone interactive et ne lance pas le drag tldraw.
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{
+        position: 'absolute',
+        left: 8,
+        right: 8,
+        bottom: 8,
+        background: 'var(--bg-secondary, #101010)',
+        border: '1px solid var(--border, #2a2a2a)',
+        borderRadius: 6,
+        padding: 6,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+        pointerEvents: 'auto'
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        <input
+          ref={queryInputRef}
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={onQueryKeyDown}
+          placeholder="Rechercher…"
+          style={{
+            flex: 1,
+            minWidth: 0,
+            height: 24,
+            padding: '0 8px',
+            background: 'var(--bg-primary)',
+            color: 'var(--fg-primary)',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            fontFamily: 'inherit',
+            fontSize: 12,
+            outline: 'none'
+          }}
+        />
+        <span style={{ fontSize: 10, color: 'var(--fg-muted)', minWidth: 60, textAlign: 'center' }}>
+          {query ? `${matchCount} occ.` : ''}
+        </span>
+        <SearchButton title="Précédent (Maj+Entrée)" onClick={() => findOccurrence(-1)}>↑</SearchButton>
+        <SearchButton title="Suivant (Entrée)" onClick={() => findOccurrence(1)}>↓</SearchButton>
+        <SearchButton
+          title="Sensible à la casse"
+          onClick={() => setCaseSensitive((v) => !v)}
+          active={caseSensitive}
+        >
+          Aa
+        </SearchButton>
+        <SearchButton
+          title={mode === 'find' ? 'Mode remplacer' : 'Mode rechercher'}
+          onClick={() => onSwitchMode(mode === 'find' ? 'replace' : 'find')}
+          active={mode === 'replace'}
+        >
+          ⇄
+        </SearchButton>
+        <SearchButton title="Fermer (Échap)" onClick={onClose}>✕</SearchButton>
+      </div>
+
+      {mode === 'replace' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <input
+            type="text"
+            value={replaceValue}
+            onChange={(e) => setReplaceValue(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                replaceCurrent()
+              } else if (e.key === 'Escape') {
+                e.preventDefault()
+                onClose()
+              }
+            }}
+            placeholder="Remplacer par…"
+            style={{
+              flex: 1,
+              minWidth: 0,
+              height: 24,
+              padding: '0 8px',
+              background: 'var(--bg-primary)',
+              color: 'var(--fg-primary)',
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              fontFamily: 'inherit',
+              fontSize: 12,
+              outline: 'none'
+            }}
+          />
+          <span style={{ minWidth: 60 }} />
+          <SearchButton title="Remplacer (Entrée)" onClick={replaceCurrent}>R1</SearchButton>
+          <SearchButton title="Tout remplacer" onClick={replaceAll}>R∗</SearchButton>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SearchButton({
+  children,
+  title,
+  active,
+  onClick
+}: {
+  children: React.ReactNode
+  title: string
+  active?: boolean
+  onClick: () => void
+}): React.ReactElement {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation()
+        onClick()
+      }}
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      style={{
+        height: 24,
+        minWidth: 28,
+        padding: '0 6px',
+        background: active ? 'var(--bg-tertiary)' : 'transparent',
+        color: 'var(--fg-primary)',
+        border: '1px solid var(--border)',
+        borderRadius: 4,
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+        fontSize: 11
+      }}
+      onMouseEnter={(e) => {
+        if (!active) e.currentTarget.style.background = 'var(--bg-tertiary)'
+      }}
+      onMouseLeave={(e) => {
+        if (!active) e.currentTarget.style.background = 'transparent'
+      }}
+    >
+      {children}
+    </button>
+  )
+}
 
 // ── Save status badge ─────────────────────────────────────────────────
 
