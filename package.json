@@ -38,6 +38,7 @@
     "better-sqlite3": "^12.9.0",
     "electron-updater": "^6.8.3",
     "highlight.js": "^11.11.1",
+    "koffi": "^2.16.1",
     "lucide-react": "^1.8.0",
     "nanoid": "^5.1.9",
     "pdf-parse": "^2.4.5",

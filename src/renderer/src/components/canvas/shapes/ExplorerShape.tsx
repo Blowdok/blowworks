@@ -5,10 +5,12 @@ import {
   HTMLContainer,
   T,
   useEditor,
+  createShapeId,
   createShapePropsMigrationSequence,
   type TLBaseShape,
   type RecordProps
 } from 'tldraw'
+import type { VSCodeShape } from './VSCodeShape.js'
 
 // Shape Explorer (option 2) : explorateur de fichiers Windows recréé en
 // React/HTML, vraie shape tldraw qui suit zoom/pan. Pas de fenêtre native
@@ -424,6 +426,89 @@ const ExplorerView = memo(
       ]
     )
 
+    // ── Spawn shapes BlowWorks depuis le menu ──────────────────────
+
+    // Calcule la position du spawn : EN DESSOUS de la shape courante,
+    // alignée à gauche, avec un petit padding vertical pour aérer
+    // visuellement les deux fenêtres. Utilise les coords actuelles de
+    // la shape via `editor.getShape` plutôt que celles du closure pour
+    // rester juste après un déplacement utilisateur.
+    const computeSpawnPosition = useCallback(() => {
+      const me = editor.getShape(shape.id) as
+        | { x: number; y: number; props: { w: number; h: number } }
+        | undefined
+      if (!me) return { x: 0, y: 0 }
+      const PADDING = 16
+      return { x: me.x, y: me.y + me.props.h + PADDING }
+    }, [editor, shape.id])
+
+    const openInBlowVSCode = useCallback(
+      (target: FsEntry | null) => {
+        // VSCode a besoin d'un DOSSIER. Si la cible est un fichier, on
+        // ouvre son dossier parent. Si pas de cible (menu fond), on
+        // ouvre le dossier courant.
+        let folder: string
+        if (target === null) {
+          folder = shape.props.currentPath
+        } else if (target.isDirectory) {
+          folder = target.path
+        } else {
+          const parent = parentDir(target.path)
+          folder = parent ?? shape.props.currentPath
+        }
+        if (folder === ROOT_PATH) {
+          window.alert(
+            'Impossible d\'ouvrir "Ce PC" dans VSCode — choisissez un dossier réel.'
+          )
+          return
+        }
+        const pos = computeSpawnPosition()
+        editor.createShape<VSCodeShape>({
+          id: createShapeId(),
+          type: 'vscode',
+          x: pos.x,
+          y: pos.y,
+          props: {
+            w: 960,
+            h: 600,
+            folder: folder.replace(/\\/g, '/'),
+            projectId: null
+          }
+        })
+      },
+      [editor, shape.props.currentPath, computeSpawnPosition]
+    )
+
+    const openInBlowExplorer = useCallback(
+      (target: FsEntry | null) => {
+        // Nouvelle ExplorerShape sur le dossier cible. Pour un fichier,
+        // on ouvre son dossier parent (cohérent avec le comportement
+        // "Ouvrir dans l'Explorateur" qui fait `showItemInFolder`).
+        let path: string
+        if (target === null) {
+          path = shape.props.currentPath
+        } else if (target.isDirectory) {
+          path = target.path
+        } else {
+          path = parentDir(target.path) ?? shape.props.currentPath
+        }
+        const pos = computeSpawnPosition()
+        editor.createShape<ExplorerShape>({
+          id: createShapeId(),
+          type: 'explorer',
+          x: pos.x,
+          y: pos.y,
+          props: {
+            w: 920,
+            h: 580,
+            currentPath: path,
+            historyJson: JSON.stringify({ paths: [path], index: 0 })
+          }
+        })
+      },
+      [editor, shape.props.currentPath, computeSpawnPosition]
+    )
+
     // ── Menu contextuel ─────────────────────────────────────────────
 
     const onContextMenuEntry = useCallback(
@@ -621,6 +706,47 @@ const ExplorerView = memo(
                 if (res.ok) setEntries(res.entries)
               })
             }}
+            onOpenInBlowVSCode={() => {
+              const target = contextMenu.target
+              closeContextMenu()
+              openInBlowVSCode(target)
+            }}
+            onOpenInBlowExplorer={() => {
+              const target = contextMenu.target
+              closeContextMenu()
+              openInBlowExplorer(target)
+            }}
+            onShellMenu={() => {
+              console.log('[explorer-shape] onShellMenu déclenché')
+              // Capture les coords AVANT de fermer le menu : on veut que
+              // le shell menu Windows s'ouvre au même point que notre
+              // menu maison. Après refresh la liste pour refléter les
+              // éventuelles modifications (suppression, renommage, …)
+              // faites par la commande shell.
+              const sx = contextMenu.x
+              const sy = contextMenu.y
+              const path = contextMenu.target?.path ?? shape.props.currentPath
+              console.log(
+                `[explorer-shape] appel IPC shellContextMenu path=${path} screen=${sx},${sy}`
+              )
+              closeContextMenu()
+              void window.blow.fs
+                .shellContextMenu(path, sx, sy)
+                .then((res) => {
+                  console.log('[explorer-shape] shellContextMenu retour :', res)
+                  if (!res.ok) {
+                    console.warn('[explorer-shape] shellContextMenu :', res.reason)
+                  }
+                  if (res.invoked) {
+                    void window.blow.fs.list(shape.props.currentPath).then((r) => {
+                      if (r.ok) setEntries(r.entries)
+                    })
+                  }
+                })
+                .catch((err) => {
+                  console.error('[explorer-shape] shellContextMenu rejette :', err)
+                })
+            }}
           />
         )}
       </div>
@@ -750,6 +876,9 @@ function Header({
               e.stopPropagation()
             }}
             onBlur={() => setPathInputValue(null)}
+            // stopPropagation sur pointerdown pour empêcher tldraw de
+            // démarrer un drag (le header parent est pointer-events: none).
+            onPointerDown={(e) => e.stopPropagation()}
             style={{
               flex: 1,
               minWidth: 0,
@@ -768,6 +897,7 @@ function Header({
         ) : (
           <div
             onClick={() => setPathInputValue(shape.props.currentPath)}
+            onPointerDown={(e) => e.stopPropagation()}
             title="Cliquer pour saisir un chemin (Ctrl+L)"
             style={{
               flex: 1,
@@ -793,6 +923,7 @@ function Header({
                     e.stopPropagation()
                     onBreadcrumbClick(seg.path)
                   }}
+                  onPointerDown={(e) => e.stopPropagation()}
                   style={{
                     background: 'transparent',
                     border: 'none',
@@ -843,6 +974,10 @@ function ToolbarButton({
       aria-label={label}
       disabled={disabled}
       onClick={onClick}
+      // Stop propagation pointerdown : sans ça, tldraw reçoit le clic
+      // (le header parent étant en pointer-events: none) et démarre un
+      // drag de la shape avant que le click bouton ne tire.
+      onPointerDown={(e) => e.stopPropagation()}
       style={{
         width: 28,
         height: 24,
@@ -1191,7 +1326,10 @@ function ContextMenu({
   onRename,
   onTrash,
   onOpenInExplorer,
-  onRefresh
+  onRefresh,
+  onShellMenu,
+  onOpenInBlowVSCode,
+  onOpenInBlowExplorer
 }: {
   x: number
   y: number
@@ -1205,6 +1343,15 @@ function ContextMenu({
   onTrash: () => void
   onOpenInExplorer: () => void
   onRefresh: () => void
+  // Ouvre le menu shell Windows complet via IContextMenu COM. La cible
+  // est définie par le composant parent (target ?? currentPath).
+  onShellMenu: () => void
+  // Spawn une VSCodeShape BlowWorks sur le dossier cible (ou parent
+  // pour un fichier). Distinct du menu shell qui invoque le VSCode
+  // SYSTÈME via "Open with Code" — celui-ci reste dans BlowWorks.
+  onOpenInBlowVSCode: () => void
+  // Spawn une nouvelle ExplorerShape BlowWorks sur le dossier cible.
+  onOpenInBlowExplorer: () => void
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement>(null)
 
@@ -1294,9 +1441,26 @@ function ContextMenu({
           />
           <MenuSeparator />
           <MenuRow
+            icon="📝"
+            label="Ouvrir dans VSCode (BlowWorks)"
+            onClick={onOpenInBlowVSCode}
+            disabled={isDriveRoot ?? false}
+          />
+          <MenuRow
+            icon="📁"
+            label="Ouvrir dans nouvel Explorateur (BlowWorks)"
+            onClick={onOpenInBlowExplorer}
+          />
+          <MenuSeparator />
+          <MenuRow
             icon="🪟"
             label="Ouvrir dans l'Explorateur"
             onClick={onOpenInExplorer}
+          />
+          <MenuRow
+            icon="⋯"
+            label="Plus d'options Windows…"
+            onClick={onShellMenu}
           />
         </>
       ) : (
@@ -1305,10 +1469,29 @@ function ContextMenu({
           <MenuRow icon="📋" label="Copier le chemin" onClick={onCopyPath} />
           <MenuSeparator />
           <MenuRow
+            icon="📝"
+            label="Ouvrir dans VSCode (BlowWorks)"
+            onClick={onOpenInBlowVSCode}
+            disabled={currentPath === ROOT_PATH}
+          />
+          <MenuRow
+            icon="📁"
+            label="Ouvrir dans nouvel Explorateur (BlowWorks)"
+            onClick={onOpenInBlowExplorer}
+            disabled={currentPath === ROOT_PATH}
+          />
+          <MenuSeparator />
+          <MenuRow
             icon="🪟"
             label="Ouvrir dans l'Explorateur"
             onClick={onOpenInExplorer}
             // Pour le menu fond, "Ouvrir natif" pointe sur currentPath.
+            disabled={currentPath === ROOT_PATH}
+          />
+          <MenuRow
+            icon="⋯"
+            label="Plus d'options Windows…"
+            onClick={onShellMenu}
             disabled={currentPath === ROOT_PATH}
           />
         </>
@@ -1336,7 +1519,17 @@ function MenuRow({
       type="button"
       role="menuitem"
       disabled={disabled}
-      onClick={disabled ? undefined : onClick}
+      onClick={(e) => {
+        console.log(`[explorer-shape] MenuRow click "${label}" disabled=${disabled}`)
+        e.stopPropagation()
+        if (!disabled && onClick) onClick()
+      }}
+      // stopPropagation pointerdown pour empêcher tout listener global
+      // (tldraw, ShapePortalManager) d'intercepter et de déclencher un
+      // effet secondaire (drag, désélection) qui pourrait fermer le menu
+      // AVANT que le click n'ait fire.
+      onPointerDown={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
       style={{
         display: 'flex',
         alignItems: 'center',

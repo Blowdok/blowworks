@@ -32,7 +32,12 @@ export const IPC_CHANNELS = {
     open: 'fs.open',
     rename: 'fs.rename',
     trash: 'fs.trash',
-    openInExplorer: 'fs.openInExplorer'
+    openInExplorer: 'fs.openInExplorer',
+    // Affiche le menu shell Windows COMPLET (extensions installées : 7-Zip,
+    // Git, "Ouvrir avec…", "Propriétés", "Partager…", etc.) au point écran
+    // donné. Bloque pendant la sélection puis InvokeCommand sur la verb
+    // choisie. Win32 only.
+    shellContextMenu: 'fs.shellContextMenu'
   },
   canvas: {
     saveSnapshot: 'canvas.saveSnapshot',

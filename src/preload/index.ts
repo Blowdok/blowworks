@@ -97,7 +97,21 @@ const api = {
     openInExplorer: (
       path: string
     ): Promise<{ ok: true } | { ok: false; reason: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.fs.openInExplorer, { path })
+      ipcRenderer.invoke(IPC_CHANNELS.fs.openInExplorer, { path }),
+    // "Plus d'options Windows…" : ouvre le menu shell Windows complet
+    // (extensions, Ouvrir avec, Propriétés, Partager, etc.) au point
+    // écran spécifié. La promesse résout APRÈS que l'utilisateur ait
+    // choisi une commande (ou annulé). Win32 uniquement.
+    shellContextMenu: (
+      path: string,
+      screenX: number,
+      screenY: number
+    ): Promise<{ ok: boolean; invoked: boolean; reason?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.fs.shellContextMenu, {
+        path,
+        screenX,
+        screenY
+      })
   },
   canvas: {
     saveSnapshot: (snapshotJson: string) =>

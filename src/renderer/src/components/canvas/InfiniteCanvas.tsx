@@ -200,16 +200,20 @@ export default function InfiniteCanvas() {
   )
 }
 
-// Centre de spawn : soit `at` si fourni (clic droit / pointeur souris au
-// moment du raccourci), soit le centre géométrique du viewport. Factorisé
-// car les 4 spawn l'ont en commun.
-function resolveSpawnCenter(
+// Coin supérieur gauche de spawn. Si `at` est fourni (clic droit / pointeur
+// souris au moment du raccourci), on l'utilise tel quel comme coin haut-
+// gauche : la shape s'ouvre donc avec son coin supérieur gauche pile au
+// pointeur. Sans `at`, on retombe au centre du viewport et on décentre de
+// (w/2, h/2) pour que la shape soit centrée à l'écran.
+function resolveSpawnTopLeft(
   editor: Editor,
+  w: number,
+  h: number,
   at?: { x: number; y: number }
 ): { x: number; y: number } {
-  if (at) return at
+  if (at) return { x: at.x, y: at.y }
   const bounds = editor.getViewportPageBounds()
-  return { x: bounds.midX, y: bounds.midY }
+  return { x: bounds.midX - w / 2, y: bounds.midY - h / 2 }
 }
 
 // Crée une nouvelle shape terminal. Par défaut au centre du viewport ;
@@ -221,16 +225,18 @@ function resolveSpawnCenter(
 // à chaque spawn si l'utilisateur travaille par préférence dans un autre
 // shell. `getState()` car la fonction est appelée hors React.
 export function spawnTerminalShape(editor: Editor, at?: { x: number; y: number }): void {
-  const { x: cx, y: cy } = resolveSpawnCenter(editor, at)
+  const W = 640
+  const H = 380
+  const { x, y } = resolveSpawnTopLeft(editor, W, H, at)
   const shell = useUIStore.getState().lastShell
   editor.createShape<TerminalShape>({
     id: createShapeId(),
     type: 'terminal',
-    x: cx - 320,
-    y: cy - 190,
+    x,
+    y,
     props: {
-      w: 640,
-      h: 380,
+      w: W,
+      h: H,
       shell,
       cwd: getDefaultCwd(),
       projectId: null,
@@ -257,7 +263,9 @@ export async function spawnChatShape(
   editor: Editor,
   at?: { x: number; y: number }
 ): Promise<void> {
-  const { x: cx, y: cy } = resolveSpawnCenter(editor, at)
+  const W = 560
+  const H = 480
+  const { x, y } = resolveSpawnTopLeft(editor, W, H, at)
   const id = createShapeId()
   const defaults = useChatStore.getState().defaults
 
@@ -279,11 +287,11 @@ export async function spawnChatShape(
   editor.createShape<ChatShape>({
     id,
     type: 'chat',
-    x: cx - 280,
-    y: cy - 240,
+    x,
+    y,
     props: {
-      w: 560,
-      h: 480,
+      w: W,
+      h: H,
       projectId: null,
       // Bind explicite shape ⇄ conversation initiale. Le bouton « + new »
       // du header fera muter cette prop pour plugger une autre conv sur la
@@ -308,7 +316,9 @@ export function spawnBrowserShape(
   rawUrl?: string,
   at?: { x: number; y: number }
 ): void {
-  const { x: cx, y: cy } = resolveSpawnCenter(editor, at)
+  const W = 900
+  const H = 600
+  const { x, y } = resolveSpawnTopLeft(editor, W, H, at)
   // `getState()` plutôt qu'un hook : `spawnBrowserShape` n'est pas un
   // composant React, on lit juste un snapshot ponctuel.
   const engine = getSearchEngine(useUIStore.getState().searchEngine)
@@ -321,11 +331,11 @@ export function spawnBrowserShape(
   editor.createShape<BrowserShape>({
     id,
     type: 'browser',
-    x: cx - 450,
-    y: cy - 300,
+    x,
+    y,
     props: {
-      w: 900,
-      h: 600,
+      w: W,
+      h: H,
       url,
       tabsJson: JSON.stringify([{ id: tabId, url, title: '', favicon: null }]),
       activeTabId: tabId,
@@ -342,17 +352,19 @@ export function spawnVSCodeShape(
   folder: string,
   at?: { x: number; y: number }
 ): void {
-  const { x: cx, y: cy } = resolveSpawnCenter(editor, at)
+  const W = 960
+  const H = 600
+  const { x, y } = resolveSpawnTopLeft(editor, W, H, at)
   // Normalise les backslashes Windows en slashes pour l'URL du serveur.
   const normalized = folder.replace(/\\/g, '/')
   editor.createShape<VSCodeShape>({
     id: createShapeId(),
     type: 'vscode',
-    x: cx - 480,
-    y: cy - 300,
+    x,
+    y,
     props: {
-      w: 960,
-      h: 600,
+      w: W,
+      h: H,
       folder: normalized,
       projectId: null
     }
@@ -363,7 +375,9 @@ export function spawnExplorerShape(
   editor: Editor,
   at?: { x: number; y: number }
 ): void {
-  const { x: cx, y: cy } = resolveSpawnCenter(editor, at)
+  const W = 920
+  const H = 580
+  const { x, y } = resolveSpawnTopLeft(editor, W, H, at)
   // Default : vue racine "Ce PC" avec historique initial à 1 entrée.
   // Plusieurs shapes Explorer en parallèle sont supportées (chacune
   // navigue indépendamment dans son propre historique).
@@ -371,11 +385,11 @@ export function spawnExplorerShape(
   editor.createShape<ExplorerShape>({
     id: createShapeId(),
     type: 'explorer',
-    x: cx - 460,
-    y: cy - 290,
+    x,
+    y,
     props: {
-      w: 920,
-      h: 580,
+      w: W,
+      h: H,
       currentPath: 'ThisPC',
       historyJson: initialHistory
     }
