@@ -23,6 +23,17 @@ export const IPC_CHANNELS = {
     status: 'vscode.status',
     openFolder: 'vscode.openFolder'
   },
+  // Explorateur de fichiers embarqué dans le canvas (ExplorerShape).
+  // Toutes les opérations passent par le main pour accéder au filesystem
+  // — le renderer sandboxé n'a pas accès direct à `fs`.
+  fs: {
+    list: 'fs.list',
+    quickAccess: 'fs.quickAccess',
+    open: 'fs.open',
+    rename: 'fs.rename',
+    trash: 'fs.trash',
+    openInExplorer: 'fs.openInExplorer'
+  },
   canvas: {
     saveSnapshot: 'canvas.saveSnapshot',
     loadSnapshot: 'canvas.loadSnapshot'

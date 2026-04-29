@@ -12,6 +12,7 @@ import { registerAIHandlers } from './ipc/ai.js'
 import { registerWikiHandlers } from './ipc/wiki.js'
 import { registerAgentsHandlers } from './ipc/agents.js'
 import { registerBrowserHandlers } from './ipc/browser.js'
+import { registerFsExplorerHandlers } from './ipc/fs-explorer.js'
 import { attachDownloadHandlers } from './services/browser-downloads.js'
 import { loadExtensionsAtBoot } from './services/browser-extensions.js'
 import { initDatabase } from './services/db.js'
@@ -72,6 +73,7 @@ app.whenReady().then(async () => {
   registerWikiHandlers()
   registerAgentsHandlers()
   registerBrowserHandlers()
+  registerFsExplorerHandlers()
 
   // Capture les téléchargements de la partition `persist:browser` (utilisée
   // par tous les <webview> des BrowserShape). DOIT être attaché APRÈS

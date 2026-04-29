@@ -3,6 +3,7 @@ import { useEditorStore } from '../../stores/editor-store.js'
 import {
   spawnBrowserShape,
   spawnChatShape,
+  spawnExplorerShape,
   spawnTerminalShape,
   spawnVSCodeShape
 } from './InfiniteCanvas.js'
@@ -189,6 +190,11 @@ export default function CanvasContextMenu(): React.ReactElement | null {
           <MenuItem icon="⌨" label="Terminal" shortcut="Ctrl+T" onClick={handle(() => spawnTerminalShape(editor!, at))} />
           <MenuItem icon="🌐" label="Navigateur" shortcut="Ctrl+B" onClick={handle(() => spawnBrowserShape(editor!, undefined, at))} />
           <MenuItem icon="📝" label="VSCode (dossier…)" onClick={handle(openFolderAndSpawn)} />
+          <MenuItem
+            icon="📁"
+            label="Explorateur de fichiers"
+            onClick={handle(() => spawnExplorerShape(editor!, at))}
+          />
           <MenuItem icon="✨" label="IA" trailing="▸" onClick={() => setView('ai')} />
           <div className="my-0.5 h-px" style={{ background: 'var(--border)' }} />
           <MenuItem icon="⊕" label="Centrer le canvas" onClick={handle(recenterCamera)} />

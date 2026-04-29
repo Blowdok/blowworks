@@ -50,6 +50,55 @@ const api = {
     openFolder: (folder: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.vscode.openFolder, { folder })
   },
+  fs: {
+    // Liste un dossier. `path` vide ou 'ThisPC' renvoie les disques.
+    list: (
+      path: string
+    ): Promise<
+      | {
+          ok: true
+          entries: Array<{
+            name: string
+            path: string
+            isDirectory: boolean
+            size: number
+            modifiedAt: number
+            ext: string
+            hidden: boolean
+          }>
+        }
+      | { ok: false; reason: string }
+    > => ipcRenderer.invoke(IPC_CHANNELS.fs.list, { path }),
+    // Sidebar Quick Access (Bureau, Documents, etc.). Statique au boot.
+    quickAccess: (): Promise<
+      Array<{ id: string; label: string; path: string | null; icon: string }>
+    > => ipcRenderer.invoke(IPC_CHANNELS.fs.quickAccess),
+    // Double-clic fichier : ouvre avec l'app par défaut Windows.
+    open: (
+      path: string
+    ): Promise<{ ok: true } | { ok: false; reason: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.fs.open, { path }),
+    // F2 : renomme. Le renderer fournit l'ancien chemin complet et le
+    // NOUVEAU NOM (pas le chemin) — le main rebuild le chemin pour éviter
+    // les attaques de chemin relatif.
+    rename: (
+      oldPath: string,
+      newName: string
+    ): Promise<
+      { ok: true; newPath: string } | { ok: false; reason: string }
+    > => ipcRenderer.invoke(IPC_CHANNELS.fs.rename, { oldPath, newName }),
+    // Suppr : envoie à la corbeille (réversible). Plus sûr que fs.rm.
+    trash: (
+      path: string
+    ): Promise<{ ok: true } | { ok: false; reason: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.fs.trash, { path }),
+    // Menu contextuel "Ouvrir dans l'Explorateur natif" : highlight le
+    // fichier dans son dossier parent (ou ouvre le dossier directement).
+    openInExplorer: (
+      path: string
+    ): Promise<{ ok: true } | { ok: false; reason: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.fs.openInExplorer, { path })
+  },
   canvas: {
     saveSnapshot: (snapshotJson: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.canvas.saveSnapshot, { snapshotJson }),

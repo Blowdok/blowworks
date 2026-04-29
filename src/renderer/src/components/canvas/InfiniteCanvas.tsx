@@ -7,7 +7,8 @@ import {
   type TerminalShape,
   type VSCodeShape,
   type ChatShape,
-  type BrowserShape
+  type BrowserShape,
+  type ExplorerShape
 } from './shapes/index.js'
 import {
   resolveQuery,
@@ -354,6 +355,29 @@ export function spawnVSCodeShape(
       h: 600,
       folder: normalized,
       projectId: null
+    }
+  })
+}
+
+export function spawnExplorerShape(
+  editor: Editor,
+  at?: { x: number; y: number }
+): void {
+  const { x: cx, y: cy } = resolveSpawnCenter(editor, at)
+  // Default : vue racine "Ce PC" avec historique initial à 1 entrée.
+  // Plusieurs shapes Explorer en parallèle sont supportées (chacune
+  // navigue indépendamment dans son propre historique).
+  const initialHistory = JSON.stringify({ paths: ['ThisPC'], index: 0 })
+  editor.createShape<ExplorerShape>({
+    id: createShapeId(),
+    type: 'explorer',
+    x: cx - 460,
+    y: cy - 290,
+    props: {
+      w: 920,
+      h: 580,
+      currentPath: 'ThisPC',
+      historyJson: initialHistory
     }
   })
 }
