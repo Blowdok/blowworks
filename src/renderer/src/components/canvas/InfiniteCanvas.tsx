@@ -8,7 +8,8 @@ import {
   type VSCodeShape,
   type ChatShape,
   type BrowserShape,
-  type ExplorerShape
+  type ExplorerShape,
+  type NotepadShape
 } from './shapes/index.js'
 import {
   resolveQuery,
@@ -394,4 +395,34 @@ export function spawnExplorerShape(
       historyJson: initialHistory
     }
   })
+}
+
+// Crée une nouvelle NotepadShape. Deux modes :
+//   • `filePath = null` (note libre) : le contenu vit dans `props.content`
+//     et est persisté avec le snapshot tldraw du canvas.
+//   • `filePath = "C:\\..."` : la shape lit/écrit le fichier sur le disque
+//     via fs.readFile / fs.writeFile (auto-save 500 ms debounce).
+// Si `at` est fourni, le coin supérieur gauche est placé pile au pointeur.
+export function spawnNotepadShape(
+  editor: Editor,
+  filePath: string | null = null,
+  at?: { x: number; y: number }
+): void {
+  const W = 480
+  const H = 360
+  const { x, y } = resolveSpawnTopLeft(editor, W, H, at)
+  const id = createShapeId()
+  editor.createShape<NotepadShape>({
+    id,
+    type: 'notepad',
+    x,
+    y,
+    props: {
+      w: W,
+      h: H,
+      filePath,
+      content: ''
+    }
+  })
+  editor.setSelectedShapes([id])
 }

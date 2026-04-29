@@ -111,7 +111,19 @@ const api = {
         path,
         screenX,
         screenY
-      })
+      }),
+    // Lit un fichier texte UTF-8 (utilisé par NotepadShape mode "fichier").
+    // Refuse les fichiers > 5 Mo et les dossiers.
+    readFile: (
+      path: string
+    ): Promise<{ ok: true; content: string } | { ok: false; reason: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.fs.readFile, { path }),
+    // Écrit un fichier texte UTF-8. Crée le fichier s'il n'existe pas.
+    writeFile: (
+      path: string,
+      content: string
+    ): Promise<{ ok: true } | { ok: false; reason: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.fs.writeFile, { path, content })
   },
   canvas: {
     saveSnapshot: (snapshotJson: string) =>

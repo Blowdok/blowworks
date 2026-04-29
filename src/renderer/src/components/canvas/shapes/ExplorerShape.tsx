@@ -11,6 +11,30 @@ import {
   type RecordProps
 } from 'tldraw'
 import type { VSCodeShape } from './VSCodeShape.js'
+import type { NotepadShape } from './NotepadShape.js'
+
+// Extensions reconnues comme « texte » → double-clic ouvre dans une
+// NotepadShape BlowWorks au lieu de l'application système. La liste est
+// volontairement conservative : on tape les formats classiques que
+// l'utilisateur veut éditer rapidement, pas les binaires/archives.
+const TEXT_FILE_EXTS = new Set([
+  'txt',
+  'md',
+  'log',
+  'json',
+  'csv',
+  'yml',
+  'yaml',
+  'ini',
+  'toml',
+  'xml',
+  'env',
+  'conf',
+  'cfg',
+  'gitignore',
+  'gitattributes',
+  'editorconfig'
+])
 
 // Shape Explorer (option 2) : explorateur de fichiers Windows recréé en
 // React/HTML, vraie shape tldraw qui suit zoom/pan. Pas de fenêtre native
@@ -313,17 +337,32 @@ const ExplorerView = memo(
       [entries, selected, anchorIndex]
     )
 
+    // Forward ref pour permettre à `onEntryDoubleClick` d'appeler
+    // `openInBlowNotepad` qui est défini plus bas (dépendance circulaire
+    // de useCallback). Pattern : on stocke la fonction dans une ref,
+    // mise à jour à chaque render, et on lit `current` au moment de
+    // l'appel.
+    const openInBlowNotepadRef = useRef<((target: FsEntry) => void) | null>(null)
+
     const onEntryDoubleClick = useCallback(
       (entry: FsEntry) => {
         if (entry.isDirectory) {
           navigateTo(entry.path)
-        } else {
-          void window.blow.fs.open(entry.path).then((res) => {
-            if (!res.ok) {
-              console.warn('[explorer-shape] échec open :', res.reason)
-            }
-          })
+          return
         }
+        // Fichier texte connu → ouvrir dans une NotepadShape BlowWorks
+        // sous l'Explorer plutôt que de déléguer à l'application système.
+        // Plus rapide et reste dans le canvas.
+        if (TEXT_FILE_EXTS.has(entry.ext) && openInBlowNotepadRef.current) {
+          openInBlowNotepadRef.current(entry)
+          return
+        }
+        // Fallback : application Windows par défaut.
+        void window.blow.fs.open(entry.path).then((res) => {
+          if (!res.ok) {
+            console.warn('[explorer-shape] échec open :', res.reason)
+          }
+        })
       },
       [navigateTo]
     )
@@ -508,6 +547,38 @@ const ExplorerView = memo(
       },
       [editor, shape.props.currentPath, computeSpawnPosition]
     )
+
+    // Spawn une NotepadShape liée au fichier cible, sous l'Explorer.
+    // Pas applicable aux dossiers (le bloc-notes édite des fichiers
+    // texte). Le caller filtre déjà sur isDirectory côté double-clic
+    // et menu contextuel — défense en profondeur ici.
+    const openInBlowNotepad = useCallback(
+      (target: FsEntry) => {
+        if (target.isDirectory) return
+        const pos = computeSpawnPosition()
+        const id = createShapeId()
+        editor.createShape<NotepadShape>({
+          id,
+          type: 'notepad',
+          x: pos.x,
+          y: pos.y,
+          props: {
+            w: 480,
+            h: 360,
+            filePath: target.path,
+            content: ''
+          }
+        })
+        editor.setSelectedShapes([id])
+      },
+      [editor, computeSpawnPosition]
+    )
+
+    // Maintien de la ref pour que `onEntryDoubleClick` (défini plus haut)
+    // puisse invoquer la fonction sans dépendance circulaire de useCallback.
+    useEffect(() => {
+      openInBlowNotepadRef.current = openInBlowNotepad
+    }, [openInBlowNotepad])
 
     // ── Menu contextuel ─────────────────────────────────────────────
 
@@ -715,6 +786,11 @@ const ExplorerView = memo(
               const target = contextMenu.target
               closeContextMenu()
               openInBlowExplorer(target)
+            }}
+            onOpenInBlowNotepad={() => {
+              const target = contextMenu.target
+              closeContextMenu()
+              if (target && !target.isDirectory) openInBlowNotepad(target)
             }}
             onShellMenu={() => {
               console.log('[explorer-shape] onShellMenu déclenché')
@@ -1329,7 +1405,8 @@ function ContextMenu({
   onRefresh,
   onShellMenu,
   onOpenInBlowVSCode,
-  onOpenInBlowExplorer
+  onOpenInBlowExplorer,
+  onOpenInBlowNotepad
 }: {
   x: number
   y: number
@@ -1352,6 +1429,9 @@ function ContextMenu({
   onOpenInBlowVSCode: () => void
   // Spawn une nouvelle ExplorerShape BlowWorks sur le dossier cible.
   onOpenInBlowExplorer: () => void
+  // Spawn une NotepadShape BlowWorks liée au fichier cible. No-op si la
+  // cible est un dossier ou null (le menu fond ne propose pas l'item).
+  onOpenInBlowNotepad: () => void
 }): React.ReactElement {
   const ref = useRef<HTMLDivElement>(null)
 
@@ -1365,9 +1445,10 @@ function ContextMenu({
     return () => document.removeEventListener('mousedown', onDown, true)
   }, [onClose])
 
-  // Clamp aux bords viewport.
-  const MENU_W = 220
-  const MENU_H = target ? 220 : 120
+  // Clamp aux bords viewport. Hauteur estimée en fonction du contenu :
+  // plus d'items quand on a une cible (target) qu'en menu fond.
+  const MENU_W = 240
+  const MENU_H = target ? 260 : 140
   const vw = window.innerWidth
   const vh = window.innerHeight
   const left = Math.min(x, vw - MENU_W - 8)
@@ -1442,6 +1523,12 @@ function ContextMenu({
           <MenuSeparator />
           <MenuRow
             icon="📝"
+            label="Ouvrir avec Bloc-notes (BlowWorks)"
+            onClick={onOpenInBlowNotepad}
+            disabled={target.isDirectory}
+          />
+          <MenuRow
+            icon="🧰"
             label="Ouvrir dans VSCode (BlowWorks)"
             onClick={onOpenInBlowVSCode}
             disabled={isDriveRoot ?? false}

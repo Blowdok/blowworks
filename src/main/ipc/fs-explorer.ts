@@ -6,7 +6,9 @@ import {
   openFile,
   renameEntry,
   trashEntry,
-  openInNativeExplorer
+  openInNativeExplorer,
+  readTextFile,
+  writeTextFile
 } from '../services/fs-explorer.js'
 import { showShellContextMenu } from '../services/shell-context-menu.js'
 
@@ -88,6 +90,27 @@ export function registerFsExplorerHandlers(): void {
         screenX: raw.screenX,
         screenY: raw.screenY
       })
+    }
+  )
+
+  ipcMain.handle(IPC_CHANNELS.fs.readFile, async (_evt, raw: { path: string }) => {
+    if (!raw || typeof raw.path !== 'string') {
+      return { ok: false, reason: 'payload-invalide' }
+    }
+    return readTextFile(raw.path)
+  })
+
+  ipcMain.handle(
+    IPC_CHANNELS.fs.writeFile,
+    async (_evt, raw: { path: string; content: string }) => {
+      if (
+        !raw ||
+        typeof raw.path !== 'string' ||
+        typeof raw.content !== 'string'
+      ) {
+        return { ok: false, reason: 'payload-invalide' }
+      }
+      return writeTextFile(raw.path, raw.content)
     }
   )
 }

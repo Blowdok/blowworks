@@ -4,6 +4,7 @@ import {
   spawnBrowserShape,
   spawnChatShape,
   spawnExplorerShape,
+  spawnNotepadShape,
   spawnTerminalShape,
   spawnVSCodeShape
 } from './InfiniteCanvas.js'
@@ -194,6 +195,11 @@ export default function CanvasContextMenu(): React.ReactElement | null {
             icon="📁"
             label="Explorateur de fichiers"
             onClick={handle(() => spawnExplorerShape(editor!, at))}
+          />
+          <MenuItem
+            icon="📝"
+            label="Bloc-notes"
+            onClick={handle(() => spawnNotepadShape(editor!, null, at))}
           />
           <MenuItem icon="✨" label="IA" trailing="▸" onClick={() => setView('ai')} />
           <div className="my-0.5 h-px" style={{ background: 'var(--border)' }} />

@@ -37,7 +37,13 @@ export const IPC_CHANNELS = {
     // Git, "Ouvrir avec…", "Propriétés", "Partager…", etc.) au point écran
     // donné. Bloque pendant la sélection puis InvokeCommand sur la verb
     // choisie. Win32 only.
-    shellContextMenu: 'fs.shellContextMenu'
+    shellContextMenu: 'fs.shellContextMenu',
+    // Lecture/écriture d'un fichier texte arbitraire (UTF-8). Utilisé par
+    // la NotepadShape pour le mode "lié à un fichier". Le main valide
+    // qu'il s'agit d'un chemin absolu existant — pas de sandbox sur le
+    // dossier puisque le user choisit explicitement le fichier.
+    readFile: 'fs.readFile',
+    writeFile: 'fs.writeFile'
   },
   canvas: {
     saveSnapshot: 'canvas.saveSnapshot',

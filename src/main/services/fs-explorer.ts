@@ -248,6 +248,48 @@ export async function openInNativeExplorer(
   }
 }
 
+// ── Lecture/écriture texte (NotepadShape) ─────────────────────────────
+
+// Limite max pour la lecture en NotepadShape : 5 Mo. Au-delà, c'est sans
+// doute pas un fichier texte (binaire mal nommé) ou trop gros pour un
+// éditeur "bloc-notes" — VSCode est mieux placé pour ça.
+const MAX_TEXT_FILE_BYTES = 5 * 1024 * 1024
+
+// Lit un fichier texte UTF-8 et retourne son contenu. Refuse les fichiers
+// trop gros et les chemins inexistants. Pas de sandboxing du chemin :
+// l'utilisateur choisit explicitement quoi ouvrir (clic dans Explorer,
+// double-clic sur .txt, …) — le risque de path traversal est nul.
+export async function readTextFile(
+  path: string
+): Promise<{ ok: true; content: string } | { ok: false; reason: string }> {
+  try {
+    const stat = await fs.stat(path)
+    if (stat.isDirectory()) return { ok: false, reason: 'ENOTDIR' }
+    if (stat.size > MAX_TEXT_FILE_BYTES) {
+      return { ok: false, reason: 'fichier-trop-gros' }
+    }
+    const content = await fs.readFile(path, 'utf-8')
+    return { ok: true, content }
+  } catch (err) {
+    return { ok: false, reason: errorToReason(err) }
+  }
+}
+
+// Écrit un fichier texte UTF-8. Crée le fichier s'il n'existe pas (pour
+// permettre le « Save As » futur). Pas de backup pour le moment — on
+// fait confiance à l'auto-save debounce qui ne fire qu'après inactivité.
+export async function writeTextFile(
+  path: string,
+  content: string
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  try {
+    await fs.writeFile(path, content, 'utf-8')
+    return { ok: true }
+  } catch (err) {
+    return { ok: false, reason: errorToReason(err) }
+  }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────
 
 // Normalise les erreurs Node en codes courts pour le renderer. Les codes
