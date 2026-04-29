@@ -546,6 +546,11 @@ const NotepadView = memo(
               spellCheck={false}
               wrap={wordWrap ? 'soft' : 'off'}
               placeholder={filePath === null ? 'Écrivez votre note ici…' : ''}
+              // Classe activée en mode recherche → surlignage jaune des
+              // matches via `::selection` scopé (cf. <style> injecté plus
+              // bas). En mode édition normale, la sélection garde la
+              // couleur système par défaut.
+              className={searchMode !== null ? 'notepad-search-active' : undefined}
               style={{
                 flex: 1,
                 resize: 'none',
@@ -567,17 +572,33 @@ const NotepadView = memo(
           )}
 
           {searchMode !== null && !loading && loadError === null && (
-            <SearchBar
-              mode={searchMode}
-              buffer={buffer}
-              setBuffer={setBuffer}
-              textareaRef={textareaRef}
-              onClose={() => {
-                setSearchMode(null)
-                textareaRef.current?.focus()
-              }}
-              onSwitchMode={(m) => setSearchMode(m)}
-            />
+            <>
+              {/* Surlignage jaune des occurrences pendant la recherche.
+                  ::selection ne peut pas être inline-style → on injecte une
+                  règle scopée à la classe `notepad-search-active`. !important
+                  pour passer outre les éventuels styles agent-utilisateur. */}
+              <style>{`
+                textarea.notepad-search-active::selection {
+                  background: #ffeb3b !important;
+                  color: #000 !important;
+                }
+                textarea.notepad-search-active::-moz-selection {
+                  background: #ffeb3b !important;
+                  color: #000 !important;
+                }
+              `}</style>
+              <SearchBar
+                mode={searchMode}
+                buffer={buffer}
+                setBuffer={setBuffer}
+                textareaRef={textareaRef}
+                onClose={() => {
+                  setSearchMode(null)
+                  textareaRef.current?.focus()
+                }}
+                onSwitchMode={(m) => setSearchMode(m)}
+              />
+            </>
           )}
         </div>
       </div>
@@ -806,11 +827,24 @@ function MenuDropdown({
     function onKey(e: KeyboardEvent): void {
       if (e.key === 'Escape') onClose()
     }
-    document.addEventListener('mousedown', onDown, true)
-    document.addEventListener('keydown', onKey, true)
+    // Différer l'attachement au prochain tick : sans ce defer, le mousedown
+    // qui a OUVERT le menu (déjà en cours de propagation au moment où
+    // useEffect run en mode capture sur d'autres listeners globaux) peut
+    // encore atteindre notre listener et fermer le menu instantanément.
+    // Le tick suivant garantit qu'on ne capture que les clics POSTÉRIEURS
+    // à l'ouverture.
+    let attached = false
+    const timeoutId = setTimeout(() => {
+      document.addEventListener('mousedown', onDown, true)
+      document.addEventListener('keydown', onKey, true)
+      attached = true
+    }, 0)
     return () => {
-      document.removeEventListener('mousedown', onDown, true)
-      document.removeEventListener('keydown', onKey, true)
+      clearTimeout(timeoutId)
+      if (attached) {
+        document.removeEventListener('mousedown', onDown, true)
+        document.removeEventListener('keydown', onKey, true)
+      }
     }
   }, [onClose, anchorRef])
 
@@ -943,6 +977,7 @@ function SearchBar({
 
   // Cherche la prochaine occurrence depuis la position courante du
   // curseur (ou la sélection courante en mode "next after current match").
+  // Scroll automatiquement la textarea pour rendre l'occurrence visible.
   const findOccurrence = useCallback(
     (direction: 1 | -1) => {
       if (!query) return
@@ -966,6 +1001,7 @@ function SearchBar({
       if (idx === -1) return
       ta.focus()
       ta.setSelectionRange(idx, idx + needle.length)
+      scrollTextareaToSelection(ta)
     },
     [query, buffer, caseSensitive, textareaRef]
   )
@@ -990,7 +1026,9 @@ function SearchBar({
         if (textareaRef.current) {
           textareaRef.current.focus()
           textareaRef.current.setSelectionRange(newPos, newPos)
-          // Cherche la prochaine occurrence après le remplacement.
+          scrollTextareaToSelection(textareaRef.current)
+          // Cherche la prochaine occurrence après le remplacement (qui
+          // appliquera lui-même un scroll vers la nouvelle sélection).
           findOccurrence(1)
         }
       })
@@ -1243,6 +1281,87 @@ function SaveStatusBadge({
 function basenameWin(path: string): string {
   const parts = path.split(/[\\/]/).filter((p) => p.length > 0)
   return parts[parts.length - 1] ?? path
+}
+
+// Scroll la textarea pour rendre la sélection courante visible. Sans ce
+// helper, `setSelectionRange` ne scroll pas systématiquement (Chromium
+// scroll uniquement si la textarea avait déjà le focus AVANT le call,
+// ce qui n'est pas notre cas quand le focus est dans la search bar).
+//
+// Algo : on construit un <div> miroir hors écran avec exactement les
+// mêmes propriétés visuelles que la textarea (police, padding, wrap…),
+// on y insère le texte AVANT la position de sélection + un span sentinel,
+// on lit `offsetTop` du sentinel pour connaître la position visuelle (en
+// px) de la sélection, puis on ajuste `scrollTop` de la textarea pour
+// que cette position soit centrée dans la zone visible.
+function scrollTextareaToSelection(ta: HTMLTextAreaElement): void {
+  const start = ta.selectionStart ?? 0
+  const style = window.getComputedStyle(ta)
+  const mirror = document.createElement('div')
+  // Propriétés qui affectent le rendu et le retour à la ligne.
+  const propsToCopy: Array<keyof CSSStyleDeclaration> = [
+    'boxSizing',
+    'borderTopWidth',
+    'borderRightWidth',
+    'borderBottomWidth',
+    'borderLeftWidth',
+    'borderTopStyle',
+    'borderRightStyle',
+    'borderBottomStyle',
+    'borderLeftStyle',
+    'paddingTop',
+    'paddingRight',
+    'paddingBottom',
+    'paddingLeft',
+    'fontStyle',
+    'fontVariant',
+    'fontWeight',
+    'fontStretch',
+    'fontSize',
+    'fontSizeAdjust',
+    'fontFamily',
+    'lineHeight',
+    'textAlign',
+    'textTransform',
+    'textIndent',
+    'textDecoration',
+    'letterSpacing',
+    'wordSpacing',
+    'tabSize',
+    'whiteSpace',
+    'wordWrap',
+    'overflowWrap'
+  ]
+  for (const prop of propsToCopy) {
+    // Cast nécessaire car CSSStyleDeclaration[K] peut être readonly côté types.
+    ;(mirror.style as unknown as Record<string, string>)[prop as string] =
+      (style as unknown as Record<string, string>)[prop as string] ?? ''
+  }
+  mirror.style.position = 'absolute'
+  mirror.style.visibility = 'hidden'
+  mirror.style.top = '0'
+  mirror.style.left = '0'
+  mirror.style.width = `${ta.clientWidth}px`
+  mirror.style.height = 'auto'
+  mirror.style.overflow = 'hidden'
+
+  mirror.textContent = ta.value.substring(0, start)
+  const sentinel = document.createElement('span')
+  // Zero-width space pour ne pas affecter le wrap.
+  sentinel.textContent = '​'
+  mirror.appendChild(sentinel)
+
+  document.body.appendChild(mirror)
+  const sentinelTop = sentinel.offsetTop
+  document.body.removeChild(mirror)
+
+  // Marge confortable haut/bas pour ne pas coller au bord visible.
+  const margin = 24
+  const visibleTop = ta.scrollTop
+  const visibleBottom = ta.scrollTop + ta.clientHeight
+  if (sentinelTop < visibleTop + margin || sentinelTop > visibleBottom - margin) {
+    ta.scrollTop = Math.max(0, sentinelTop - ta.clientHeight / 2)
+  }
 }
 
 function humanizeError(reason: string): string {
