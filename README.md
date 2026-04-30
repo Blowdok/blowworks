@@ -48,7 +48,7 @@
 
 - **Persistance automatique** : layout du canvas, scrollback des terminaux, projets, paramètres — tout est sauvegardé dans une base SQLite locale et restauré au redémarrage.
 - **Palette noir / gris / blanc / cyan** sobre et cohérente (pas de violet/mauve). Contraste WCAG AA sur tous les libellés (`--fg-muted: #9ca3af`).
-- **Header centralisé** : la barre de pages native tldraw (Main Menu + Pages) est **déplacée via `appendChild`** dans le header pour libérer le canvas, sans casser le positionnement Radix des dropdowns. Le fond des popovers est aligné sur la sidebar (`--bg-secondary`).
+- **Header centralisé** : la barre de pages native tldraw (Main Menu + Pages) est **déplacée via `appendChild`** dans le header pour libérer le canvas, sans casser le positionnement Radix des dropdowns. Le fond des popovers est aligné sur la sidebar (`--bg-secondary`). Le Header se concentre sur les actions de **création** (Terminal / VSCode / Chat / boutons custom navigateur) — les toggles d'éléments natifs tldraw (panneau de styles, barre d'outils du bas) ont été déplacés dans la sidebar à la **section "Tools Canvas"** pour libérer de la place dans la barre du haut.
 - **Boutons custom du Header (arbre récursif configurable)** : à droite des boutons système (Terminal / VSCode / Chat), une série de boutons que l'utilisateur ajoute/édite/supprime depuis **Réglages > Navigateur > "Boutons du Header"**. Chaque bouton a un libellé, une couleur (pastille avec initiale) et un **arbre d'entrées** récursif où chaque nœud est :
   - un **item** terminal `{ label, url, tagline? }` → clic = spawn `BrowserShape` ;
   - un **dossier** `{ label, children: Entry[] }` → conteneur organisationnel (pas d'URL), profondeur **illimitée**.

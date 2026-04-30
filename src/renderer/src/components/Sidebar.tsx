@@ -13,6 +13,7 @@ import GitHubAccount from './GitHubAccount.js'
 import SettingsModal from './SettingsModal.js'
 import MemorySidebarSection from './MemorySidebarSection.js'
 import GraphSidebarSection from './GraphSidebarSection.js'
+import CanvasToolsSidebarSection from './CanvasToolsSidebarSection.js'
 import WikiExplorerSidebar from './WikiExplorerSidebar.js'
 import WikiPageViewer from './WikiPageViewer.js'
 import WikiGraphModal from './WikiGraphModal.js'
@@ -421,6 +422,13 @@ function StandardSidebarContent(props: StandardSidebarContentProps): React.React
           l'instant. Séparée par border-t comme les autres sections. */}
       <section className="shrink-0 border-t border-[var(--border)] py-2">
         <GraphSidebarSection collapsed={collapsed} />
+      </section>
+
+      {/* Section Tools Canvas — toggles des éléments natifs tldraw
+          (panneau de styles + barre d'outils du bas). Déplacés depuis
+          le Header pour libérer de la place dans la barre du haut. */}
+      <section className="shrink-0 border-t border-[var(--border)] py-2">
+        <CanvasToolsSidebarSection collapsed={collapsed} />
       </section>
     </>
   )

@@ -15,14 +15,12 @@ import type {
 } from '@shared/header-buttons.js'
 
 // Barre supérieure : drag region native + actions rapides + branding.
-// Regroupe toutes les actions globales (nouveau terminal, toggle styles, pages)
-// pour garder le canvas tldraw épuré.
+// Regroupe les actions de création (Terminal, VSCode, Chat, boutons custom
+// Navigateur) pour garder le canvas tldraw épuré. Les toggles d'éléments
+// natifs tldraw (panneau de styles, barre d'outils) sont dans la sidebar
+// à la section "Tools Canvas".
 export default function Header() {
   const toggleSidebar = useUIStore((s) => s.toggleSidebar)
-  const stylePanelVisible = useUIStore((s) => s.stylePanelVisible)
-  const toggleStylePanel = useUIStore((s) => s.toggleStylePanel)
-  const toolbarVisible = useUIStore((s) => s.toolbarVisible)
-  const toggleToolbar = useUIStore((s) => s.toggleToolbar)
   const editor = useEditorStore((s) => s.editor)
 
   // Compteurs par type de shape portail (toutes pages confondues). Sert
@@ -239,42 +237,6 @@ export default function Header() {
               {shapeCounts.browser}
             </span>
           )}
-        </button>
-
-        <button
-          type="button"
-          onClick={toggleStylePanel}
-          className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border-[0.5px] border-[var(--border)] px-2.5 py-1 font-medium transition-colors hover:bg-[var(--bg-tertiary)]"
-          style={{
-            color: stylePanelVisible ? 'var(--fg-secondary)' : 'var(--fg-muted)'
-          }}
-          title={
-            stylePanelVisible
-              ? 'Masquer le panneau de styles'
-              : 'Afficher le panneau de styles'
-          }
-          aria-pressed={stylePanelVisible}
-        >
-          <PaletteIcon />
-          <span>Styles</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={toggleToolbar}
-          className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border-[0.5px] border-[var(--border)] px-2.5 py-1 font-medium transition-colors hover:bg-[var(--bg-tertiary)]"
-          style={{
-            color: toolbarVisible ? 'var(--fg-secondary)' : 'var(--fg-muted)'
-          }}
-          title={
-            toolbarVisible
-              ? 'Masquer la barre d’outils (Alt+T)'
-              : 'Afficher la barre d’outils (Alt+T)'
-          }
-          aria-pressed={toolbarVisible}
-        >
-          <WrenchIcon />
-          <span>Outils</span>
         </button>
 
       </nav>
@@ -736,27 +698,6 @@ function GlobeIcon() {
   )
 }
 
-// Icône « Outils » pour le toggle de la toolbar tldraw. Clé à molette
-// simplifiée, cohérente avec le style SVG 14×14 stroke-based des autres
-// icônes custom du Header (PaletteIcon, WrenchIcon, etc.).
-function WrenchIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-    </svg>
-  )
-}
-
 function ChevronDownIcon({ open }: { open: boolean }) {
   return (
     <svg
@@ -775,28 +716,6 @@ function ChevronDownIcon({ open }: { open: boolean }) {
       }}
     >
       <polyline points="6 9 12 15 18 9" />
-    </svg>
-  )
-}
-
-function PaletteIcon() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
-      <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" />
-      <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" />
-      <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" />
-      <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" />
     </svg>
   )
 }
