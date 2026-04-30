@@ -139,6 +139,40 @@ body,
   display: none !important;
 }
 
+/* Pan mode global : déclenché quand l'outil main (hand) tldraw est
+   sélectionné OU que la touche Espace est maintenue (cf. ShapePortalManager).
+   On force `pointer-events: none` sur TOUT le contenu des portails — y
+   compris les iframes (VSCode, openvscode-server) et les <webview>
+   Electron (BrowserShape) — pour que le pointerdown traverse jusqu'à
+   tldraw qui peut alors panner le canvas peu importe ce qui se trouve
+   sous le pointeur. `!important` car les enfants surchargent en inline
+   style `pointer-events: auto` (header buttons, body iframe, xterm…).
+
+   Couvre AUSSI les shapes inline tldraw (Explorer, Notepad) rendues via
+   `HTMLContainer` (= `.tl-html-container`) qui vivent dans `.tl-container`
+   et non dans le clip-container des portails — sans cette branche, le
+   pan ne marchait pas au-dessus de l'explorateur de fichiers. */
+[data-shape-portal-clip][data-pan-mode='true'],
+[data-shape-portal-clip][data-pan-mode='true'] *,
+body[data-pan-mode='true'] .tl-html-container,
+body[data-pan-mode='true'] .tl-html-container * {
+  pointer-events: none !important;
+}
+
+/* Curseur pan cohérent quand le mode est actif : la toolbar tldraw
+   applique déjà `cursor: grab` sur le canvas, on l'étend aux portails
+   et aux shapes inline pour que le visuel reste continu lorsque la
+   souris passe au-dessus d'une iframe / webview / explorateur
+   désormais "transparente". */
+[data-shape-portal-clip][data-pan-mode='true'],
+body[data-pan-mode='true'] .tl-html-container {
+  cursor: grab;
+}
+[data-shape-portal-clip][data-pan-mode='true']:active,
+body[data-pan-mode='true'] .tl-html-container:active {
+  cursor: grabbing;
+}
+
 /* Le bouton "Pages" natif de tldraw (menu-zone) est caché : on le remplace
    par la `TabsBar` custom qui offre une navigation par onglets directement
    sous le header. Le Main Menu (hamburger) reste visible et adopté dans

@@ -151,6 +151,77 @@ export default function ShapePortalManager(): React.ReactElement {
   const currentPageId = useValue('current-page-id', () => editor.getCurrentPageId(), [editor])
   const canvasRect = useCanvasRect()
 
+  // Outil courant tldraw — réactif via useValue. Quand l'utilisateur active
+  // l'outil « main » (hand tool, bouton paume dans la toolbar du bas-centre),
+  // `currentToolId === 'hand'` et on bascule en pan mode global : les
+  // iframes/webviews des shapes portail laissent passer le drag tldraw pour
+  // panner le canvas même quand le pointeur est au-dessus d'elles.
+  const currentToolId = useValue('current-tool-id', () => editor.getCurrentToolId(), [editor])
+
+  // Touche Espace maintenue : raccourci tldraw natif pour panner sans
+  // changer d'outil. Tracking maison (plutôt que `editor.inputs.keys`) car
+  // on doit IGNORER l'espace tapé dans un input/textarea/contenteditable
+  // (terminal, notepad, barre d'URL navigateur, chat…) sinon le pan
+  // s'activerait dès que l'utilisateur écrit un caractère espace.
+  const [spaceHeld, setSpaceHeld] = useState(false)
+  useEffect(() => {
+    const isEditable = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false
+      const tag = target.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+      if (target.isContentEditable) return true
+      return false
+    }
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.code !== 'Space') return
+      if (e.repeat) return
+      if (isEditable(e.target)) return
+      setSpaceHeld(true)
+    }
+    const onKeyUp = (e: KeyboardEvent): void => {
+      if (e.code !== 'Space') return
+      setSpaceHeld(false)
+    }
+    // Sécurité : si la fenêtre perd le focus alors que l'espace est pressé
+    // (ex. Alt+Tab vers une autre app), on n'aura jamais le keyup → on
+    // resetterait le pan mode "à vie". Le blur global remet à zéro.
+    const onBlur = (): void => setSpaceHeld(false)
+    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keyup', onKeyUp)
+    window.addEventListener('blur', onBlur)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keyup', onKeyUp)
+      window.removeEventListener('blur', onBlur)
+    }
+  }, [])
+
+  // Pan mode global : outil main actif (toolbar) OU espace maintenu.
+  // Quand `true`, le clip-container expose `data-pan-mode="true"` qui
+  // déclenche une règle CSS dans globals.css forçant `pointer-events: none`
+  // sur tous les descendants (iframes, webviews, headers, boutons…).
+  // Conséquence : pointerdown traverse les portails et atteint tldraw,
+  // qui peut alors panner le canvas peu importe ce qui est sous le pointeur.
+  const panMode = currentToolId === 'hand' || spaceHeld
+
+  // Propage l'état pan mode sur `<body>` aussi : les shapes rendues inline
+  // par tldraw via `HTMLContainer` (Explorer, Notepad) ne vivent PAS dans
+  // le clip-container des portails — elles sont enfants directes de
+  // `.tl-container`. Pour qu'elles laissent passer le pan elles aussi,
+  // une règle CSS dans globals.css cible `body[data-pan-mode='true']
+  // .tl-html-container *`. Sans cela, l'outil main / espace ne marchait
+  // qu'au-dessus des shapes portail.
+  useEffect(() => {
+    if (panMode) {
+      document.body.dataset.panMode = 'true'
+    } else {
+      delete document.body.dataset.panMode
+    }
+    return () => {
+      delete document.body.dataset.panMode
+    }
+  }, [panMode])
+
   // Helper : vérifie si une shape portail est DÉJÀ au top de la pile
   // des shapes portail de la page courante (vscode/terminal/chat/browser).
   // Évite les writes redondants au store tldraw (un bringToFront sur une
@@ -361,7 +432,18 @@ export default function ShapePortalManager(): React.ReactElement {
   const selectedSet = new Set(selectedIds)
 
   return (
-    <div style={clipStyle} data-shape-portal-clip="">
+    <div
+      style={clipStyle}
+      data-shape-portal-clip=""
+      // Activé quand l'outil main tldraw est sélectionné OU que la touche
+      // espace est maintenue. Couplé à la règle CSS dans globals.css
+      // (sélecteur `[data-shape-portal-clip][data-pan-mode="true"] *`)
+      // qui force `pointer-events: none !important` sur tous les
+      // descendants — y compris les iframes (VSCode) et webviews
+      // (BrowserShape) qui interceptaient le pointerdown et bloquaient
+      // le pan tldraw au-dessus d'elles.
+      data-pan-mode={panMode ? 'true' : undefined}
+    >
       {portalShapes.map((shape) => {
         // Page d'appartenance RÉSOLUE (remonte les groupes éventuels) —
         // pas le `parentId` direct qui pointe vers le group quand l'user
