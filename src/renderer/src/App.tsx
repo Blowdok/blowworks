@@ -10,6 +10,7 @@ import { useUIStore } from './stores/ui-store.js'
 import { useChatStore } from './stores/chat-store.js'
 import { useWikiStore } from './stores/wiki-store.js'
 import { useBrowserStore } from './stores/browser-store.js'
+import { useHeaderButtonsStore } from './stores/header-buttons-store.js'
 
 // Layout BlowWorks :
 // ┌──────────────────────── Header (48px) ────────────────────────┐
@@ -24,6 +25,7 @@ export default function App() {
   const hydrateChat = useChatStore((s) => s.hydrate)
   const refreshWiki = useWikiStore((s) => s.refresh)
   const hydrateBrowser = useBrowserStore((s) => s.hydrate)
+  const hydrateHeaderButtons = useHeaderButtonsStore((s) => s.hydrate)
 
   useEffect(() => {
     loadProjects()
@@ -40,7 +42,18 @@ export default function App() {
     // push event `bookmarks.onChanged` pour rester synchro entre les
     // BrowserShapes (étoile remplie/vide).
     void hydrateBrowser()
-  }, [loadProjects, hydrateUI, hydrateChat, refreshWiki, hydrateBrowser])
+    // Hydrate les boutons custom du Header (configurés via Settings >
+    // Navigateur, persistés dans SQLite settings, clé `header.buttons`).
+    // Au premier lancement on seed avec le preset IA historique.
+    void hydrateHeaderButtons()
+  }, [
+    loadProjects,
+    hydrateUI,
+    hydrateChat,
+    refreshWiki,
+    hydrateBrowser,
+    hydrateHeaderButtons
+  ])
 
   return (
     <div className="grid h-full w-full grid-rows-[48px_1fr] bg-[var(--bg-primary)]">

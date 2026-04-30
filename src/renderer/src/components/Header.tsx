@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useUIStore } from '../stores/ui-store.js'
 import { useEditorStore } from '../stores/editor-store.js'
 import {
@@ -7,7 +7,12 @@ import {
   spawnChatShape,
   spawnBrowserShape
 } from './canvas/InfiniteCanvas.js'
-import { AI_SERVICES, type AIService } from '@shared/ai-services.js'
+import { useHeaderButtonsStore } from '../stores/header-buttons-store.js'
+import type {
+  HeaderButton,
+  HeaderButtonEntry,
+  HeaderButtonItem
+} from '@shared/header-buttons.js'
 
 // Barre supérieure : drag region native + actions rapides + branding.
 // Regroupe toutes les actions globales (nouveau terminal, toggle styles, pages)
@@ -105,35 +110,11 @@ export default function Header() {
     if (editor) spawnBrowserShape(editor)
   }
 
-  function handleSpawnAI(service: AIService): void {
-    if (!editor) return
-    // `spawnBrowserShape(editor, url)` accepte une URL libre — on lui
-    // passe la homepage du service. Le webview gère l'auth via la
-    // partition `persist:browser` partagée (login persistant).
-    spawnBrowserShape(editor, service.homepage)
-    setAIMenuOpen(false)
-  }
-
-  // État du menu déroulant "IA". Click extérieur / Échap referme.
-  const [aiMenuOpen, setAIMenuOpen] = useState(false)
-  const aiMenuWrapperRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!aiMenuOpen) return
-    function onMouseDown(e: MouseEvent): void {
-      if (aiMenuWrapperRef.current?.contains(e.target as Node)) return
-      setAIMenuOpen(false)
-    }
-    function onKey(e: KeyboardEvent): void {
-      if (e.key === 'Escape') setAIMenuOpen(false)
-    }
-    document.addEventListener('mousedown', onMouseDown, true)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onMouseDown, true)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [aiMenuOpen])
+  // Boutons custom du Header (configurables depuis Settings > Navigateur).
+  // Chaque bouton ouvre une BrowserShape sur l'URL de l'item choisi.
+  // L'état d'ouverture du menu déroulant est local au composant (un
+  // bouton ouvert à la fois) — clé `null` = aucun menu ouvert.
+  const headerButtons = useHeaderButtonsStore((s) => s.buttons)
 
   return (
     <header className="drag-region grid h-12 grid-cols-[1fr_auto_1fr] items-center border-b border-[var(--border)] bg-[var(--bg-secondary)] px-3 text-[var(--fg-primary)]">
@@ -216,65 +197,29 @@ export default function Header() {
           )}
         </button>
 
-        {/* Bouton IA + menu déroulant : spawne une BrowserShape sur la
-            homepage du service choisi. Tous les services sont rendus
-            dans le même webview Electron — login partagé entre eux. */}
-        <div ref={aiMenuWrapperRef} className="relative">
-          <button
-            type="button"
-            onClick={() => setAIMenuOpen((v) => !v)}
+        {/* Boutons custom configurables depuis Settings > Navigateur.
+            Chaque bouton ouvre un arbre `entries` qui peut contenir des
+            URLs terminales (items) ou des dossiers (récursif, profondeur
+            illimitée) :
+              • 0 entry          → bouton désactivé (à configurer)
+              • 1 entry item     → clic = spawn direct (pas de menu)
+              • sinon            → menu cascading : dossiers s'expandent
+                                   en sous-menu à droite au survol/clic
+            Login persistant via la partition `persist:browser` du
+            webview Electron (cookies partagés entre tous les boutons). */}
+        {headerButtons.map((btn) => (
+          <HeaderCustomButton
+            key={btn.id}
+            button={btn}
             disabled={!editor}
-            className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border-[0.5px] border-[var(--border)] px-2.5 py-1 font-medium transition-colors hover:border-[var(--fg-secondary)] hover:bg-[var(--bg-tertiary)] disabled:cursor-not-allowed disabled:opacity-40"
-            style={{
-              color: aiMenuOpen ? activeColor : inactiveColor,
-              background: aiMenuOpen ? 'var(--bg-tertiary)' : undefined
+            inactiveColor={inactiveColor}
+            activeColor={activeColor}
+            onSpawn={(item) => {
+              if (!editor) return
+              spawnBrowserShape(editor, item.url)
             }}
-            title="Lancer un assistant IA"
-            aria-haspopup="menu"
-            aria-expanded={aiMenuOpen}
-          >
-            <SparkIcon />
-            <span>IA</span>
-            <ChevronDownIcon open={aiMenuOpen} />
-          </button>
-          {aiMenuOpen && (
-            <div
-              role="menu"
-              aria-label="Choisir un assistant IA"
-              className="absolute left-0 top-full z-50 mt-1 flex min-w-[260px] flex-col rounded-[var(--radius-sm)] border p-1 shadow-2xl"
-              style={{
-                background: 'var(--bg-secondary)',
-                borderColor: 'var(--border)'
-              }}
-            >
-              {AI_SERVICES.map((svc) => (
-                <button
-                  key={svc.id}
-                  type="button"
-                  role="menuitem"
-                  onClick={() => handleSpawnAI(svc)}
-                  className="flex items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-[var(--bg-tertiary)]"
-                >
-                  <span
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
-                    style={{ background: svc.color }}
-                    aria-hidden
-                  >
-                    {svc.label[0]}
-                  </span>
-                  <span className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-[var(--fg-primary)]">
-                      {svc.label}
-                    </span>
-                    <span className="truncate text-[10px] text-[var(--fg-muted)]">
-                      {svc.tagline}
-                    </span>
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+          />
+        ))}
 
         <button
           type="button"
@@ -341,6 +286,268 @@ export default function Header() {
         </span>
       </div>
     </header>
+  )
+}
+
+// Bouton header configurable. Affiche un libellé + pastille colorée et
+// selon le contenu :
+//   • 0 entry           → désactivé, tooltip "à configurer".
+//   • 1 entry item      → clic = spawn direct (pas de menu).
+//   • sinon             → menu déroulant en DRILL-DOWN : items au clic,
+//                         dossiers remplacent la vue par leurs enfants
+//                         (avec bouton ← Retour pour remonter d'un cran).
+// Cohérent avec le style du menu contextuel canvas. Click extérieur /
+// Échap referme le menu et remet le drill-down à la racine.
+function HeaderCustomButton({
+  button,
+  disabled,
+  inactiveColor,
+  activeColor,
+  onSpawn
+}: {
+  button: HeaderButton
+  disabled: boolean
+  inactiveColor: string
+  activeColor: string
+  onSpawn: (item: HeaderButtonItem) => void
+}): React.ReactElement {
+  const [open, setOpen] = useState(false)
+  // Stack d'ids de dossiers traversés pour atteindre la vue courante du
+  // drill-down. Vide = on est à la racine du bouton (entries directs).
+  // Reset à `[]` à chaque (ré)ouverture du menu pour repartir d'un état
+  // propre — sinon réouvrir tomberait sur le sous-dossier de la session
+  // précédente, ce qui désoriente.
+  const [path, setPath] = useState<string[]>([])
+  const wrapperRef = useRef<HTMLDivElement>(null)
+  const entryCount = button.entries.length
+  // Premier item terminal de premier niveau (utilisé pour le mode "clic
+  // direct" quand le bouton n'a qu'une seule entrée et que c'est un item).
+  const onlyEntry = entryCount === 1 ? button.entries[0] : null
+  const directShortcut = onlyEntry && onlyEntry.kind === 'item' ? onlyEntry : null
+  // Si l'unique entrée est un dossier, on ouvre quand même le menu (pas
+  // de clic direct possible — un dossier n'a pas d'URL).
+  const hasMenu = entryCount > 1 || (entryCount === 1 && !directShortcut)
+
+  // Wrapper de fermeture : reset le drill-down à la racine en MÊME temps
+  // que la fermeture, pour que la prochaine ouverture parte d'un état
+  // propre sans avoir besoin d'un effect réactif (évite le pattern
+  // anti-pattern "setState dans un useEffect dépendant du même state").
+  const closeMenu = useCallback(() => {
+    setOpen(false)
+    setPath([])
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    function onMouseDown(e: MouseEvent): void {
+      const target = e.target as Node | null
+      if (!target) return
+      if (wrapperRef.current?.contains(target)) return
+      closeMenu()
+    }
+    function onKey(e: KeyboardEvent): void {
+      if (e.key === 'Escape') closeMenu()
+    }
+    document.addEventListener('mousedown', onMouseDown, true)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown, true)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open, closeMenu])
+
+  const isDisabled = disabled || entryCount === 0
+  const initial = button.label.trim()[0]?.toUpperCase() ?? '?'
+  const title =
+    entryCount === 0
+      ? `${button.label} — aucun item (configurer dans Réglages > Navigateur)`
+      : directShortcut
+        ? `${button.label} — ${directShortcut.label}`
+        : `${button.label} (${entryCount} entrées)`
+
+  function handleClick(): void {
+    if (isDisabled) return
+    if (hasMenu) {
+      if (open) closeMenu()
+      else setOpen(true)
+      return
+    }
+    if (directShortcut) onSpawn(directShortcut)
+  }
+
+  // Résout la vue courante du drill-down (entries + titre) à partir du
+  // path. Si un id du path est invalide (dossier supprimé pendant que le
+  // menu est ouvert, par exemple), on s'arrête au dernier dossier valide
+  // — comportement gracieux, pas de crash.
+  let currentEntries: readonly HeaderButtonEntry[] = button.entries
+  let currentTitle = button.label
+  for (const folderId of path) {
+    const folder = currentEntries.find(
+      (e): e is HeaderButtonEntry & { kind: 'folder' } =>
+        e.kind === 'folder' && e.id === folderId
+    )
+    if (!folder) break
+    currentEntries = folder.children
+    currentTitle = folder.label
+  }
+  const isAtRoot = path.length === 0
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={isDisabled}
+        className="flex items-center gap-1.5 rounded-[var(--radius-sm)] border-[0.5px] border-[var(--border)] px-2.5 py-1 font-medium transition-colors hover:border-[var(--fg-secondary)] hover:bg-[var(--bg-tertiary)] disabled:cursor-not-allowed disabled:opacity-40"
+        style={{
+          color: open ? activeColor : inactiveColor,
+          background: open ? 'var(--bg-tertiary)' : undefined
+        }}
+        title={title}
+        aria-haspopup={hasMenu ? 'menu' : undefined}
+        aria-expanded={hasMenu ? open : undefined}
+      >
+        <span
+          aria-hidden
+          className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white"
+          style={{ background: button.color }}
+        >
+          {initial}
+        </span>
+        <span>{button.label}</span>
+        {hasMenu && <ChevronDownIcon open={open} />}
+      </button>
+      {hasMenu && open && (
+        <div
+          role="menu"
+          aria-label={`Choisir une entrée ${button.label}`}
+          className="absolute left-0 top-full z-50 mt-1 flex min-w-[260px] flex-col rounded-[var(--radius-sm)] border p-1 shadow-2xl"
+          style={{
+            background: 'var(--bg-secondary)',
+            borderColor: 'var(--border)'
+          }}
+        >
+          {/* Bouton ← Retour : remonte d'un cran dans le drill-down. À la
+              racine, ferme directement le menu. Le label affiché est le
+              titre courant (label du bouton à la racine, label du dossier
+              parent quand on est dans un dossier) — donne un repère
+              visuel de l'arborescence. */}
+          <button
+            type="button"
+            onClick={() => {
+              if (isAtRoot) {
+                closeMenu()
+              } else {
+                setPath(path.slice(0, -1))
+              }
+            }}
+            className="flex items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1 text-left text-[10px] uppercase tracking-widest text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+            title={isAtRoot ? 'Fermer' : 'Retour'}
+          >
+            <span aria-hidden>←</span>
+            <span className="truncate">{currentTitle}</span>
+          </button>
+          <div className="my-0.5 h-px" style={{ background: 'var(--border)' }} />
+          <DrillDownEntries
+            entries={currentEntries}
+            color={button.color}
+            onPickItem={(item) => {
+              onSpawn(item)
+              closeMenu()
+            }}
+            onPickFolder={(folderId) => setPath([...path, folderId])}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Liste des entrées d'un niveau du drill-down du Header. Items =
+// boutons qui spawn la BrowserShape ; dossiers = boutons avec ▸ qui
+// poussent leur id dans la stack du menu pour faire défiler la vue
+// vers leurs enfants. Cohérent avec `SitesEntries` du menu contextuel
+// canvas.
+function DrillDownEntries({
+  entries,
+  color,
+  onPickItem,
+  onPickFolder
+}: {
+  entries: readonly HeaderButtonEntry[]
+  color: string
+  onPickItem: (item: HeaderButtonItem) => void
+  onPickFolder: (folderId: string) => void
+}): React.ReactElement {
+  if (entries.length === 0) {
+    return (
+      <div className="px-2 py-1.5 text-[11px] italic text-[var(--fg-muted)]">
+        (vide)
+      </div>
+    )
+  }
+  return (
+    <>
+      {entries.map((entry) =>
+        entry.kind === 'item' ? (
+          <button
+            key={entry.id}
+            type="button"
+            role="menuitem"
+            onClick={() => onPickItem(entry)}
+            className="flex items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-[var(--bg-tertiary)]"
+            title={entry.url}
+          >
+            <span
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
+              style={{ background: color }}
+              aria-hidden
+            >
+              {entry.label[0]?.toUpperCase() ?? '?'}
+            </span>
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-[var(--fg-primary)]">{entry.label}</span>
+              {entry.tagline && (
+                <span className="truncate text-[10px] text-[var(--fg-muted)]">
+                  {entry.tagline}
+                </span>
+              )}
+            </span>
+          </button>
+        ) : (
+          <button
+            key={entry.id}
+            type="button"
+            role="menuitem"
+            aria-haspopup="menu"
+            onClick={() => onPickFolder(entry.id)}
+            className="flex items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-[var(--bg-tertiary)]"
+          >
+            <span
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[12px]"
+              style={{
+                background: 'var(--bg-tertiary)',
+                color: 'var(--fg-muted)'
+              }}
+              aria-hidden
+            >
+              📁
+            </span>
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="truncate text-[var(--fg-primary)]">{entry.label}</span>
+              <span className="truncate text-[10px] text-[var(--fg-muted)]">
+                {entry.children.length === 0
+                  ? '(vide)'
+                  : `${entry.children.length} entrée${entry.children.length > 1 ? 's' : ''}`}
+              </span>
+            </span>
+            <span aria-hidden className="text-[var(--fg-muted)]">
+              ›
+            </span>
+          </button>
+        )
+      )}
+    </>
   )
 }
 
@@ -546,27 +753,6 @@ function WrenchIcon() {
       aria-hidden="true"
     >
       <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
-    </svg>
-  )
-}
-
-function SparkIcon() {
-  // Étincelle 4 branches : symbole IA générique, neutre vis-à-vis des
-  // marques (chacun a son icône dans le menu déroulant).
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 3 L13.5 9 L19.5 10.5 L13.5 12 L12 18 L10.5 12 L4.5 10.5 L10.5 9 Z" />
-      <path d="M19 17 L19.6 19 L21.5 19.5 L19.6 20 L19 22 L18.4 20 L16.5 19.5 L18.4 19 Z" />
     </svg>
   )
 }

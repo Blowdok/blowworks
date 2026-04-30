@@ -8,7 +8,11 @@ import {
   spawnTerminalShape,
   spawnVSCodeShape
 } from './InfiniteCanvas.js'
-import { AI_SERVICES, type AIService } from '@shared/ai-services.js'
+import { useHeaderButtonsStore } from '../../stores/header-buttons-store.js'
+import type {
+  HeaderButtonEntry,
+  HeaderButtonItem
+} from '@shared/header-buttons.js'
 
 // Menu contextuel custom déclenché au clic droit sur l'espace VIDE du
 // canvas (pas sur une shape — dans ce cas tldraw garde son menu natif).
@@ -43,10 +47,56 @@ const INITIAL_STATE: MenuState = {
 export default function CanvasContextMenu(): React.ReactElement | null {
   const editor = useEditorStore((s) => s.editor)
   const [state, setState] = useState<MenuState>(INITIAL_STATE)
-  // Drill-down dans le menu : 'main' = items shape principaux,
-  // 'ai' = liste des assistants IA (Claude, ChatGPT, …). Reset à 'main'
-  // à chaque ouverture pour repartir d'un état propre.
-  const [view, setView] = useState<'main' | 'ai'>('main')
+  // Drill-down hiérarchique : 'main' = actions shape principales, 'sites'
+  // = navigation dans l'arbre des boutons custom (boutons → dossiers →
+  // sous-dossiers → items). `sitesPath` est une stack d'ids de dossiers
+  // qu'on a parcourus pour arriver à la vue courante (vide = on est au
+  // niveau "racine", qui liste les boutons). `currentButtonId` = id du
+  // bouton dans lequel on a plongé (null = on n'a pas encore choisi de
+  // bouton). Reset à `main` à chaque ouverture.
+  const [view, setView] = useState<'main' | 'sites'>('main')
+  const [sitesButtonId, setSitesButtonId] = useState<string | null>(null)
+  const [sitesPath, setSitesPath] = useState<string[]>([])
+
+  const headerButtons = useHeaderButtonsStore((s) => s.buttons)
+
+  // Compteur d'items terminaux (récursif) — utilisé pour décider si
+  // l'entrée "Sites" du menu principal s'affiche : pas de sites
+  // configurés → pas la peine d'encombrer le menu.
+  const totalItems = headerButtons.reduce((sum, b) => sum + countItems(b.entries), 0)
+
+  // Vue courante du drill-down "Sites" : soit la liste des boutons (si
+  // l'utilisateur n'a pas encore choisi un bouton), soit la liste des
+  // entrées au chemin `sitesPath` du bouton courant.
+  const sitesView = (() => {
+    if (sitesButtonId === null) {
+      return {
+        kind: 'buttons' as const,
+        title: 'Sites',
+        buttons: headerButtons
+      }
+    }
+    const button = headerButtons.find((b) => b.id === sitesButtonId)
+    if (!button) {
+      return {
+        kind: 'buttons' as const,
+        title: 'Sites',
+        buttons: headerButtons
+      }
+    }
+    let entries: readonly HeaderButtonEntry[] = button.entries
+    let title: string = button.label
+    for (const folderId of sitesPath) {
+      const folder = entries.find(
+        (e): e is HeaderButtonEntry & { kind: 'folder' } =>
+          e.kind === 'folder' && e.id === folderId
+      )
+      if (!folder) break
+      entries = folder.children
+      title = `${title} › ${folder.label}`
+    }
+    return { kind: 'entries' as const, title, button, entries }
+  })()
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -75,6 +125,8 @@ export default function CanvasContextMenu(): React.ReactElement | null {
       e.preventDefault()
       e.stopPropagation()
       setView('main')
+      setSitesButtonId(null)
+      setSitesPath([])
       setState({
         open: true,
         screenX: e.clientX,
@@ -118,11 +170,12 @@ export default function CanvasContextMenu(): React.ReactElement | null {
   if (!editor || !state.open) return null
 
   // Clamp le menu aux bords viewport. Hauteur estimée plus généreuse pour
-  // la vue 'ai' (liste de 10 services). MENU_H sert juste au clamping —
-  // si le menu réel est plus petit, c'est OK (left/top sont déjà bornés
-  // au minimum, on n'a juste pas un gap parfait en bas).
+  // la vue 'sites' (liste plate des items des boutons custom — taille
+  // dépend de la conf utilisateur). MENU_H sert juste au clamping — si le
+  // menu réel est plus petit, c'est OK (left/top sont déjà bornés au
+  // minimum, on n'a juste pas un gap parfait en bas).
   const MENU_W = 240
-  const MENU_H = view === 'ai' ? 460 : 220
+  const MENU_H = view === 'sites' ? 460 : 220
   const vw = window.innerWidth
   const vh = window.innerHeight
   const left = Math.min(state.screenX, vw - MENU_W - 8)
@@ -157,13 +210,6 @@ export default function CanvasContextMenu(): React.ReactElement | null {
       { x: vb.w / 2, y: vb.h / 2, z: 1 },
       { animation: { duration: 320 } }
     )
-  }
-
-  function handleSpawnAI(service: AIService): () => void {
-    return () => {
-      setState(INITIAL_STATE)
-      if (editor) spawnBrowserShape(editor, service.homepage, at)
-    }
   }
 
   return (
@@ -201,7 +247,18 @@ export default function CanvasContextMenu(): React.ReactElement | null {
             label="Bloc-notes"
             onClick={handle(() => spawnNotepadShape(editor!, null, at))}
           />
-          <MenuItem icon="✨" label="IA" trailing="▸" onClick={() => setView('ai')} />
+          {totalItems > 0 && (
+            <MenuItem
+              icon="✨"
+              label="Sites"
+              trailing="▸"
+              onClick={() => {
+                setSitesButtonId(null)
+                setSitesPath([])
+                setView('sites')
+              }}
+            />
+          )}
           <div className="my-0.5 h-px" style={{ background: 'var(--border)' }} />
           <MenuItem icon="⊕" label="Centrer le canvas" onClick={handle(recenterCamera)} />
         </>
@@ -209,31 +266,59 @@ export default function CanvasContextMenu(): React.ReactElement | null {
         <>
           <button
             type="button"
-            onClick={() => setView('main')}
+            onClick={() => {
+              // ← retour : remonte d'un cran. Si on est dans un dossier,
+              // on dépile sitesPath. Sinon si on a choisi un bouton, on
+              // remonte à la liste des boutons. Sinon retour au menu main.
+              if (sitesPath.length > 0) {
+                setSitesPath(sitesPath.slice(0, -1))
+              } else if (sitesButtonId !== null) {
+                setSitesButtonId(null)
+              } else {
+                setView('main')
+              }
+            }}
             className="flex items-center gap-1.5 rounded-[var(--radius-sm)] px-2 py-1 text-left text-[10px] uppercase tracking-widest text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+            title="Retour"
           >
             <span aria-hidden>←</span>
-            <span>Assistants IA</span>
+            <span className="truncate">{sitesView.title}</span>
           </button>
           <div className="my-0.5 h-px" style={{ background: 'var(--border)' }} />
-          {AI_SERVICES.map((svc) => (
-            <button
-              key={svc.id}
-              type="button"
-              role="menuitem"
-              onClick={handleSpawnAI(svc)}
-              className="flex items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[12px] text-[var(--fg-primary)] transition-colors hover:bg-[var(--bg-tertiary)]"
-            >
-              <span
-                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
-                style={{ background: svc.color }}
-                aria-hidden
+          {sitesView.kind === 'buttons' ? (
+            sitesView.buttons.map((b) => (
+              <button
+                key={b.id}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setSitesButtonId(b.id)
+                  setSitesPath([])
+                }}
+                className="flex items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[12px] text-[var(--fg-primary)] transition-colors hover:bg-[var(--bg-tertiary)]"
               >
-                {svc.label[0]}
-              </span>
-              <span className="flex-1 truncate">{svc.label}</span>
-            </button>
-          ))}
+                <span
+                  className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+                  style={{ background: b.color }}
+                  aria-hidden
+                >
+                  {b.label[0]?.toUpperCase() ?? '?'}
+                </span>
+                <span className="flex-1 truncate">{b.label}</span>
+                <span className="text-[10px] text-[var(--fg-muted)]">▸</span>
+              </button>
+            ))
+          ) : (
+            <SitesEntries
+              entries={sitesView.entries}
+              color={sitesView.button.color}
+              onPickItem={(item) => {
+                setState(INITIAL_STATE)
+                if (editor) spawnBrowserShape(editor, item.url, at)
+              }}
+              onPickFolder={(folderId) => setSitesPath([...sitesPath, folderId])}
+            />
+          )}
         </>
       )}
     </div>
@@ -272,5 +357,81 @@ function MenuItem({
         <span className="text-[10px] text-[var(--fg-muted)]">{trailing}</span>
       )}
     </button>
+  )
+}
+
+// Compteur récursif d'items terminaux dans un arbre d'entries. Utilisé
+// par le menu contextuel pour décider si l'entrée "Sites" est utile (pas
+// de sites configurés → on cache l'entrée).
+function countItems(entries: readonly HeaderButtonEntry[]): number {
+  let n = 0
+  for (const e of entries) {
+    if (e.kind === 'item') n += 1
+    else n += countItems(e.children)
+  }
+  return n
+}
+
+// Liste des entrées d'un niveau de drill-down du menu contextuel "Sites".
+// Items = bouton qui spawn la BrowserShape ; dossiers = bouton avec ▸
+// qui plonge d'un cran (push folderId dans `sitesPath`).
+function SitesEntries({
+  entries,
+  color,
+  onPickItem,
+  onPickFolder
+}: {
+  entries: readonly HeaderButtonEntry[]
+  color: string
+  onPickItem: (item: HeaderButtonItem) => void
+  onPickFolder: (folderId: string) => void
+}): React.ReactElement {
+  if (entries.length === 0) {
+    return (
+      <div className="px-2 py-1.5 text-[11px] text-[var(--fg-muted)]">(vide)</div>
+    )
+  }
+  return (
+    <>
+      {entries.map((entry) =>
+        entry.kind === 'item' ? (
+          <button
+            key={entry.id}
+            type="button"
+            role="menuitem"
+            onClick={() => onPickItem(entry)}
+            className="flex items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[12px] text-[var(--fg-primary)] transition-colors hover:bg-[var(--bg-tertiary)]"
+            title={entry.url}
+          >
+            <span
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+              style={{ background: color }}
+              aria-hidden
+            >
+              {entry.label[0]?.toUpperCase() ?? '?'}
+            </span>
+            <span className="flex-1 truncate">{entry.label}</span>
+          </button>
+        ) : (
+          <button
+            key={entry.id}
+            type="button"
+            role="menuitem"
+            onClick={() => onPickFolder(entry.id)}
+            className="flex items-center gap-2 rounded-[var(--radius-sm)] px-2 py-1.5 text-left text-[12px] text-[var(--fg-primary)] transition-colors hover:bg-[var(--bg-tertiary)]"
+          >
+            <span
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[11px] text-[var(--fg-muted)]"
+              style={{ background: 'var(--bg-tertiary)' }}
+              aria-hidden
+            >
+              ▸
+            </span>
+            <span className="flex-1 truncate">{entry.label}</span>
+            <span className="text-[10px] text-[var(--fg-muted)]">›</span>
+          </button>
+        )
+      )}
+    </>
   )
 }
