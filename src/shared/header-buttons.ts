@@ -448,12 +448,15 @@ export const DEFAULT_HEADER_BUTTONS: readonly HeaderButton[] = [
 // Clé SQLite settings pour la persistance.
 export const HEADER_BUTTONS_SETTINGS_KEY = 'header.buttons'
 
-// Clé SQLite séparée pour l'état UI "dossier replié" (Settings >
-// Navigateur > Boutons du Header). Stocké comme JSON `string[]` (liste
-// d'ids de dossiers actuellement repliés) — un Set côté runtime pour
-// les lookups O(1). Découplé de `header.buttons` car c'est de la
-// préférence UI éphémère, pas de la donnée métier — éviter de
-// re-écrire tout l'arbre des boutons à chaque toggle.
+// Clé SQLite séparée pour l'état UI "replié" des nœuds (boutons +
+// dossiers + sous-dossiers) dans Settings > Navigateur > Boutons du
+// Header. Stocké comme JSON `string[]` — liste d'ids actuellement
+// repliés ; un Set côté runtime pour les lookups O(1). Couvre les
+// boutons (préfixe `hb_`) ET les dossiers (préfixe `hbe_`) dans le
+// même Set : pas de collision possible vu les générateurs d'ids
+// distincts. Découplé de `header.buttons` car c'est de la préférence
+// UI, pas de la donnée métier — éviter de re-écrire tout l'arbre des
+// boutons à chaque toggle.
 export const HEADER_BUTTONS_COLLAPSED_KEY = 'header.collapsedFolders'
 
 // Aplatit récursivement tous les items terminaux d'une liste de boutons.

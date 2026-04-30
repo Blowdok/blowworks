@@ -277,6 +277,10 @@ function HeaderButtonCard({
   const updateButton = useHeaderButtonsStore((s) => s.updateButton)
   const addItem = useHeaderButtonsStore((s) => s.addItem)
   const addFolder = useHeaderButtonsStore((s) => s.addFolder)
+  // État replié persistant (Set partagé avec les dossiers — boutons et
+  // dossiers ont des préfixes d'ids distincts, pas de collision).
+  const collapsed = useHeaderButtonsStore((s) => s.collapsedIds.has(button.id))
+  const toggleCollapsed = useHeaderButtonsStore((s) => s.toggleCollapsed)
 
   return (
     <li
@@ -284,6 +288,15 @@ function HeaderButtonCard({
       style={{ borderColor: 'var(--border)', background: 'var(--bg-primary)' }}
     >
       <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => toggleCollapsed(button.id)}
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[11px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+          title={collapsed ? 'Déplier' : 'Replier'}
+          aria-expanded={!collapsed}
+        >
+          {collapsed ? '▸' : '▾'}
+        </button>
         <span
           aria-hidden
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold text-white"
@@ -335,39 +348,46 @@ function HeaderButtonCard({
         </button>
       </div>
 
-      {/* Arbre récursif des entrées (items + dossiers). La racine du bouton
+      {/* Arbre récursif des entrées (items + dossiers) + boutons d'ajout.
+          Cachés quand le bouton est replié — l'utilisateur retrouve une
+          vue compacte qui ne montre que la ligne de configuration du
+          bouton lui-même (label, couleur, ↑↓, ✕). La racine du bouton
           se traite comme un "dossier virtuel" — folderId = null = entries
           directs du bouton. */}
-      <EntryList
-        button={button}
-        entries={button.entries}
-        parentFolderId={null}
-        depth={0}
-      />
+      {!collapsed && (
+        <>
+          <EntryList
+            button={button}
+            entries={button.entries}
+            parentFolderId={null}
+            depth={0}
+          />
 
-      <div className="flex gap-1.5 pl-4">
-        <button
-          type="button"
-          onClick={() =>
-            addItem(button.id, null, {
-              label: 'Nouvel item',
-              url: 'https://example.com/'
-            })
-          }
-          className="rounded border px-2 py-1 text-[11px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
-          style={{ borderColor: 'var(--border)' }}
-        >
-          + Ajouter un item
-        </button>
-        <button
-          type="button"
-          onClick={() => addFolder(button.id, null, 'Nouveau dossier')}
-          className="rounded border px-2 py-1 text-[11px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
-          style={{ borderColor: 'var(--border)' }}
-        >
-          + Ajouter un dossier
-        </button>
-      </div>
+          <div className="flex gap-1.5 pl-4">
+            <button
+              type="button"
+              onClick={() =>
+                addItem(button.id, null, {
+                  label: 'Nouvel item',
+                  url: 'https://example.com/'
+                })
+              }
+              className="rounded border px-2 py-1 text-[11px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+              style={{ borderColor: 'var(--border)' }}
+            >
+              + Ajouter un item
+            </button>
+            <button
+              type="button"
+              onClick={() => addFolder(button.id, null, 'Nouveau dossier')}
+              className="rounded border px-2 py-1 text-[11px] text-[var(--fg-muted)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--fg-primary)]"
+              style={{ borderColor: 'var(--border)' }}
+            >
+              + Ajouter un dossier
+            </button>
+          </div>
+        </>
+      )}
     </li>
   )
 }
@@ -544,8 +564,10 @@ function HeaderButtonFolderRow({
   // référentielle stable d'une mutation à l'autre car le toggle remplace
   // le Set) puis on dérive `collapsed` localement. Persisté en SQLite
   // sous la clé `header.collapsedFolders` séparée des boutons eux-mêmes.
-  const collapsed = useHeaderButtonsStore((s) => s.collapsedFolderIds.has(folder.id))
-  const toggleCollapsed = useHeaderButtonsStore((s) => s.toggleFolderCollapsed)
+  // Set partagé avec les boutons (les ids `hbe_*` ne se chevauchent pas
+  // avec les ids `hb_*` des boutons).
+  const collapsed = useHeaderButtonsStore((s) => s.collapsedIds.has(folder.id))
+  const toggleCollapsed = useHeaderButtonsStore((s) => s.toggleCollapsed)
   const updateEntry = useHeaderButtonsStore((s) => s.updateEntry)
   const removeEntryAction = useHeaderButtonsStore((s) => s.removeEntry)
   const moveEntry = useHeaderButtonsStore((s) => s.moveEntry)

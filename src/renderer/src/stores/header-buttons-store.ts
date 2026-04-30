@@ -38,14 +38,15 @@ import {
 interface HeaderButtonsState {
   hydrated: boolean
   buttons: HeaderButton[]
-  // Set d'ids de dossiers actuellement repliés dans l'UI Settings >
-  // Navigateur > Boutons du Header. Persisté dans SQLite (clé séparée
-  // `header.collapsedFolders`) pour conserver la préférence d'affichage
-  // entre les sessions. Set en mémoire pour des lookups O(1) ; sérialisé
-  // en `string[]` au moment du write.
-  collapsedFolderIds: Set<string>
-  toggleFolderCollapsed: (id: string) => void
-  isFolderCollapsed: (id: string) => boolean
+  // Set d'ids de nœuds actuellement repliés dans l'UI Settings >
+  // Navigateur > Boutons du Header. Couvre boutons (`hb_*`) ET dossiers
+  // (`hbe_*`) — pas de collision possible vu les préfixes des
+  // générateurs. Persisté dans SQLite (clé `header.collapsedFolders`)
+  // pour conserver la préférence d'affichage entre les sessions. Set
+  // en mémoire pour des lookups O(1) ; sérialisé en `string[]` au write.
+  collapsedIds: Set<string>
+  toggleCollapsed: (id: string) => void
+  isCollapsed: (id: string) => boolean
   hydrate: () => Promise<void>
 
   // CRUD boutons (racine de l'arborescence)
@@ -106,10 +107,10 @@ function persistCollapsed(collapsed: Set<string>): void {
     })
 }
 
-// Parse la valeur SQLite des dossiers repliés. Tolère les entrées
-// invalides (non-string, JSON cassé, type incorrect) — fallback sur Set
-// vide pour ne jamais bloquer l'hydratation.
-async function readCollapsedFolderIds(): Promise<Set<string>> {
+// Parse la valeur SQLite des ids repliés (boutons + dossiers, même Set).
+// Tolère les entrées invalides (non-string, JSON cassé, type incorrect)
+// — fallback sur Set vide pour ne jamais bloquer l'hydratation.
+async function readCollapsedIds(): Promise<Set<string>> {
   try {
     const raw = await window.blow.settings.get(HEADER_BUTTONS_COLLAPSED_KEY)
     if (!raw) return new Set()
@@ -139,24 +140,24 @@ function cloneEntry(e: HeaderButtonEntry): HeaderButtonEntry {
 export const useHeaderButtonsStore = create<HeaderButtonsState>((set, get) => ({
   hydrated: false,
   buttons: [],
-  collapsedFolderIds: new Set(),
+  collapsedIds: new Set(),
 
-  toggleFolderCollapsed: (id) => {
-    const cur = get().collapsedFolderIds
+  toggleCollapsed: (id) => {
+    const cur = get().collapsedIds
     const next = new Set(cur)
     if (next.has(id)) next.delete(id)
     else next.add(id)
-    set({ collapsedFolderIds: next })
+    set({ collapsedIds: next })
     if (get().hydrated) persistCollapsed(next)
   },
 
-  isFolderCollapsed: (id) => get().collapsedFolderIds.has(id),
+  isCollapsed: (id) => get().collapsedIds.has(id),
 
   hydrate: async () => {
     try {
-      const [raw, collapsedFolderIds] = await Promise.all([
+      const [raw, collapsedIds] = await Promise.all([
         window.blow.settings.get(HEADER_BUTTONS_SETTINGS_KEY),
-        readCollapsedFolderIds()
+        readCollapsedIds()
       ])
       const parsed = parseHeaderButtons(raw)
       if (parsed === null) {
@@ -164,10 +165,10 @@ export const useHeaderButtonsStore = create<HeaderButtonsState>((set, get) => ({
         // persist immédiatement pour que le seed devienne la source de
         // vérité disque. Permet à l'utilisateur d'éditer dès le 1er boot.
         const seed = cloneSeed()
-        set({ buttons: seed, collapsedFolderIds, hydrated: true })
+        set({ buttons: seed, collapsedIds, hydrated: true })
         persist(seed)
       } else {
-        set({ buttons: parsed, collapsedFolderIds, hydrated: true })
+        set({ buttons: parsed, collapsedIds, hydrated: true })
         // Si parse a retourné un format v1 migré, on persiste la v2 pour
         // que les prochains boots lisent directement le bon format.
         if (raw && parsed.some((b) => b.entries.length > 0)) {
@@ -177,7 +178,7 @@ export const useHeaderButtonsStore = create<HeaderButtonsState>((set, get) => ({
     } catch {
       set({
         buttons: cloneSeed(),
-        collapsedFolderIds: new Set(),
+        collapsedIds: new Set(),
         hydrated: true
       })
     }
