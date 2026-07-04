@@ -18,6 +18,7 @@ import { loadExtensionsAtBoot } from './services/browser-extensions.js'
 import { initDatabase } from './services/db.js'
 import { ptyManager } from './services/pty-manager.js'
 import { vscodeServer } from './services/vscode-server.js'
+import { initAutoUpdater } from './services/update-manager.js'
 
 // Point d'entrée du process principal Electron.
 
@@ -99,6 +100,9 @@ app.whenReady().then(async () => {
   }
 
   createMainWindow()
+
+  // Vérifie et propose les mises à jour automatiques (production uniquement).
+  initAutoUpdater()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

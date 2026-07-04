@@ -46,5 +46,7 @@ nsis:
     - en_US
   language: '1036' # Français par défaut
 publish:
-  provider: generic
-  url: https://updates.blowworks.local/
+  provider: github
+  owner: Blowdok
+  repo: blowworks
+  releaseType: release
