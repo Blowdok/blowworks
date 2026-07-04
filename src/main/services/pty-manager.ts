@@ -1,5 +1,5 @@
 import * as pty from '@lydell/node-pty'
-import { BrowserWindow } from 'electron'
+import { BrowserWindow, app } from 'electron'
 import { accessSync, constants as fsConstants } from 'node:fs'
 import { join } from 'node:path'
 import type { ShellKindT } from '@shared/ipc-contract.js'
@@ -16,6 +16,24 @@ interface ManagedPty {
 }
 
 const MAX_ALIVE = 50
+
+// Résout un cwd valide et portable : le dossier demandé s'il existe, sinon le
+// bureau de l'utilisateur, sinon son dossier home. Évite l'échec obscur de
+// ConPTY quand une shape persistée référence un dossier absent (projet déplacé
+// sur une autre machine) ou quand aucun cwd n'est fourni.
+function resolveCwd(requested: string): string {
+  const exists = (p: string): boolean => {
+    try {
+      accessSync(p, fsConstants.F_OK)
+      return true
+    } catch {
+      return false
+    }
+  }
+  if (requested && exists(requested)) return requested
+  const desktop = app.getPath('desktop')
+  return exists(desktop) ? desktop : app.getPath('home')
+}
 
 class PtyManager {
   private readonly ptys = new Map<string, ManagedPty>()
@@ -64,7 +82,7 @@ class PtyManager {
       name: 'xterm-color',
       cols: input.cols,
       rows: input.rows,
-      cwd: input.cwd,
+      cwd: resolveCwd(input.cwd),
       env: { ...process.env, ...(input.env ?? {}), TERM: 'xterm-256color' } as { [key: string]: string },
       useConpty: process.platform === 'win32'
     })

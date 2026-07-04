@@ -17,7 +17,7 @@
 - **Terminaux multiples** (PowerShell, cmd, bash, pwsh) gérés en parallèle via `node-pty` + `xterm.js`. Rendu WebGL, scrollback persistant, focus clavier automatique.
   - **Sélecteur de shell en un clic** dans l'en-tête de chaque terminal (`powershell ▾`) : switch à chaud entre PowerShell / pwsh / cmd / bash, le PTY est recréé proprement sans message d'exit parasite.
   - **Copier-coller natif** : `Ctrl+Shift+C` copie la sélection, `Ctrl+Shift+V` colle, et la sélection souris auto-copie (convention Linux/mintty). `Ctrl+C` reste le SIGINT standard du shell.
-  - **Dossier de travail par défaut** : `C:\Users\Blowdok\Desktop` (configurable en v2).
+  - **Dossier de travail par défaut** : le **Bureau de l'utilisateur**, résolu automatiquement côté process main (portable ; configurable en v2).
 - **Groupes par projet** : assignez un terminal à un projet via le bouton `○ aucun projet` du header du terminal, puis naviguez d'un groupe à l'autre via la barre latérale. **Couleur personnalisable** à la création (color picker natif à côté du nom) — elle est appliquée à la pastille, au liseré vertical de l'item de sidebar et à la bordure de chaque iframe affectée au projet, pour une identification visuelle cohérente du projet partout dans l'interface.
   - **Corridor horizontal de projets (pas de superposition)** : chaque projet possède une **zone déterministe** sur le canvas infini, dérivée de son rang dans la liste. Formule : `origin.x = rank × (gridWidth + PROJECT_CORRIDOR_GAP)` avec `gridWidth = 3 × 800 + 2 × 32 = 2464` et `PROJECT_CORRIDOR_GAP = 400`. Les projets s'enchaînent donc sur un couloir horizontal à `y = 0`, jamais l'un sur l'autre. Le clic sur le nom d'un projet appelle `slideToProject` qui anime `zoomToBounds` vers cette zone (inset 240, targetZoom 1, animation 400 ms) — d'un projet à l'autre la caméra **glisse latéralement** vers la nouvelle zone (gauche ou droite selon le rang relatif).
   - **Ranger en grille** (bouton `▦` au survol de chaque projet) : repositionne toutes les shapes portail affectées au projet sur une **grille 3 colonnes max** (remplissage gauche → droite puis ligne suivante), **uniformisées à 800×500** avec un gap de 32 px, **ancrée sur l'origine déterministe du projet** (donc à chaque rangement le projet retrouve exactement sa zone). Ordre de rangement : VSCode groupés d'abord, puis Terminal, chaque groupe trié par position visuelle (top-left → bottom-right). Toute l'opération (repositionnement + zoom) est atomique dans un `editor.run()` → **1 seul `Ctrl+Z`** annule la mise en grille. Les props métier (`projectId`, `folder`, `shell`, `cwd`) sont préservées, et les iframes VSCode / instances xterm ne sont pas rechargées (l'architecture portail stable par `shape.id` garantit la persistance même lors d'un bouleversement de positions). Module `src/renderer/src/lib/project-layout.ts`, couvert par 26 tests unitaires dont un invariant clé : **deux projets consécutifs ont des zones qui ne se chevauchent jamais** (gap ≥ `PROJECT_CORRIDOR_GAP`).
@@ -252,8 +252,6 @@ src/
     └── ipc-contract.ts Schémas Zod (main/renderer uniquement)
 ```
 
-Voir `.claude/.agent/ARCHITECTURE.md` pour le kit Blowdok et les conventions.
-
 ---
 
 ## 🧩 Intégration VSCode (sidecar `serve-web`)
@@ -304,4 +302,14 @@ Commits en français, messages clairs pour la communauté francophone
 
 ## 📄 Licence
 
-Privé, usage interne Blowdok. Non distribué publiquement pour l'instant.
+Le code source de **BlowWorks** est publié sous licence **MIT** (voir `LICENSE`) :
+chacun peut le lire, l'étudier, le modifier et le réutiliser.
+
+⚠️ **Dépendances tierces** : l'application intègre **tldraw**, sous licence
+propriétaire. Son usage est **gratuit en environnement de développement**
+(local, test), mais tout **déploiement en production ou usage par des
+utilisateurs finaux** nécessite une **licence commerciale tldraw**
+(voir <https://tldraw.dev>). Le détail de toutes les licences tierces est dans
+`NOTICES.md`.
+
+Contact : contact@blowvizion.re

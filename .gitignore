@@ -45,3 +45,8 @@ test-results/
 
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
+
+# Appareillage IA privé (kit d'agents/skills local, non partagé)
+.claude/
+CLAUDE.md
+mes-skills.md

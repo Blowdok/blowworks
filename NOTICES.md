@@ -1,8 +1,9 @@
 # Notices des dépendances tierces
 
-BlowWorks embarque plusieurs logiciels tiers. Chaque dépendance reste
-sous sa propre licence d'origine. Ce fichier en récapitule la liste et
-inclut verbatim les licences qui l'exigent.
+Le code source de BlowWorks est distribué sous licence **MIT** (voir
+`LICENSE`). BlowWorks embarque toutefois plusieurs logiciels tiers : chaque
+dépendance reste sous sa propre licence d'origine. Ce fichier en récapitule la
+liste et inclut verbatim les licences qui l'exigent.
 
 ---
 

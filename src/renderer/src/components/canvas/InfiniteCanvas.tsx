@@ -247,9 +247,9 @@ export function spawnTerminalShape(editor: Editor, at?: { x: number; y: number }
 }
 
 function getDefaultCwd(): string {
-  // Dossier de travail par défaut : le bureau de l'utilisateur. En v2 :
-  // préférence utilisateur configurable.
-  return 'C:/Users/Blowdok/Desktop'
+  // Chaîne vide → le process main résout un chemin portable au spawn du PTY
+  // (bureau de l'utilisateur, sinon home). En v2 : préférence configurable.
+  return ''
 }
 
 // Crée une nouvelle ChatShape au centre du viewport + persiste la conversation

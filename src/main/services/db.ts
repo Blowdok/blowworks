@@ -230,7 +230,7 @@ const SYSTEM_PROMPTS_VERSION = 10
 // avec disciplines renforcées : confiance graduée, anti-cliquet verified,
 // anti-forçage wikilinks, hiérarchie P1/P2/P3 pour le Researcher, détection
 // de doublon pour le QA Filer, severity HIGH/LOW pour le Lint.
-// Source : C:/Users/Blowdok/Desktop/PROMPT_BLOWWORKS/*.md
+// Source : dossier local de prompts de l'utilisateur (hors dépôt).
 const SYNTHESIZER_PROMPT_V2 = `Tu es l'agent Synthétiseur de BlowWorks.
 
 Tu reçois une conversation entre un utilisateur et une IA. Ton rôle : produire une synthèse structurée qui sera ajoutée au dossier \`raw/\` et consommée plus tard par le Wiki Builder.
