@@ -20,6 +20,7 @@
     "rebuild:native": "electron-rebuild -f -w better-sqlite3",
     "download:vscode": "node scripts/download-openvscode.mjs",
     "dist:win": "npm run build && electron-builder --win --config electron-builder.yml",
+    "publish:win": "npm run build && electron-builder --win --config electron-builder.yml --publish always",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test"

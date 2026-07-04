@@ -338,6 +338,19 @@ BlowWorks s'ouvre en mode HMR (main + renderer). Modifier un fichier React recha
 | `npm run test:e2e`       | Tests end-to-end (Playwright + Electron)                  |
 | `npm run dist:win`       | Générer l'installeur NSIS `.exe` dans `dist/`             |
 | `npm run rebuild:native` | Recompiler `better-sqlite3` et `node-pty` contre Electron |
+| `npm run publish:win`    | Builder **et publier** une nouvelle version sur les Releases GitHub (nécessite `GH_TOKEN`) |
+
+### Publier une nouvelle version
+
+1. Incrémente `version` dans `package.json` (ex. `1.0.1` → `1.0.2`).
+2. En PowerShell, fournis ton token GitHub puis publie :
+
+   ```powershell
+   $env:GH_TOKEN = (gh auth token)
+   npm run publish:win
+   ```
+
+`electron-builder` construit l'installeur, crée la Release GitHub et y attache le `latest.yml`. Les utilisateurs déjà en v1.0.1+ reçoivent alors la **mise à jour automatiquement** au prochain lancement.
 
 ---
 
