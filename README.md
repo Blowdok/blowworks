@@ -201,7 +201,6 @@ Pas réservé aux développeurs : un espace de travail visuel pour **quiconque j
 
 - Intégration **MCP (Model Context Protocol)** — connexion de serveurs MCP pour piloter des outils et applications externes directement depuis le canvas (fichiers, APIs, bases de données, apps créatives…).
 - Support macOS et Linux.
-- Auto-update via `electron-updater`.
 - **Chat IA — v2 :** upload d'images/fichiers (multimodal vision), optimisation automatique de prompt via modèle cheap (Haiku/Gemini Flash), mode thinking (`reasoning.effort`), Exa en alternative/complément de Tavily.
 - **Chat IA — v3 :** ~~générateur d'agents custom~~ ✅ livré (Settings > Agents), équipes d'agents, RAG local par projet via `sqlite-vec`, actions sur shapes (« explique cette sortie terminal », « revue de code sur ce VSCode »), client MCP (stdio/SSE).
 - **Mémoire wiki — v2 :** tracking SHA-256 des raw déjà compilés (incremental build, évite re-soumission au modèle), agent Lint périodique (6 checks déterministes : orphans, broken-refs, stale, ghost-concepts, sparse, orphan-sources + 1 check LLM contradictions), conversion PDF/HTML → markdown à l'import via `pdf-parse` + `turndown`, auto-trigger Synthétiseur sur fin de conversation + avant saturation du contexte (pattern `PreCompact`), MCP server local exposant la mémoire à d'autres clients (Claude Code, Cursor, ChatGPT Desktop), flag `customized` sur la table agents pour ne plus écraser les tunings utilisateur aux bumps de prompts système.
@@ -252,7 +251,7 @@ Va sur la page des **[Releases](https://github.com/Blowdok/blowworks/releases)**
 3. Choisis le dossier d'installation (ou garde celui par défaut), puis **Installer**.
 4. Terminé ! 🎉 Un raccourci **BlowWorks** apparaît sur ton **Bureau** et dans le **menu Démarrer** — lance l'app comme n'importe quel programme.
 
-> 🔄 **Mise à jour** : pour passer à une version plus récente, télécharge et installe simplement le nouveau `.exe` depuis les Releases.
+> 🔄 **Mise à jour automatique** : à partir de la v1.0.1, BlowWorks se met à jour tout seul — il vérifie les nouvelles versions au démarrage, les télécharge en arrière-plan et te propose de redémarrer pour les appliquer. Rien à faire manuellement.
 
 ---
 
