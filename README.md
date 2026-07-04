@@ -216,7 +216,7 @@ Pas réservé aux développeurs : un espace de travail visuel pour **quiconque j
 | UI                      | React 19 + TypeScript 6                                                 |
 | Canvas infini           | tldraw 4 + `@tldraw/assets` (bundle Vite local, CSP-safe)               |
 | Terminal                | @lydell/node-pty 1.2 + xterm.js 6 + addons fit/webgl/serialize/web-links |
-| IDE embarqué            | openvscode-server 1.96                                                  |
+| IDE embarqué            | VSCode portable natif (`Code.exe serve-web`, sidecar loopback)          |
 | Chat IA (modèles)       | OpenRouter (API OpenAI-compatible, 300+ modèles) — streaming SSE + tool_calls progressifs |
 | Chat IA (recherche web) | Tavily API (`search_depth: advanced`, `topic: news`, enrichissement conversationnel) |
 | Chat IA (rendu)         | react-markdown 10 + remark-gfm 4 + rehype-highlight 7 + highlight.js 11 |
@@ -228,7 +228,7 @@ Pas réservé aux développeurs : un espace de travail visuel pour **quiconque j
 | Styling                 | Tailwind CSS 4                                                          |
 | Validation IPC          | Zod 4 (main/renderer uniquement, preload exclu pour sandbox)            |
 | Tests                   | Vitest + Playwright                                                     |
-| Packaging               | electron-builder 26 (NSIS)                                              |
+| Packaging & MAJ         | electron-builder 26 (NSIS) + electron-updater (auto-update via Releases GitHub) |
 
 ---
 
@@ -251,7 +251,7 @@ Va sur la page des **[Releases](https://github.com/Blowdok/blowworks/releases)**
 3. Choisis le dossier d'installation (ou garde celui par défaut), puis **Installer**.
 4. Terminé ! 🎉 Un raccourci **BlowWorks** apparaît sur ton **Bureau** et dans le **menu Démarrer** — lance l'app comme n'importe quel programme.
 
-> 🔄 **Mise à jour automatique** : à partir de la v1.0.3, BlowWorks se met à jour tout seul — il vérifie les nouvelles versions au démarrage, les télécharge en arrière-plan et te propose de redémarrer pour les appliquer. Rien à faire manuellement.
+> 🔄 **Mise à jour automatique** : à partir de la v1.0.4, BlowWorks se met à jour tout seul — il vérifie les nouvelles versions au démarrage, les télécharge en arrière-plan et te propose de redémarrer pour les appliquer. Rien à faire manuellement.
 
 ---
 
@@ -350,7 +350,7 @@ BlowWorks s'ouvre en mode HMR (main + renderer). Modifier un fichier React recha
    npm run publish:win
    ```
 
-`electron-builder` construit l'installeur, crée la Release GitHub et y attache le `latest.yml`. Les utilisateurs déjà en v1.0.3+ reçoivent alors la **mise à jour automatiquement** au prochain lancement.
+`electron-builder` construit l'installeur, crée la Release GitHub et y attache le `latest.yml`. Les utilisateurs déjà en v1.0.4+ reçoivent alors la **mise à jour automatiquement** au prochain lancement.
 
 ---
 
@@ -431,6 +431,7 @@ Au premier usage, BlowWorks spawne le serveur sur `127.0.0.1:27338` (port **fixe
 - Tous les messages IPC sont **validés par Zod** côté main (`src/shared/ipc-contract.ts`).
 - Le token de connexion openvscode-server est généré par `crypto.randomBytes(24)` à chaque démarrage.
 - Assets tldraw servis en local via `@tldraw/assets/imports.vite` (pas de fetch CDN bloqué par la CSP).
+- En production, le renderer est servi par un **serveur http local sur la loopback** (`127.0.0.1`, port fixe) plutôt que via `file://` — indispensable pour que les assets tldraw (fetch + décodage d'images) se chargent comme en développement. Aucune exposition réseau externe.
 
 ---
 
