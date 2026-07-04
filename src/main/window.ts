@@ -1,13 +1,12 @@
 import { BrowserWindow, shell } from 'electron'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { is } from '@electron-toolkit/utils'
 import { IPC_CHANNELS } from '@shared/ipc-channels.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 // Fenêtre principale : contextIsolation strict, sandbox renderer.
-export function createMainWindow(): BrowserWindow {
+export function createMainWindow(loadUrl: string, isDevServer: boolean): BrowserWindow {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -158,16 +157,15 @@ export function createMainWindow(): BrowserWindow {
     })
   })
 
-  // Chargement du renderer : URL Vite en dev, fichier HTML en prod.
-  if (is.dev && process.env.ELECTRON_RENDERER_URL) {
-    const devUrl = process.env.ELECTRON_RENDERER_URL
-    win.loadURL(devUrl)
+  // Chargement du renderer via l'URL fournie : serveur Vite en dev, serveur
+  // http local statique en production.
+  win.loadURL(loadUrl)
 
-    // Race condition `electron-vite` : Electron démarre parfois AVANT que
-    // Vite n'ait fini d'attacher son port → ERR_CONNECTION_REFUSED, la
-    // fenêtre reste sur `chrome-error://`. On retry l'URL toutes les 500 ms
-    // pendant ~10 s, jusqu'à ce que Vite réponde. En prod ce listener
-    // n'existe pas (autre branche du if).
+  // En dev uniquement : le serveur Vite peut n'être pas encore prêt au démarrage
+  // d'Electron (ERR_CONNECTION_REFUSED, code -102). On retry le chargement
+  // toutes les 500 ms pendant ~10 s. En prod, le serveur http local écoute déjà
+  // avant cet appel — aucun retry nécessaire.
+  if (isDevServer) {
     let retries = 0
     const MAX_RETRIES = 20
     const onFailLoad = (
@@ -178,25 +176,21 @@ export function createMainWindow(): BrowserWindow {
       isMainFrame: boolean
     ): void => {
       if (!isMainFrame) return
-      // -102 = ERR_CONNECTION_REFUSED (Vite pas encore prêt). On retry
-      // uniquement sur ce code, pas sur d'autres erreurs (404, SSL, …).
       if (errorCode !== -102) return
-      if (validatedURL !== devUrl && !validatedURL.startsWith(devUrl)) return
+      if (validatedURL !== loadUrl && !validatedURL.startsWith(loadUrl)) return
       if (retries >= MAX_RETRIES) {
         console.warn(`[main] Vite indisponible après ${MAX_RETRIES} tentatives — abandon`)
         return
       }
       retries++
       setTimeout(() => {
-        if (!win.isDestroyed()) win.loadURL(devUrl)
+        if (!win.isDestroyed()) win.loadURL(loadUrl)
       }, 500)
     }
     win.webContents.on('did-fail-load', onFailLoad)
     win.webContents.once('did-finish-load', () => {
       win.webContents.off('did-fail-load', onFailLoad)
     })
-  } else {
-    win.loadFile(join(__dirname, '../renderer/index.html'))
   }
 
   return win

@@ -70,6 +70,12 @@ export default defineConfig({
       exclude: ['@tldraw/assets', '@tldraw/assets/imports.vite']
     },
     build: {
+      // 0 = ne jamais inliner les assets en `data:` base64. En prod Electron
+      // (file://), les icônes tldraw inlinées en `data:image/svg+xml` échouent
+      // au décodage (`EncodingError`) et via la CSP `connect-src`. En les
+      // gardant comme fichiers .svg servis localement, elles se chargent comme
+      // en dev.
+      assetsInlineLimit: 0,
       rollupOptions: {
         input: {
           index: resolve(__dirname, 'src/renderer/index.html')

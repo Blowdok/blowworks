@@ -19,6 +19,7 @@ import { initDatabase } from './services/db.js'
 import { ptyManager } from './services/pty-manager.js'
 import { vscodeServer } from './services/vscode-server.js'
 import { initAutoUpdater } from './services/update-manager.js'
+import { startRendererServer, stopRendererServer } from './renderer-server.js'
 
 // Point d'entrée du process principal Electron.
 
@@ -49,6 +50,9 @@ app.commandLine.appendSwitch(
   'disable-features',
   'ThirdPartyStoragePartitioning,PartitionedCookies'
 )
+
+// Port loopback fixe du serveur http qui sert le renderer compilé en production.
+const RENDERER_PORT = 27339
 
 app.whenReady().then(async () => {
   // Préférences Windows standard (AppUserModelId pour taskbar).
@@ -99,20 +103,28 @@ app.whenReady().then(async () => {
     })
   }
 
-  createMainWindow()
+  // URL du renderer : serveur Vite en dev, sinon serveur http local statique
+  // (production et exécutions non empaquetées). Le serveur http garantit que
+  // les assets tldraw se chargent comme en dev (résolution d'URL + fetch http).
+  const devUrl = process.env.ELECTRON_RENDERER_URL
+  const rendererUrl = devUrl ?? (await startRendererServer(RENDERER_PORT))
+  const isDevServer = Boolean(devUrl)
+
+  createMainWindow(rendererUrl, isDevServer)
 
   // Vérifie et propose les mises à jour automatiques (production uniquement).
   initAutoUpdater()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow()
+      createMainWindow(rendererUrl, isDevServer)
     }
   })
 })
 
 // Sortie propre : tuer PTY + sidecar VSCode.
 app.on('before-quit', async () => {
+  stopRendererServer()
   await ptyManager.disposeAll()
   await vscodeServer.stop()
 })
