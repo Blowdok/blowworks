@@ -1,6 +1,6 @@
 {
   "name": "blowworks",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Espace de travail infini : canvas illimité hébergeant terminaux groupés par projet et VSCode embarqué.",
   "private": true,
   "type": "module",
