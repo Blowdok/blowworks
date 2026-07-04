@@ -1,6 +1,11 @@
 import { app, dialog, BrowserWindow } from 'electron'
 import type { MessageBoxOptions } from 'electron'
-import { autoUpdater } from 'electron-updater'
+// electron-updater est un module CommonJS : dans le build de production (ESM),
+// l'import nommé `{ autoUpdater }` échoue au runtime (« Named export not found »).
+// On importe donc le module par défaut, puis on en extrait `autoUpdater`.
+import electronUpdater from 'electron-updater'
+
+const { autoUpdater } = electronUpdater
 
 // Mises à jour automatiques via electron-updater + Releases GitHub.
 //
