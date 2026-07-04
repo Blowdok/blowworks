@@ -225,8 +225,8 @@ Pas réservé aux développeurs : un espace de travail visuel pour **quiconque j
 ### Cloner & installer
 
 ```bash
-git clone https://github.com/Blowdok/blow-works.git
-cd blow-works
+git clone https://github.com/Blowdok/blowworks.git
+cd blowworks
 npm install
 ```
 
