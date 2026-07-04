@@ -36,7 +36,10 @@ export type ShellKindT = z.infer<typeof ShellKindSchema>
 export const TerminalSpawnInput = z.object({
   id: z.string().min(1),
   shell: ShellKindSchema.default('powershell'),
-  cwd: z.string().min(1),
+  // Chaîne vide autorisée : signifie « pas de cwd explicite » → le process main
+  // résout un chemin portable au spawn (resolveCwd : dossier valide, sinon
+  // bureau, sinon home). Évite de coder en dur un chemin machine côté renderer.
+  cwd: z.string(),
   cols: z.number().int().min(1).max(1000).default(80),
   rows: z.number().int().min(1).max(1000).default(24),
   env: z.record(z.string(), z.string()).optional(),
