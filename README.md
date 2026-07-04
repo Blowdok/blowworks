@@ -4,9 +4,33 @@
 
 ![Aperçu de BlowWorks — interface détaillée](public/blow-works2.png)
 
-**Espace de travail infini** pour développeurs : un canvas illimité dans lequel rassembler, grouper et piloter en parallèle vos terminaux, VSCode et applications web. Adieu le jongle entre fenêtres Windows — tout votre contexte sur un plan 2D zoomable, persistant d'une session à l'autre.
+**Espace de travail infini** : un canvas illimité dans lequel rassembler, grouper et piloter en parallèle vos **terminaux, VSCode, navigateurs web et chats IA**. Adieu le jongle entre fenêtres Windows — tout votre contexte sur un plan 2D zoomable, persistant d'une session à l'autre.
 
 > Application desktop Windows 10/11 · Electron + React 19 + tldraw · Francophone.
+
+---
+
+## 🚀 Ce que vous pouvez faire
+
+BlowWorks réunit sur un **même canvas infini**, côte à côte et organisés par projet :
+
+- 💻 **Des terminaux** (PowerShell, cmd, bash, pwsh) en parallèle, scrollback persistant.
+- 🧩 **VSCode complet** embarqué, une instance par dossier de projet.
+- 🌐 **Des navigateurs web** avec onglets, favoris, historique, extensions Chrome et sessions persistantes.
+- 💬 **Des chats IA** (300+ modèles via OpenRouter : Claude, GPT, Gemini, Llama…) avec streaming, recherche web et agents configurables.
+- 📝 **Un bloc-notes** et un **explorateur de fichiers** intégrés.
+- 🧠 **Une mémoire long-terme** qui transforme vos conversations en base de connaissances markdown réutilisable.
+
+Le tout **zoomable, déplaçable et persistant** d'une session à l'autre — votre contexte complet reste en place, sans jongler entre des dizaines de fenêtres.
+
+## 👥 Pour qui ?
+
+Pas réservé aux développeurs : un espace de travail visuel pour **quiconque jongle avec plusieurs outils à la fois**.
+
+- **Développeurs** — un projet = un espace : VSCode + terminaux + doc/localhost dans le navigateur + un chat IA pour coder, groupés ensemble.
+- **Créateurs & rédacteurs** — sources web, bloc-notes et chats IA de rédaction réunis ; la mémoire capitalise vos recherches au fil du temps.
+- **Chercheurs & étudiants** — articles, notes et assistants IA rassemblés ; vos échanges deviennent automatiquement une base de connaissances.
+- **Curieux & power-users de l'IA** — comparez plusieurs modèles côte à côte et gardez ChatGPT, Claude, Gemini & co à portée de clic dans un seul espace.
 
 ---
 
