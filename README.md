@@ -1,16 +1,36 @@
 # BlowWorks
 
+![Licence MIT](https://img.shields.io/github/license/Blowdok/blowworks?style=flat-square&color=44cc11) ![Plateforme](https://img.shields.io/badge/plateforme-Windows%2010%2F11-0078D6?style=flat-square&logo=windows&logoColor=white) ![Electron](https://img.shields.io/badge/Electron-41-47848F?style=flat-square&logo=electron&logoColor=white) ![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black) ![TypeScript](https://img.shields.io/badge/TypeScript-6-3178C6?style=flat-square&logo=typescript&logoColor=white) ![tldraw](https://img.shields.io/badge/tldraw-4-1A1A1A?style=flat-square) ![Vite](https://img.shields.io/badge/Vite-8-646CFF?style=flat-square&logo=vite&logoColor=white) ![Tailwind CSS](https://img.shields.io/badge/Tailwind-4-06B6D4?style=flat-square&logo=tailwindcss&logoColor=white) ![Stars](https://img.shields.io/github/stars/Blowdok/blowworks?style=flat-square) ![PRs bienvenues](https://img.shields.io/badge/PRs-bienvenues-44cc11?style=flat-square)
+
 ![Aperçu de BlowWorks](public/blow-works.png)
 
 ![Aperçu de BlowWorks — interface détaillée](public/blow-works2.png)
 
-**🎥 Démo · 1 min 26**
+**🎥 Démo**
 
 https://github.com/user-attachments/assets/d044fee7-44d3-4efe-88ea-b5a8f3a9283a
 
 **Espace de travail infini** : un canvas illimité dans lequel rassembler, grouper et piloter en parallèle vos **terminaux, VSCode, navigateurs web et chats IA**. Adieu le jongle entre fenêtres Windows — tout votre contexte sur un plan 2D zoomable, persistant d'une session à l'autre.
 
 > Application desktop Windows 10/11 · Electron + React 19 + tldraw · Francophone.
+
+---
+
+## 📑 Sommaire
+
+- [🚀 Ce que vous pouvez faire](#-ce-que-vous-pouvez-faire)
+- [👥 Pour qui ?](#-pour-qui-)
+- [✨ Fonctionnalités](#-fonctionnalités-version-100)
+- [🚧 Prévu en v2](#-prévu-en-v2)
+- [🔧 Stack technique](#-stack-technique)
+- [📦 Installation](#-installation-développement)
+- [🔑 Configuration des clés API](#-configuration-des-clés-api)
+- [📁 Structure](#-structure)
+- [🧩 Intégration VSCode](#-intégration-vscode-sidecar-serve-web)
+- [🔐 Sécurité](#-sécurité)
+- [🐛 Bugs connus & limitations](#-bugs-connus--limitations)
+- [🤝 Contribution](#-contribution)
+- [📄 Licence](#-licence)
 
 ---
 
@@ -178,7 +198,7 @@ Pas réservé aux développeurs : un espace de travail visuel pour **quiconque j
 
 ## 🚧 Prévu en v2
 
-- Intégration **CLI-Anything** pour piloter les apps natives (GIMP, Blender, Photoshop, OBS…) via leur CLI auto-générée.
+- Intégration **MCP (Model Context Protocol)** — connexion de serveurs MCP pour piloter des outils et applications externes directement depuis le canvas (fichiers, APIs, bases de données, apps créatives…).
 - Support macOS et Linux.
 - Auto-update via `electron-updater`.
 - **Chat IA — v2 :** upload d'images/fichiers (multimodal vision), optimisation automatique de prompt via modèle cheap (Haiku/Gemini Flash), mode thinking (`reasoning.effort`), Exa en alternative/complément de Tavily.
@@ -187,7 +207,7 @@ Pas réservé aux développeurs : un espace de travail visuel pour **quiconque j
 
 ---
 
-## 🛠️ Stack technique
+## 🔧 Stack technique
 
 | Couche                  | Technologie                                                             |
 | ----------------------- | ----------------------------------------------------------------------- |
@@ -258,6 +278,22 @@ BlowWorks s'ouvre en mode HMR (main + renderer). Modifier un fichier React recha
 
 ---
 
+## 🔑 Configuration des clés API
+
+BlowWorks fonctionne **sans aucune clé** pour les terminaux, VSCode, le navigateur et le bloc-notes. Seules les **fonctions IA** (chat, recherche web, mémoire) demandent vos propres clés — gratuites à obtenir et **stockées chiffrées en local**, jamais envoyées ailleurs qu'au fournisseur choisi.
+
+Tout se configure **dans l'app, sans toucher au code** : icône ⚙ (Réglages) → onglet dédié.
+
+| Service | À quoi ça sert | Où obtenir la clé | Requis ? |
+|---------|----------------|-------------------|----------|
+| **OpenRouter** | Chat IA (300+ modèles : Claude, GPT, Gemini…) | <https://openrouter.ai/keys> | Pour le chat IA |
+| **Tavily** | Recherche web dans le chat (bouton 🌐) | <https://tavily.com> | Optionnel |
+| **GitHub** (token) | Git & Copilot dans le VSCode embarqué | Bouton « Se connecter avec GitHub » dans l'app | Optionnel |
+
+> 🔒 Vos clés sont chiffrées via le coffre système de Windows (DPAPI) et ne transitent jamais par l'interface. Sans clé, l'app démarre normalement — seules les fonctions IA restent en veille.
+
+---
+
 ## 📁 Structure
 
 ```
@@ -322,9 +358,47 @@ Au premier usage, BlowWorks spawne le serveur sur `127.0.0.1:27338` (port **fixe
 
 ---
 
-## 🤝 Convention de commits
+## 🐛 Bugs connus & limitations
 
-Commits en français, messages clairs pour la communauté francophone
+BlowWorks est un projet **en développement actif**. La version actuelle est pleinement utilisable au quotidien, mais **quelques bugs mineurs peuvent subsister** ici ou là — ils seront corrigés au fil des versions.
+
+- 🪟 **Windows uniquement** pour l'instant (support macOS / Linux prévu en v2).
+- Le projet évolue vite : pense à mettre à jour régulièrement pour profiter des correctifs.
+
+Un souci, un comportement inattendu ? [Ouvre une issue](https://github.com/Blowdok/blowworks/issues) — c'est la meilleure façon d'aider le projet à progresser. 🙌
+
+---
+
+## 🤝 Contribution
+
+Les contributions sont **les bienvenues**, que tu sois développeur confirmé ou débutant ! BlowWorks est un projet ouvert : corrections, améliorations, nouvelles idées — tout est utile.
+
+### Signaler un bug ou proposer une idée
+
+Ouvre une [**issue**](https://github.com/Blowdok/blowworks/issues) en décrivant le plus clairement possible :
+
+- ce que tu attendais, ce qui s'est passé, et comment le reproduire ;
+- une capture d'écran ou le message d'erreur si tu en as un.
+
+### Proposer un changement (Pull Request)
+
+1. **Fork** le dépôt, puis clone ton fork.
+2. Crée une **branche** dédiée : `git checkout -b feat/ma-fonctionnalite` (ou `fix/mon-correctif`).
+3. Développe, puis vérifie que tout est propre :
+
+   ```bash
+   npm run typecheck   # types OK
+   npm run test        # tests unitaires verts
+   ```
+
+4. **Commit** en français, avec un message clair et concis.
+5. **Pousse** ta branche et ouvre une **Pull Request** vers `main`, en expliquant le pourquoi de ton changement.
+
+### Bon à savoir
+
+- 🎨 Respecte le style existant — Prettier + ESLint sont configurés (`npm run format`, `npm run lint`).
+- 💬 Projet et communauté **francophones** : commentaires, commits et discussions en français.
+- 🙏 Toute contribution compte, même une simple correction de typo.
 
 ---
 
