@@ -1,7 +1,13 @@
 import { resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+
+// Version de l'app (package.json) injectée dans le renderer pour l'affichage UI.
+const appVersion: string = JSON.parse(
+  readFileSync(resolve(__dirname, 'package.json'), 'utf8')
+).version
 
 // Configuration Electron-Vite : 3 cibles de build (main, preload, renderer).
 export default defineConfig({
@@ -56,6 +62,9 @@ export default defineConfig({
   },
   renderer: {
     root: 'src/renderer',
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion)
+    },
     resolve: {
       alias: {
         '@': resolve(__dirname, 'src/renderer/src'),

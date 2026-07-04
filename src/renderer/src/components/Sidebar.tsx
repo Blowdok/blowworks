@@ -473,7 +473,7 @@ function Footer({
         <GitHubAccount compact={collapsed} />
       </div>
       {!collapsed && (
-        <span className="text-[10px] text-[var(--fg-muted)]">BlowWorks v1.0.0</span>
+        <span className="text-[10px] text-[var(--fg-muted)]">BlowWorks v{__APP_VERSION__}</span>
       )}
     </footer>
   )

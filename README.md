@@ -20,7 +20,7 @@ https://github.com/user-attachments/assets/d044fee7-44d3-4efe-88ea-b5a8f3a9283a
 
 - [🚀 Ce que vous pouvez faire](#-ce-que-vous-pouvez-faire)
 - [👥 Pour qui ?](#-pour-qui-)
-- [✨ Fonctionnalités](#-fonctionnalités-version-100)
+- [✨ Fonctionnalités](#-fonctionnalités)
 - [🚧 Prévu en v2](#-prévu-en-v2)
 - [🔧 Stack technique](#-stack-technique)
 - [💾 Installer (utilisateur)](#-installer-blowworks-utilisateur)
@@ -59,7 +59,7 @@ Pas réservé aux développeurs : un espace de travail visuel pour **quiconque j
 
 ---
 
-## ✨ Fonctionnalités (Version 1.0.0)
+## ✨ Fonctionnalités
 
 - **Canvas infini zoom/pan** basé sur tldraw : déplacez, groupez, alignez vos fenêtres librement.
   - **Pan universel "main / Espace" au-dessus des iframes** : quand l'outil **main** (paume) est sélectionné dans la toolbar du bas-centre OU que la touche **Espace** est maintenue, le drag panne le canvas même quand le pointeur survole une iframe VSCode (`openvscode-server`) ou un `<webview>` Electron (BrowserShape). Implémentation : le clip container des portails reçoit un attribut `data-pan-mode="true"` (piloté par `editor.getCurrentToolId() === 'hand'` + tracking espace côté window, ignoré dans inputs/textarea/contenteditable pour ne pas bloquer la frappe), et une règle CSS dans `globals.css` force `pointer-events: none !important` sur tous les descendants — y compris ceux qui ont un `pointer-events: auto` inline (header buttons, body iframe, xterm, webview). Le pointerdown traverse alors les portails jusqu'au canvas tldraw, qui pan nativement. Curseur `grab`/`grabbing` continu sur tout le canvas. Sécurité : un blur global remet le pan mode à `false` (cas Alt+Tab avec espace pressé).
@@ -251,7 +251,7 @@ Va sur la page des **[Releases](https://github.com/Blowdok/blowworks/releases)**
 3. Choisis le dossier d'installation (ou garde celui par défaut), puis **Installer**.
 4. Terminé ! 🎉 Un raccourci **BlowWorks** apparaît sur ton **Bureau** et dans le **menu Démarrer** — lance l'app comme n'importe quel programme.
 
-> 🔄 **Mise à jour automatique** : à partir de la v1.0.1, BlowWorks se met à jour tout seul — il vérifie les nouvelles versions au démarrage, les télécharge en arrière-plan et te propose de redémarrer pour les appliquer. Rien à faire manuellement.
+> 🔄 **Mise à jour automatique** : à partir de la v1.0.3, BlowWorks se met à jour tout seul — il vérifie les nouvelles versions au démarrage, les télécharge en arrière-plan et te propose de redémarrer pour les appliquer. Rien à faire manuellement.
 
 ---
 
@@ -350,7 +350,7 @@ BlowWorks s'ouvre en mode HMR (main + renderer). Modifier un fichier React recha
    npm run publish:win
    ```
 
-`electron-builder` construit l'installeur, crée la Release GitHub et y attache le `latest.yml`. Les utilisateurs déjà en v1.0.1+ reçoivent alors la **mise à jour automatiquement** au prochain lancement.
+`electron-builder` construit l'installeur, crée la Release GitHub et y attache le `latest.yml`. Les utilisateurs déjà en v1.0.3+ reçoivent alors la **mise à jour automatiquement** au prochain lancement.
 
 ---
 

@@ -244,7 +244,7 @@ export default function Header() {
       {/* Zone droite : meta */}
       <div className="flex justify-end">
         <span className="rounded-[var(--radius-sm)] px-2 py-1 text-xs text-[var(--fg-muted)]">
-          v1.0.0
+          v{__APP_VERSION__}
         </span>
       </div>
     </header>
