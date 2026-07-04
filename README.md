@@ -23,7 +23,8 @@ https://github.com/user-attachments/assets/d044fee7-44d3-4efe-88ea-b5a8f3a9283a
 - [✨ Fonctionnalités](#-fonctionnalités-version-100)
 - [🚧 Prévu en v2](#-prévu-en-v2)
 - [🔧 Stack technique](#-stack-technique)
-- [📦 Installation](#-installation-développement)
+- [💾 Installer (utilisateur)](#-installer-blowworks-utilisateur)
+- [📦 Installation (dév.)](#-installation-développement)
 - [🔑 Configuration des clés API](#-configuration-des-clés-api)
 - [📁 Structure](#-structure)
 - [🧩 Intégration VSCode](#-intégration-vscode-sidecar-serve-web)
@@ -229,6 +230,29 @@ Pas réservé aux développeurs : un espace de travail visuel pour **quiconque j
 | Validation IPC          | Zod 4 (main/renderer uniquement, preload exclu pour sandbox)            |
 | Tests                   | Vitest + Playwright                                                     |
 | Packaging               | electron-builder 26 (NSIS)                                              |
+
+---
+
+## 💾 Installer BlowWorks (utilisateur)
+
+**La façon la plus simple — aucune compétence technique requise.**
+
+### Pourquoi cette méthode ?
+
+Pas besoin d'installer Node.js, ni d'ouvrir un terminal, ni de taper la moindre commande. Tu télécharges un fichier, tu double-cliques, c'est installé — comme n'importe quel logiciel Windows.
+
+### Où le télécharger ?
+
+Va sur la page des **[Releases](https://github.com/Blowdok/blowworks/releases)** du dépôt et télécharge le fichier **`BlowWorks-Setup-x.x.x.exe`** de la dernière version (fichier volumineux : il embarque tout, y compris l'éditeur VSCode intégré).
+
+### Comment l'installer ?
+
+1. **Double-clique** sur le fichier `BlowWorks-Setup-x.x.x.exe` téléchargé.
+2. ⚠️ **Windows peut afficher un écran bleu « Windows a protégé votre ordinateur »** : c'est normal, l'application n'est pas (encore) signée numériquement. Clique sur **« Informations complémentaires »** puis **« Exécuter quand même »**. *(BlowWorks est open-source : tout le code est vérifiable ici même.)*
+3. Choisis le dossier d'installation (ou garde celui par défaut), puis **Installer**.
+4. Terminé ! 🎉 Un raccourci **BlowWorks** apparaît sur ton **Bureau** et dans le **menu Démarrer** — lance l'app comme n'importe quel programme.
+
+> 🔄 **Mise à jour** : pour passer à une version plus récente, télécharge et installe simplement le nouveau `.exe` depuis les Releases.
 
 ---
 
