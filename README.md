@@ -234,6 +234,46 @@ Pas réservé aux développeurs : un espace de travail visuel pour **quiconque j
 
 ## 📦 Installation (développement)
 
+### 🔰 Pas à pas pour débutants
+
+Jamais lancé un projet depuis son code ? Suis ce guide, aucune compétence en développement n'est requise.
+
+> 💡 **Le plus simple** : si un fichier d'installation `.exe` est proposé dans l'onglet [**Releases**](https://github.com/Blowdok/blowworks/releases) du dépôt, télécharge-le et double-clique dessus — rien d'autre à faire. Sinon, suis les étapes ci-dessous pour lancer BlowWorks depuis le code.
+
+**1. Installer Node.js** *(une seule fois)*
+Va sur <https://nodejs.org>, télécharge la version **LTS**, lance l'installeur et clique « Suivant » jusqu'au bout. Node.js fournit la commande `npm` dont on aura besoin.
+
+**2. Télécharger BlowWorks**
+- En haut de la page du dépôt, clique le bouton vert **« Code »** → **« Download ZIP »**, puis décompresse le dossier où tu veux (ex. sur ton Bureau).
+- *(ou, si tu connais Git : `git clone https://github.com/Blowdok/blowworks.git`)*
+
+**3. Ouvrir un terminal dans le dossier**
+Le « terminal » est la fenêtre où l'on tape des commandes. Pour l'ouvrir **directement dans le dossier BlowWorks** :
+- **Le plus simple** : ouvre le dossier dans l'Explorateur Windows, puis **clic droit dans un espace vide → « Ouvrir dans le terminal »** (Windows 11), ou **Maj + clic droit → « Ouvrir la fenêtre PowerShell ici »** (Windows 10).
+- **Autre méthode** : dans la barre d'adresse de l'Explorateur (tout en haut de la fenêtre du dossier), efface le texte, tape `powershell` puis Entrée.
+- Les commandes sont **identiques** quel que soit le terminal — PowerShell, Invite de commandes (`cmd`), Windows Terminal ou Git Bash.
+
+**4. Installer les dépendances** *(une seule fois)*
+Dans le terminal, tape puis appuie sur Entrée :
+
+```bash
+npm install
+```
+
+Patiente quelques minutes (téléchargement des composants).
+
+**5. Lancer l'application**
+
+```bash
+npm run dev
+```
+
+BlowWorks s'ouvre. 🎉 Pour le relancer plus tard, refais simplement les étapes **3** et **5**.
+
+> ⚠️ Un message d'erreur ? Vérifie que le terminal affiche bien le **chemin du dossier BlowWorks**, et que Node.js est installé (`node --version` doit répondre un numéro de version).
+
+---
+
 ### Prérequis
 
 - **Node.js ≥ 20.10** et **npm ≥ 10**
@@ -397,7 +437,7 @@ Ouvre une [**issue**](https://github.com/Blowdok/blowworks/issues) en décrivant
 ### Bon à savoir
 
 - 🎨 Respecte le style existant — Prettier + ESLint sont configurés (`npm run format`, `npm run lint`).
-- 💬 Projet et communauté **francophones** : commentaires, commits et discussions en français.
+- 💬 La communauté est **francophone** — commentaires, commits et discussions de préférence en français. Mais **tout le monde est le bienvenu**, quelle que soit ton origine ou ta langue : l'essentiel, c'est l'envie de s'impliquer. 🌍
 - 🙏 Toute contribution compte, même une simple correction de typo.
 
 ---
