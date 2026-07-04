@@ -50,3 +50,6 @@ test-results/
 .claude/
 CLAUDE.md
 mes-skills.md
+
+# Vidéos de démo (hébergées via GitHub assets, pas dans le dépôt)
+public/demo/

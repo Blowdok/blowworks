@@ -4,6 +4,10 @@
 
 ![Aperçu de BlowWorks — interface détaillée](public/blow-works2.png)
 
+**🎥 Démo · 1 min 26**
+
+https://github.com/user-attachments/assets/c50243c3-de47-407c-b8a7-b6f6e1881772
+
 **Espace de travail infini** : un canvas illimité dans lequel rassembler, grouper et piloter en parallèle vos **terminaux, VSCode, navigateurs web et chats IA**. Adieu le jongle entre fenêtres Windows — tout votre contexte sur un plan 2D zoomable, persistant d'une session à l'autre.
 
 > Application desktop Windows 10/11 · Electron + React 19 + tldraw · Francophone.
