@@ -59,7 +59,9 @@ export class TerminalShapeUtil extends BaseBoxShapeUtil<TerminalShape> {
       w: 640,
       h: 380,
       shell: 'powershell',
-      cwd: 'C:/Users/Blowdok/Desktop',
+      // Chaîne vide → chemin portable résolu côté main au spawn (resolveCwd :
+      // bureau, sinon home). Pas de chemin machine codé en dur.
+      cwd: '',
       projectId: null,
       spawned: false
     }
