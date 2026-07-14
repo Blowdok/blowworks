@@ -40,6 +40,10 @@ interface UIState {
   setCanvasBgDataUrl: (url: string | null) => void
   setCanvasBgOpacity: (v: number) => void
   setCanvasBgSize: (v: number) => void
+  // Dossier de travail par défaut des nouveaux terminaux. Chaîne vide →
+  // le main résout Bureau puis home au spawn du PTY.
+  defaultTerminalCwd: string
+  setDefaultTerminalCwd: (path: string) => void
   hydrate: () => Promise<void>
 }
 
@@ -51,6 +55,7 @@ const KEY_SEARCH_ENGINE = 'browser.searchEngine'
 const KEY_CANVAS_BG_DATAURL = 'canvas.background.dataUrl'
 const KEY_CANVAS_BG_OPACITY = 'canvas.background.opacity'
 const KEY_CANVAS_BG_SIZE = 'canvas.background.size'
+const KEY_TERMINAL_DEFAULT_CWD = 'ui.terminal.defaultCwd'
 
 const DEFAULT_CANVAS_BG_OPACITY = 0.25
 const DEFAULT_CANVAS_BG_SIZE = 800
@@ -131,6 +136,7 @@ export const useUIStore = create<UIState>((set, get) => ({
   canvasBgDataUrl: null,
   canvasBgOpacity: DEFAULT_CANVAS_BG_OPACITY,
   canvasBgSize: DEFAULT_CANVAS_BG_SIZE,
+  defaultTerminalCwd: '',
 
   toggleSidebar: () => {
     const next = !get().sidebarCollapsed
@@ -177,6 +183,11 @@ export const useUIStore = create<UIState>((set, get) => ({
     set({ canvasBgSize: clamped })
     if (get().hydrated) writeString(KEY_CANVAS_BG_SIZE, clamped.toString())
   },
+  setDefaultTerminalCwd: (defaultTerminalCwd) => {
+    if (get().defaultTerminalCwd === defaultTerminalCwd) return
+    set({ defaultTerminalCwd })
+    if (get().hydrated) writeString(KEY_TERMINAL_DEFAULT_CWD, defaultTerminalCwd)
+  },
 
   hydrate: async () => {
     const [
@@ -187,7 +198,8 @@ export const useUIStore = create<UIState>((set, get) => ({
       searchEngine,
       canvasBgDataUrl,
       canvasBgOpacity,
-      canvasBgSize
+      canvasBgSize,
+      defaultTerminalCwd
     ] = await Promise.all([
       readBool(KEY_SIDEBAR, false),
       readBool(KEY_STYLE_PANEL, true),
@@ -196,7 +208,8 @@ export const useUIStore = create<UIState>((set, get) => ({
       readSearchEngine(KEY_SEARCH_ENGINE, DEFAULT_SEARCH_ENGINE_ID),
       readMaybeString(KEY_CANVAS_BG_DATAURL),
       readNumber(KEY_CANVAS_BG_OPACITY, DEFAULT_CANVAS_BG_OPACITY),
-      readNumber(KEY_CANVAS_BG_SIZE, DEFAULT_CANVAS_BG_SIZE)
+      readNumber(KEY_CANVAS_BG_SIZE, DEFAULT_CANVAS_BG_SIZE),
+      readMaybeString(KEY_TERMINAL_DEFAULT_CWD).then((v) => v ?? '')
     ])
     set({
       sidebarCollapsed: sidebar,
@@ -207,6 +220,7 @@ export const useUIStore = create<UIState>((set, get) => ({
       canvasBgDataUrl,
       canvasBgOpacity,
       canvasBgSize,
+      defaultTerminalCwd,
       hydrated: true
     })
   }
