@@ -3,6 +3,7 @@ import Header from './components/Header.js'
 import Sidebar from './components/Sidebar.js'
 import TabsBar from './components/TabsBar.js'
 import InfiniteCanvas from './components/canvas/InfiniteCanvas.js'
+import CommandPalette from './components/CommandPalette.js'
 import DeleteInterceptor from './components/DeleteInterceptor.js'
 import ShapeAutoStacker from './components/ShapeAutoStacker.js'
 import { useProjectStore } from './stores/project-store.js'
@@ -89,6 +90,7 @@ export default function App() {
           les positions à la fermeture. Cohabite avec n'importe quel
           panneau via `wikiStore.leftPanelWidthFraction`. */}
       <ShapeAutoStacker />
+      <CommandPalette />
     </div>
   )
 }

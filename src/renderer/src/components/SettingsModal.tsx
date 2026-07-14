@@ -6,6 +6,8 @@ import WikiSettingsTab from './settings/WikiSettingsTab.js'
 import AgentsSettingsTab from './settings/AgentsSettingsTab.js'
 import BrowserSettingsTab from './settings/BrowserSettingsTab.js'
 import CanvasSettingsTab from './settings/CanvasSettingsTab.js'
+import TerminalSettingsTab from './settings/TerminalSettingsTab.js'
+import type { SettingsTab } from '../stores/app-chrome-store.js'
 
 // Modale Paramètres plein écran : sidebar verticale à gauche + panneau
 // de réglages à droite. Rendue via `createPortal(document.body)` — même
@@ -15,9 +17,10 @@ import CanvasSettingsTab from './settings/CanvasSettingsTab.js'
 // Onglets Lot 1 :
 //   - IA · OpenRouter (clé API + modèle par défaut + température)
 //   - IA · Recherche web Tavily (clé API)
-//   - Placeholders grisés : Agents, MCP, Presets (lots 3/4)
+//   - Terminal (dossier de travail par défaut)
+//   - Placeholders grisés : Presets, MCP (lots 4)
 
-type Tab = 'openrouter' | 'tavily' | 'defaults' | 'wiki' | 'agents' | 'browser' | 'canvas'
+type Tab = SettingsTab
 
 interface SettingsModalProps {
   open: boolean
@@ -136,6 +139,9 @@ export default function SettingsModal({
             <TabButton active={tab === 'canvas'} onClick={() => setTab('canvas')}>
               Canvas
             </TabButton>
+            <TabButton active={tab === 'terminal'} onClick={() => setTab('terminal')}>
+              Terminal
+            </TabButton>
             <div className="mt-3 border-t px-2 pt-3 text-[10px] uppercase tracking-widest text-[var(--fg-muted)]" style={{ borderColor: 'var(--border)' }}>
               À venir
             </div>
@@ -160,6 +166,7 @@ export default function SettingsModal({
           {tab === 'agents' && <AgentsSettingsTab />}
           {tab === 'browser' && <BrowserSettingsTab />}
           {tab === 'canvas' && <CanvasSettingsTab />}
+          {tab === 'terminal' && <TerminalSettingsTab />}
         </section>
       </div>
     </div>,

@@ -18,6 +18,7 @@ import WikiExplorerSidebar from './WikiExplorerSidebar.js'
 import WikiPageViewer from './WikiPageViewer.js'
 import WikiGraphModal from './WikiGraphModal.js'
 import { useWikiStore } from '../stores/wiki-store.js'
+import { useAppChromeStore, type SettingsTab } from '../stores/app-chrome-store.js'
 
 // Barre latérale gauche : liste des projets + création + glissement caméra
 // vers la zone déterministe de chaque projet. Chaque projet occupe sa
@@ -44,10 +45,10 @@ export default function Sidebar() {
     id: string
     name: string
   } | null>(null)
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [settingsInitialTab, setSettingsInitialTab] = useState<
-    'openrouter' | 'wiki' | undefined
-  >(undefined)
+  const settingsOpen = useAppChromeStore((s) => s.settingsOpen)
+  const settingsInitialTab = useAppChromeStore((s) => s.settingsInitialTab)
+  const openSettings = useAppChromeStore((s) => s.openSettings)
+  const closeSettings = useAppChromeStore((s) => s.closeSettings)
 
   // Compteurs d'iframes par projet, recalculés à chaque mutation du store
   // tldraw (création/suppression/assignation d'une shape portail). Sans
@@ -183,17 +184,13 @@ export default function Sidebar() {
           handleArrangeGrid={handleArrangeGrid}
           broadcast={broadcast}
           setProjectToDelete={setProjectToDelete}
-          setSettingsInitialTab={setSettingsInitialTab}
-          setSettingsOpen={setSettingsOpen}
+          openSettings={openSettings}
         />
       )}
 
       <Footer
         collapsed={collapsed}
-        onOpenSettings={() => {
-          setSettingsInitialTab(undefined)
-          setSettingsOpen(true)
-        }}
+        onOpenSettings={() => openSettings()}
       />
 
       <WikiPageViewer />
@@ -202,7 +199,7 @@ export default function Sidebar() {
 
       <SettingsModal
         open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
+        onClose={closeSettings}
         initialTab={settingsInitialTab}
       />
 
@@ -246,8 +243,7 @@ interface StandardSidebarContentProps {
   handleArrangeGrid: (id: string) => void
   broadcast: (projectId: string, cmd: string) => Promise<void>
   setProjectToDelete: (p: { id: string; name: string } | null) => void
-  setSettingsInitialTab: (t: 'openrouter' | 'wiki' | undefined) => void
-  setSettingsOpen: (v: boolean) => void
+  openSettings: (tab?: SettingsTab) => void
 }
 
 function StandardSidebarContent(props: StandardSidebarContentProps): React.ReactElement {
@@ -265,8 +261,7 @@ function StandardSidebarContent(props: StandardSidebarContentProps): React.React
     handleArrangeGrid,
     broadcast,
     setProjectToDelete,
-    setSettingsInitialTab,
-    setSettingsOpen
+    openSettings
   } = props
 
   return (
@@ -410,10 +405,7 @@ function StandardSidebarContent(props: StandardSidebarContentProps): React.React
       <section className="shrink-0 border-t border-[var(--border)] py-2">
         <MemorySidebarSection
           collapsed={collapsed}
-          onOpenWikiSettings={() => {
-            setSettingsInitialTab('wiki')
-            setSettingsOpen(true)
-          }}
+          onOpenWikiSettings={() => openSettings('wiki')}
         />
       </section>
 
