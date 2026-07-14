@@ -55,7 +55,8 @@ export const IPC_CHANNELS = {
   },
   dialog: {
     pickFolder: 'dialog.pickFolder',
-    pickImage: 'dialog.pickImage'
+    pickImage: 'dialog.pickImage',
+    pickTextFile: 'dialog.pickTextFile'
   },
   github: {
     setToken: 'github.setToken',
@@ -87,7 +88,8 @@ export const IPC_CHANNELS = {
     // Persiste la timeline entrelacée d'un message assistant après fin
     // de stream. Appelé une seule fois par message (juste après que le
     // refetch a révélé son id). Payload `{ messageId, segmentsJson }`.
-    saveMessageSegments: 'ai.saveMessageSegments'
+    saveMessageSegments: 'ai.saveMessageSegments',
+    optimizePrompt: 'ai.optimizePrompt'
   },
   browser: {
     // Push main → renderer : demander l'ouverture d'une URL dans une

@@ -9,6 +9,31 @@ import { IPC_CHANNELS } from '@shared/ipc-channels.js'
 // DB et chaque hydrate du store. 2 Mio est un compromis raisonnable
 // (couvre largement une photo HD compressée).
 const MAX_BACKGROUND_BYTES = 2 * 1024 * 1024
+const MAX_CHAT_TEXT_BYTES = 200 * 1024
+
+const TEXT_FILE_EXTENSIONS = [
+  'txt',
+  'md',
+  'markdown',
+  'json',
+  'csv',
+  'yml',
+  'yaml',
+  'log',
+  'xml',
+  'ts',
+  'tsx',
+  'js',
+  'jsx',
+  'py',
+  'html',
+  'css',
+  'ini',
+  'toml',
+  'env',
+  'conf',
+  'cfg'
+]
 
 const MIME_BY_EXT: Record<string, string> = {
   '.png': 'image/png',
@@ -75,6 +100,34 @@ export function registerDialogHandlers(): void {
       const buf = await fs.readFile(filePath)
       const dataUrl = `data:${mime};base64,${buf.toString('base64')}`
       return { dataUrl, name: path.basename(filePath) }
+    }
+  )
+
+  // Fichier texte pour pièce jointe chat (UTF-8, taille limitée).
+  ipcMain.handle(
+    IPC_CHANNELS.dialog.pickTextFile,
+    async (evt, raw): Promise<{ name: string; content: string } | null> => {
+      const options = (raw ?? {}) as { title?: string }
+      const win = BrowserWindow.fromWebContents(evt.sender) ?? undefined
+      const result = await dialog.showOpenDialog(win!, {
+        title: options.title ?? 'Joindre un fichier texte',
+        properties: ['openFile', 'dontAddToRecent'],
+        filters: [{ name: 'Fichiers texte', extensions: TEXT_FILE_EXTENSIONS }]
+      })
+      if (result.canceled || result.filePaths.length === 0) return null
+
+      const filePath = result.filePaths[0]
+      const stat = await fs.stat(filePath)
+      if (stat.size > MAX_CHAT_TEXT_BYTES) {
+        const sizeKib = (stat.size / 1024).toFixed(0)
+        const limitKib = (MAX_CHAT_TEXT_BYTES / 1024).toFixed(0)
+        throw new Error(
+          `Fichier trop volumineux (${sizeKib} Ko, limite ${limitKib} Ko).`
+        )
+      }
+
+      const content = await fs.readFile(filePath, 'utf8')
+      return { name: path.basename(filePath), content }
     }
   )
 }

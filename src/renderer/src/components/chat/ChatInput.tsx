@@ -1,6 +1,9 @@
 import { useRef, useEffect } from 'react'
 import { ArrowUp, Globe, Paperclip, Square, Zap } from 'lucide-react'
 
+import type { AIChatAttachmentT } from '@shared/ipc-contract.js'
+import { MAX_CHAT_ATTACHMENTS } from '@shared/ai-attachments.js'
+
 interface ChatInputProps {
   value: string
   onChange: (value: string) => void
@@ -11,10 +14,12 @@ interface ChatInputProps {
   disabledReason?: string
   webSearchEnabled: boolean
   onToggleWebSearch: () => void
-  // Rappel pour le bouton trombone (upload fichiers, lot 2). Laissé null ici.
-  onAttach?: () => void
-  // Rappel pour l'éclair d'optimisation (lot 2). Laissé null ici.
+  attachments?: AIChatAttachmentT[]
+  onRemoveAttachment?: (index: number) => void
+  onAttachImage?: () => void
+  onAttachTextFile?: () => void
   onOptimize?: () => void
+  optimizing?: boolean
 }
 
 // Zone de saisie d'une ChatShape — capsule flottante immersive :
@@ -34,8 +39,12 @@ export default function ChatInput({
   disabledReason,
   webSearchEnabled,
   onToggleWebSearch,
-  onAttach,
-  onOptimize
+  attachments = [],
+  onRemoveAttachment,
+  onAttachImage,
+  onAttachTextFile,
+  onOptimize,
+  optimizing = false
 }: ChatInputProps): React.ReactElement {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -68,7 +77,7 @@ export default function ChatInput({
       e.preventDefault()
       if (isStreaming) {
         onCancel()
-      } else if (!disabled && value.trim().length > 0) {
+      } else if (!disabled && (value.trim().length > 0 || attachments.length > 0)) {
         onSubmit()
       }
     }
@@ -80,7 +89,7 @@ export default function ChatInput({
     onTouchStart: (e: React.TouchEvent) => e.stopPropagation()
   }
 
-  const canSubmit = !disabled && value.trim().length > 0
+  const canSubmit = !disabled && (value.trim().length > 0 || attachments.length > 0)
 
   return (
     <div
@@ -127,6 +136,44 @@ export default function ChatInput({
           {...stopInteractive}
         />
 
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {attachments.map((att, index) => (
+              <div
+                key={`${att.type}-${att.name}-${index}`}
+                className="group relative overflow-hidden rounded-[10px] border"
+                style={{ borderColor: 'var(--border)' }}
+              >
+                {att.type === 'image' ? (
+                  <img
+                    src={att.dataUrl}
+                    alt={att.name}
+                    className="h-16 w-16 object-cover"
+                    draggable={false}
+                  />
+                ) : (
+                  <div className="flex max-w-[180px] items-center gap-1.5 px-2 py-1.5 text-[11px] text-[var(--fg-muted)]">
+                    <span>📄</span>
+                    <span className="truncate" title={att.name}>
+                      {att.name}
+                    </span>
+                  </div>
+                )}
+                {onRemoveAttachment && (
+                  <button
+                    type="button"
+                    onClick={() => onRemoveAttachment(index)}
+                    className="absolute right-0.5 top-0.5 rounded bg-black/70 px-1 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100"
+                    title="Retirer"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-0.5">
             <IconToggle
@@ -140,16 +187,23 @@ export default function ChatInput({
               Icon={Globe}
             />
             <IconButton
-              disabled
-              onClick={onAttach}
-              title="Joindre une image ou un fichier (bientôt)"
+              disabled={disabled || isStreaming || !onAttachImage || attachments.length >= MAX_CHAT_ATTACHMENTS}
+              onClick={onAttachImage}
+              title="Joindre une image"
               Icon={Paperclip}
             />
             <IconButton
-              disabled
+              disabled={disabled || isStreaming || !onAttachTextFile || attachments.length >= MAX_CHAT_ATTACHMENTS}
+              onClick={onAttachTextFile}
+              title="Joindre un fichier texte"
+              label="T"
+            />
+            <IconButton
+              disabled={disabled || isStreaming || !onOptimize || optimizing || value.trim().length === 0}
               onClick={onOptimize}
-              title="Optimiser le prompt (bientôt)"
+              title="Optimiser le prompt (modèle rapide)"
               Icon={Zap}
+              active={optimizing}
             />
           </div>
 
@@ -252,12 +306,16 @@ function IconButton({
   disabled,
   onClick,
   title,
-  Icon
+  Icon,
+  label,
+  active
 }: {
   disabled?: boolean
   onClick?: () => void
   title: string
-  Icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }>
+  Icon?: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }>
+  label?: string
+  active?: boolean
 }): React.ReactElement {
   return (
     <button
@@ -266,9 +324,14 @@ function IconButton({
       disabled={disabled}
       title={title}
       className="flex h-7 w-7 items-center justify-center rounded-[10px] text-[var(--fg-muted)] transition-colors hover:bg-white/5 hover:text-[var(--fg-primary)] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-[var(--fg-muted)]"
+      style={
+        active
+          ? { color: 'var(--fg-secondary)', background: 'rgba(0, 255, 255, 0.12)' }
+          : undefined
+      }
       onPointerDown={(e) => e.stopPropagation()}
     >
-      <Icon size={17} strokeWidth={2} />
+      {Icon ? <Icon size={17} strokeWidth={2} /> : <span className="text-[11px] font-semibold">{label}</span>}
     </button>
   )
 }

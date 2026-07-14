@@ -8,11 +8,14 @@ import {
   AISetApiKeyInput,
   AIConfirmToolCallInput,
   AIDefaultsSchema,
+  AIOptimizePromptInput,
   type AIChunkEventT,
   type AIApiKeyStatusT,
   type AIDefaultsT
 } from '@shared/ipc-contract.js'
 import { resolveToolConfirmation } from '../services/ai-tool-confirmation.js'
+import { buildUserMessageContent, parseAttachmentsJson } from '@shared/ai-attachments.js'
+import type { ChatCompletionMessage } from '../services/openrouter.js'
 import {
   createConversation,
   getConversation,
@@ -26,6 +29,7 @@ import {
 } from '../services/ai-conversations.js'
 import * as OpenRouter from '../services/openrouter.js'
 import * as Tavily from '../services/tavily.js'
+import { optimizePrompt } from '../services/prompt-optimizer.js'
 import { z } from 'zod'
 
 // Handlers IPC pour l'IA : conversations, messages, streaming, clés API.
@@ -141,30 +145,51 @@ export function registerAIHandlers(): void {
     const priorMessages = listMessages(input.conversationId)
 
     // Commit message user (bumpe updated_at de la conv).
+    const attachments = input.attachments ?? []
+
     appendMessage({
       id: nanoid(),
       conversationId: input.conversationId,
       role: 'user',
-      content: input.content
+      content: input.content,
+      attachments: attachments.length > 0 ? attachments : null
     })
 
-    // Titre auto sur le 1er message si la conv n'en a pas encore.
+    const titleSeed =
+      input.content.trim() ||
+      (attachments[0]
+        ? attachments[0].type === 'text'
+          ? `Fichier : ${attachments[0].name}`
+          : `Image : ${attachments[0].name}`
+        : 'Message avec pièce jointe')
+
     if (conv.title.length === 0 && priorMessages.length === 0) {
       updateConversation({
         id: input.conversationId,
-        title: generateTitleFromFirstMessage(input.content)
+        title: generateTitleFromFirstMessage(titleSeed)
       })
     }
 
-    // Construit l'historique envoyé au modèle : messages précédents +
-    // message user courant. Le systemPrompt (opts.systemPrompt) est
-    // injecté en tête par `streamChat` lui-même, idem contexte Tavily.
-    const historyForModel = [
-      ...priorMessages.map((m) => ({
-        role: m.role as 'user' | 'assistant' | 'system',
-        content: m.content
-      })),
-      { role: 'user' as const, content: input.content }
+    const historyForModel: ChatCompletionMessage[] = [
+      ...priorMessages.map((m) => {
+        if (m.role === 'user' && m.attachmentsJson) {
+          const atts = parseAttachmentsJson(m.attachmentsJson)
+          if (atts.length > 0) {
+            return {
+              role: 'user' as const,
+              content: buildUserMessageContent(m.content, atts)
+            }
+          }
+        }
+        return { role: m.role as 'user' | 'assistant' | 'system', content: m.content }
+      }),
+      {
+        role: 'user' as const,
+        content:
+          attachments.length > 0
+            ? buildUserMessageContent(input.content, attachments)
+            : input.content
+      }
     ]
 
     const requestId = nanoid()
@@ -187,7 +212,7 @@ export function registerAIHandlers(): void {
           systemPrompt: input.systemPrompt ?? conv.system ?? undefined,
           wikiContext: input.wikiContext ?? undefined,
           webSearchEnabled: input.webSearchEnabled,
-          webSearchQuery: input.content,
+          webSearchQuery: input.content.trim() || titleSeed,
           wikiToolsEnabled: input.wikiToolsEnabled,
           thinkingEnabled: input.thinkingEnabled
         },
@@ -310,5 +335,10 @@ export function registerAIHandlers(): void {
       .parse(raw)
     updateMessageSegments(messageId, segmentsJson)
     return { ok: true }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.ai.optimizePrompt, async (_evt, raw) => {
+    const { text } = AIOptimizePromptInput.parse(raw)
+    return optimizePrompt(text)
   })
 }

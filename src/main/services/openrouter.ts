@@ -3,6 +3,11 @@ import { getDb } from './db.js'
 import type { AIModelT } from '@shared/ipc-contract.js'
 import { WIKI_TOOL_SCHEMAS, TOOLS_REQUIRE_CONFIRMATION } from '@shared/ai-tool-schemas.js'
 import type { ToolCall, ToolResult } from '@shared/ai-tool-schemas.js'
+import {
+  parseAttachmentsJson,
+  textFromModelContent,
+  type OpenRouterContentPart
+} from '@shared/ai-attachments.js'
 import * as Tavily from './tavily.js'
 import { executeAiTool } from './ai-tools.js'
 import { awaitToolConfirmation, cancelAllToolConfirmations } from './ai-tool-confirmation.js'
@@ -187,7 +192,7 @@ export async function listModels(options?: { forceRefresh?: boolean }): Promise<
 // pour renvoyer le résultat associé.
 export interface ChatCompletionMessage {
   role: 'user' | 'assistant' | 'system' | 'tool'
-  content: string | null
+  content: string | OpenRouterContentPart[] | null
   tool_calls?: Array<{
     id: string
     type: 'function'
@@ -703,7 +708,7 @@ export function cancelStream(requestId: string): boolean {
 
 function getLastUserContent(messages: ChatCompletionMessage[]): string | null {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') return messages[i].content
+    if (messages[i].role === 'user') return textFromModelContent(messages[i].content)
   }
   return null
 }
@@ -732,9 +737,7 @@ function enrichSearchQuery(
   for (let i = messages.length - 1; i >= 0 && priorUserMessages.length < 2; i--) {
     const m = messages[i]
     if (m.role !== 'user') continue
-    // `content` peut être null pour assistant tool-call ; pour user c'est
-    // toujours string — cast défensif pour le typecheck.
-    const text = typeof m.content === 'string' ? m.content : ''
+    const text = textFromModelContent(m.content)
     if (text.trim() === trimmed) continue // skip la question courante
     priorUserMessages.unshift(text.trim().slice(0, 180))
   }

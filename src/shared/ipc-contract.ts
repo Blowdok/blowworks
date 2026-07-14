@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { AIChatAttachmentSchema } from './ai-attachments.js'
 
 // Contrats IPC typés et validés (zod) — partagés main/renderer.
 // Les CANAUX eux-mêmes sont dans `ipc-channels.ts` (sans zod) pour pouvoir
@@ -124,7 +125,10 @@ export const AIMessageSchema = z.object({
   // Timeline entrelacée (texte + actions IA) sérialisée en JSON. Null
   // pour les messages purement textuels (sans tool_call). Le renderer
   // désérialise pour reconstruire l'historique visuel après un reload.
-  segmentsJson: z.string().nullable().optional()
+  segmentsJson: z.string().nullable().optional(),
+  // Images jointes au message user (dataURL base64). Null hors messages
+  // multimodaux. Sérialisation JSON de `AIImageAttachment[]`.
+  attachmentsJson: z.string().nullable().optional()
 })
 export type AIMessageT = z.infer<typeof AIMessageSchema>
 
@@ -170,33 +174,43 @@ export const AIUpdateConversationInput = z.object({
 export type AIUpdateConversationInputT = z.infer<typeof AIUpdateConversationInput>
 
 // Envoi d'un message utilisateur + streaming de la réponse assistant.
-// Le main stocke immédiatement le message user, puis démarre le stream
-// et émet un chunk par delta jusqu'au `done: true` final qui committe
-// le message assistant complet en DB.
-export const AISendMessageInput = z.object({
+export {
+  AIChatAttachmentSchema,
+  AIImageAttachmentSchema,
+  type AIChatAttachmentT,
+  type AIImageAttachmentT
+} from './ai-attachments.js'
+
+export const AISendMessageInput = z
+  .object({
   conversationId: z.string().min(1),
-  content: z.string().min(1),
+  content: z.string(),
   model: z.string().min(1),
   temperature: z.number().min(0).max(2).default(0.7),
   systemPrompt: z.string().nullable().optional(),
-  // Contexte wiki (mémoire long-terme) à injecter en « étape 1.5 » entre le
-  // systemPrompt utilisateur et les résultats Tavily. Construit côté renderer
-  // quand le toggle 📚 est actif, à partir de MEMORY.md + titres de pages wiki.
   wikiContext: z.string().max(200_000).nullable().optional(),
   webSearchEnabled: z.boolean().default(false),
-  // Active les tools wiki (read/write/search/rename/delete). Branché au
-  // toggle 📚 côté renderer : quand la mémoire est activée pour une conv,
-  // l'IA peut naviguer le wiki à la demande au lieu de recevoir un dump.
   wikiToolsEnabled: z.boolean().default(false),
-  // Active le reasoning (chain-of-thought) pour les modèles compatibles
-  // (Claude 3.7+/4, OpenAI o1/o3, Gemini Thinking, DeepSeek R1, Grok).
-  // Branché au toggle 🧠 dans la ChatInput. OpenRouter normalise l'API
-  // via `reasoning: { effort: 'medium' }` — les deltas arrivent dans des
-  // chunks `reasoningDelta` distincts du contenu principal.
   thinkingEnabled: z.boolean().default(false),
-  maxTokens: z.number().int().positive().optional()
+  maxTokens: z.number().int().positive().optional(),
+  attachments: z.array(AIChatAttachmentSchema).max(4).optional()
 })
+  .refine(
+    (d) => d.content.trim().length > 0 || (d.attachments?.length ?? 0) > 0,
+    { message: 'Le message doit contenir du texte ou au moins une pièce jointe.' }
+  )
 export type AISendMessageInputT = z.infer<typeof AISendMessageInput>
+
+export const AIOptimizePromptInput = z.object({
+  text: z.string().min(1).max(20_000)
+})
+export type AIOptimizePromptInputT = z.infer<typeof AIOptimizePromptInput>
+
+export const AIOptimizePromptResultSchema = z.object({
+  optimized: z.string(),
+  error: z.string().nullable().optional()
+})
+export type AIOptimizePromptResultT = z.infer<typeof AIOptimizePromptResultSchema>
 
 export const AIConfirmToolCallInput = z.object({
   toolCallId: z.string().min(1),
