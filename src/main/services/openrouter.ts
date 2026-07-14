@@ -4,7 +4,6 @@ import type { AIModelT } from '@shared/ipc-contract.js'
 import { WIKI_TOOL_SCHEMAS, TOOLS_REQUIRE_CONFIRMATION } from '@shared/ai-tool-schemas.js'
 import type { ToolCall, ToolResult } from '@shared/ai-tool-schemas.js'
 import {
-  buildMultimodalUserContent,
   parseAttachmentsJson,
   textFromModelContent,
   type OpenRouterContentPart

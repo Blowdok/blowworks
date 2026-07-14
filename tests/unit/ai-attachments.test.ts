@@ -1,33 +1,43 @@
 import { describe, it, expect } from 'vitest'
 import {
-  buildMultimodalUserContent,
+  buildUserMessageContent,
   parseAttachmentsJson,
   textFromModelContent
 } from '../../src/shared/ai-attachments.js'
 
-describe('buildMultimodalUserContent', () => {
+describe('buildUserMessageContent', () => {
   it('retourne le texte seul sans pièce jointe', () => {
-    expect(buildMultimodalUserContent('hello', [])).toBe('hello')
+    expect(buildUserMessageContent('hello', [])).toBe('hello')
   })
 
   it('combine texte et images', () => {
-    const parts = buildMultimodalUserContent('regarde', [
-      { name: 'a.png', dataUrl: 'data:image/png;base64,abc' }
+    const parts = buildUserMessageContent('regarde', [
+      { type: 'image', name: 'a.png', dataUrl: 'data:image/png;base64,abc' }
     ])
-    expect(Array.isArray(parts)).toBe(true)
     expect(parts).toEqual([
       { type: 'text', text: 'regarde' },
       { type: 'image_url', image_url: { url: 'data:image/png;base64,abc' } }
     ])
   })
 
-  it('accepte image seule sans texte', () => {
-    const parts = buildMultimodalUserContent('', [
-      { name: 'b.jpg', dataUrl: 'data:image/jpeg;base64,xyz' }
+  it('injecte un fichier texte dans le prompt', () => {
+    const out = buildUserMessageContent('analyse', [
+      { type: 'text', name: 'notes.md', content: '# Titre' }
     ])
-    expect(parts).toEqual([
-      { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,xyz' } }
+    expect(typeof out).toBe('string')
+    expect(out).toContain('notes.md')
+    expect(out).toContain('# Titre')
+  })
+
+  it('mélange texte, fichier et image', () => {
+    const parts = buildUserMessageContent('voir', [
+      { type: 'text', name: 'ctx.txt', content: 'contexte' },
+      { type: 'image', name: 'shot.png', dataUrl: 'data:image/png;base64,x' }
     ])
+    expect(Array.isArray(parts)).toBe(true)
+    const textPart = (parts as Array<{ type: string; text?: string }>).find((p) => p.type === 'text')
+    expect(textPart?.text).toContain('ctx.txt')
+    expect(textPart?.text).toContain('contexte')
   })
 })
 
@@ -47,8 +57,16 @@ describe('parseAttachmentsJson', () => {
     expect(parseAttachmentsJson(null)).toEqual([])
   })
 
-  it('parse un JSON valide', () => {
-    const raw = JSON.stringify([{ name: 'x.png', dataUrl: 'data:image/png;base64,aa' }])
+  it('parse le format v2 typé', () => {
+    const raw = JSON.stringify([
+      { type: 'text', name: 'a.txt', content: 'hello' }
+    ])
     expect(parseAttachmentsJson(raw)).toHaveLength(1)
+  })
+
+  it('migre le format v1 image sans type', () => {
+    const raw = JSON.stringify([{ name: 'x.png', dataUrl: 'data:image/png;base64,aa' }])
+    const parsed = parseAttachmentsJson(raw)
+    expect(parsed[0]).toMatchObject({ type: 'image', name: 'x.png' })
   })
 })

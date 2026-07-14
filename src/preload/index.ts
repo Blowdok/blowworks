@@ -143,7 +143,11 @@ const api = {
     pickImage: (
       options?: { title?: string }
     ): Promise<{ dataUrl: string; name: string } | null> =>
-      ipcRenderer.invoke(IPC_CHANNELS.dialog.pickImage, options ?? {})
+      ipcRenderer.invoke(IPC_CHANNELS.dialog.pickImage, options ?? {}),
+    pickTextFile: (
+      options?: { title?: string }
+    ): Promise<{ name: string; content: string } | null> =>
+      ipcRenderer.invoke(IPC_CHANNELS.dialog.pickTextFile, options ?? {})
   },
   github: {
     getStatus: () => ipcRenderer.invoke(IPC_CHANNELS.github.getStatus),
@@ -204,7 +208,10 @@ const api = {
       wikiToolsEnabled?: boolean
       thinkingEnabled?: boolean
       maxTokens?: number
-      attachments?: Array<{ name: string; dataUrl: string }>
+      attachments?: Array<
+        | { type: 'image'; name: string; dataUrl: string }
+        | { type: 'text'; name: string; content: string }
+      >
     }) => ipcRenderer.invoke(IPC_CHANNELS.ai.sendMessage, input),
     cancelStream: (requestId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.ai.cancelStream, { requestId }),
@@ -213,6 +220,8 @@ const api = {
       ipcRenderer.invoke(IPC_CHANNELS.ai.confirmToolCall, { toolCallId, approved }),
     saveMessageSegments: (messageId: string, segmentsJson: string | null) =>
       ipcRenderer.invoke(IPC_CHANNELS.ai.saveMessageSegments, { messageId, segmentsJson }),
+    optimizePrompt: (text: string) =>
+      ipcRenderer.invoke(IPC_CHANNELS.ai.optimizePrompt, { text }),
     onChunk: (
       cb: (payload: {
         requestId: string

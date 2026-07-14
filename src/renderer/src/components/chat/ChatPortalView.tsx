@@ -10,7 +10,8 @@ import ChatInput from './ChatInput.js'
 import ModelSelector from './ModelSelector.js'
 import ConversationHistoryDropdown from './ConversationHistoryDropdown.js'
 import ToolCallDialog from './ToolCallDialog.js'
-import type { AIImageAttachmentT } from '@shared/ipc-contract.js'
+import type { AIChatAttachmentT } from '@shared/ipc-contract.js'
+import { MAX_CHAT_ATTACHMENTS } from '@shared/ai-attachments.js'
 import {
   useShapeBorderState,
   getShapeBorderStyle
@@ -68,7 +69,9 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
   const refreshModels = useChatStore((s) => s.refreshModels)
 
   const [draft, setDraft] = useState('')
-  const [pendingAttachments, setPendingAttachments] = useState<AIImageAttachmentT[]>([])
+  const [pendingAttachments, setPendingAttachments] = useState<AIChatAttachmentT[]>([])
+  const [optimizing, setOptimizing] = useState(false)
+  const [optimizeFeedback, setOptimizeFeedback] = useState<string | null>(null)
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false)
   const [historyDropdownOpen, setHistoryDropdownOpen] = useState(false)
   const [synthState, setSynthState] = useState<
@@ -239,8 +242,8 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
     })
   }
 
-  async function handleAttach(): Promise<void> {
-    if (pendingAttachments.length >= 4) return
+  async function handleAttachImage(): Promise<void> {
+    if (pendingAttachments.length >= MAX_CHAT_ATTACHMENTS) return
     try {
       const result = await window.blow.dialog.pickImage({
         title: 'Joindre une image au message'
@@ -248,10 +251,51 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       if (!result) return
       setPendingAttachments((prev) => [
         ...prev,
-        { name: result.name, dataUrl: result.dataUrl }
+        { type: 'image', name: result.name, dataUrl: result.dataUrl }
       ])
     } catch (e) {
       console.warn('[chat] attach image failed', e)
+    }
+  }
+
+  async function handleAttachTextFile(): Promise<void> {
+    if (pendingAttachments.length >= MAX_CHAT_ATTACHMENTS) return
+    try {
+      const result = await window.blow.dialog.pickTextFile({
+        title: 'Joindre un fichier texte au message'
+      })
+      if (!result) return
+      setPendingAttachments((prev) => [
+        ...prev,
+        { type: 'text', name: result.name, content: result.content }
+      ])
+    } catch (e) {
+      console.warn('[chat] attach text file failed', e)
+    }
+  }
+
+  async function handleOptimize(): Promise<void> {
+    const text = draft.trim()
+    if (!text || optimizing || !hasKey) return
+    setOptimizing(true)
+    setOptimizeFeedback(null)
+    try {
+      const r = (await window.blow.ai.optimizePrompt(text)) as {
+        optimized: string
+        error?: string | null
+      }
+      if (r.error) {
+        setOptimizeFeedback(r.error)
+        setTimeout(() => setOptimizeFeedback(null), 6000)
+        return
+      }
+      if (r.optimized) setDraft(r.optimized)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setOptimizeFeedback(msg)
+      setTimeout(() => setOptimizeFeedback(null), 6000)
+    } finally {
+      setOptimizing(false)
     }
   }
 
@@ -605,8 +649,24 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
         onRemoveAttachment={(index) =>
           setPendingAttachments((prev) => prev.filter((_, i) => i !== index))
         }
-        onAttach={() => void handleAttach()}
+        onAttachImage={() => void handleAttachImage()}
+        onAttachTextFile={() => void handleAttachTextFile()}
+        onOptimize={() => void handleOptimize()}
+        optimizing={optimizing}
       />
+
+      {optimizeFeedback && (
+        <div
+          className="pointer-events-none absolute inset-x-3 bottom-[60px] rounded-[var(--radius-sm)] border px-3 py-1.5 text-[11px] shadow-lg"
+          style={{
+            background: 'var(--bg-secondary)',
+            borderColor: '#ef4444',
+            color: '#ef4444'
+          }}
+        >
+          {optimizeFeedback}
+        </div>
+      )}
 
       {/* Toast compact de retour agent — flotte au-dessus de la zone de
           saisie, s'efface seul après succès (4s) ou erreur (6s). */}

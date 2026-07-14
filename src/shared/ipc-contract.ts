@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AIImageAttachmentSchema } from './ai-attachments.js'
+import { AIChatAttachmentSchema } from './ai-attachments.js'
 
 // Contrats IPC typés et validés (zod) — partagés main/renderer.
 // Les CANAUX eux-mêmes sont dans `ipc-channels.ts` (sans zod) pour pouvoir
@@ -174,7 +174,12 @@ export const AIUpdateConversationInput = z.object({
 export type AIUpdateConversationInputT = z.infer<typeof AIUpdateConversationInput>
 
 // Envoi d'un message utilisateur + streaming de la réponse assistant.
-export { AIImageAttachmentSchema, type AIImageAttachmentT } from './ai-attachments.js'
+export {
+  AIChatAttachmentSchema,
+  AIImageAttachmentSchema,
+  type AIChatAttachmentT,
+  type AIImageAttachmentT
+} from './ai-attachments.js'
 
 export const AISendMessageInput = z
   .object({
@@ -188,13 +193,24 @@ export const AISendMessageInput = z
   wikiToolsEnabled: z.boolean().default(false),
   thinkingEnabled: z.boolean().default(false),
   maxTokens: z.number().int().positive().optional(),
-  attachments: z.array(AIImageAttachmentSchema).max(4).optional()
+  attachments: z.array(AIChatAttachmentSchema).max(4).optional()
 })
   .refine(
     (d) => d.content.trim().length > 0 || (d.attachments?.length ?? 0) > 0,
-    { message: 'Le message doit contenir du texte ou au moins une image.' }
+    { message: 'Le message doit contenir du texte ou au moins une pièce jointe.' }
   )
 export type AISendMessageInputT = z.infer<typeof AISendMessageInput>
+
+export const AIOptimizePromptInput = z.object({
+  text: z.string().min(1).max(20_000)
+})
+export type AIOptimizePromptInputT = z.infer<typeof AIOptimizePromptInput>
+
+export const AIOptimizePromptResultSchema = z.object({
+  optimized: z.string(),
+  error: z.string().nullable().optional()
+})
+export type AIOptimizePromptResultT = z.infer<typeof AIOptimizePromptResultSchema>
 
 export const AIConfirmToolCallInput = z.object({
   toolCallId: z.string().min(1),

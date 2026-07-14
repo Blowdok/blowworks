@@ -6,7 +6,7 @@ import type {
   AIModelT,
   AIApiKeyStatusT,
   AIDefaultsT,
-  AIImageAttachmentT
+  AIChatAttachmentT
 } from '@shared/ipc-contract.js'
 
 // Store Zustand pour les conversations IA côté renderer.
@@ -250,7 +250,7 @@ interface ChatStore {
       systemPrompt?: string | null
       wikiContext?: string | null
       maxTokens?: number
-      attachments?: AIImageAttachmentT[]
+      attachments?: AIChatAttachmentT[]
     }
   ) => Promise<void>
   cancelStream: (conversationId: string) => Promise<void>

@@ -8,12 +8,13 @@ import {
   AISetApiKeyInput,
   AIConfirmToolCallInput,
   AIDefaultsSchema,
+  AIOptimizePromptInput,
   type AIChunkEventT,
   type AIApiKeyStatusT,
   type AIDefaultsT
 } from '@shared/ipc-contract.js'
 import { resolveToolConfirmation } from '../services/ai-tool-confirmation.js'
-import { buildMultimodalUserContent, parseAttachmentsJson } from '@shared/ai-attachments.js'
+import { buildUserMessageContent, parseAttachmentsJson } from '@shared/ai-attachments.js'
 import type { ChatCompletionMessage } from '../services/openrouter.js'
 import {
   createConversation,
@@ -28,6 +29,7 @@ import {
 } from '../services/ai-conversations.js'
 import * as OpenRouter from '../services/openrouter.js'
 import * as Tavily from '../services/tavily.js'
+import { optimizePrompt } from '../services/prompt-optimizer.js'
 import { z } from 'zod'
 
 // Handlers IPC pour l'IA : conversations, messages, streaming, clés API.
@@ -155,7 +157,11 @@ export function registerAIHandlers(): void {
 
     const titleSeed =
       input.content.trim() ||
-      (attachments[0]?.name ? `Image : ${attachments[0].name}` : 'Message avec image')
+      (attachments[0]
+        ? attachments[0].type === 'text'
+          ? `Fichier : ${attachments[0].name}`
+          : `Image : ${attachments[0].name}`
+        : 'Message avec pièce jointe')
 
     if (conv.title.length === 0 && priorMessages.length === 0) {
       updateConversation({
@@ -167,11 +173,11 @@ export function registerAIHandlers(): void {
     const historyForModel: ChatCompletionMessage[] = [
       ...priorMessages.map((m) => {
         if (m.role === 'user' && m.attachmentsJson) {
-          const imgs = parseAttachmentsJson(m.attachmentsJson)
-          if (imgs.length > 0) {
+          const atts = parseAttachmentsJson(m.attachmentsJson)
+          if (atts.length > 0) {
             return {
               role: 'user' as const,
-              content: buildMultimodalUserContent(m.content, imgs)
+              content: buildUserMessageContent(m.content, atts)
             }
           }
         }
@@ -181,7 +187,7 @@ export function registerAIHandlers(): void {
         role: 'user' as const,
         content:
           attachments.length > 0
-            ? buildMultimodalUserContent(input.content, attachments)
+            ? buildUserMessageContent(input.content, attachments)
             : input.content
       }
     ]
@@ -329,5 +335,10 @@ export function registerAIHandlers(): void {
       .parse(raw)
     updateMessageSegments(messageId, segmentsJson)
     return { ok: true }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.ai.optimizePrompt, async (_evt, raw) => {
+    const { text } = AIOptimizePromptInput.parse(raw)
+    return optimizePrompt(text)
   })
 }

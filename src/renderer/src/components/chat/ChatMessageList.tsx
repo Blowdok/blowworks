@@ -347,16 +347,27 @@ function MessageBubble({
           <div className="flex flex-col gap-2">
             {userAttachments.length > 0 && (
               <div className="flex flex-wrap justify-end gap-2">
-                {userAttachments.map((att, i) => (
-                  <img
-                    key={`${att.name}-${i}`}
-                    src={att.dataUrl}
-                    alt={att.name}
-                    className="max-h-40 max-w-full rounded-[8px] border object-contain"
-                    style={{ borderColor: 'var(--border)' }}
-                    draggable={false}
-                  />
-                ))}
+                {userAttachments.map((att, i) =>
+                  att.type === 'image' ? (
+                    <img
+                      key={`${att.name}-${i}`}
+                      src={att.dataUrl}
+                      alt={att.name}
+                      className="max-h-40 max-w-full rounded-[8px] border object-contain"
+                      style={{ borderColor: 'var(--border)' }}
+                      draggable={false}
+                    />
+                  ) : (
+                    <span
+                      key={`${att.name}-${i}`}
+                      className="rounded-[8px] border px-2 py-1 text-[11px] text-[var(--fg-muted)]"
+                      style={{ borderColor: 'var(--border)' }}
+                      title={`${att.content.length.toLocaleString('fr-FR')} caractères`}
+                    >
+                      📄 {att.name}
+                    </span>
+                  )
+                )}
               </div>
             )}
             {message.content.length > 0 && (

@@ -6,7 +6,7 @@ import type {
   AIRoleT,
   AICreateConversationInputT,
   AIUpdateConversationInputT,
-  AIImageAttachmentT
+  AIChatAttachmentT
 } from '@shared/ipc-contract.js'
 
 // Couche CRUD synchrone au-dessus de SQLite pour les conversations et
@@ -188,7 +188,7 @@ export interface AppendMessageInput {
   model?: string | null
   tokensIn?: number | null
   tokensOut?: number | null
-  attachments?: AIImageAttachmentT[] | null
+  attachments?: AIChatAttachmentT[] | null
 }
 
 export function appendMessage(input: AppendMessageInput): AIMessageT {
