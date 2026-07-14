@@ -5,7 +5,8 @@ import type {
   AIMessageT,
   AIRoleT,
   AICreateConversationInputT,
-  AIUpdateConversationInputT
+  AIUpdateConversationInputT,
+  AIImageAttachmentT
 } from '@shared/ipc-contract.js'
 
 // Couche CRUD synchrone au-dessus de SQLite pour les conversations et
@@ -148,6 +149,7 @@ interface MessageRow {
   tokens_out: number | null
   created_at: number
   segments_json: string | null
+  attachments_json: string | null
 }
 
 function rowToMessage(row: MessageRow): AIMessageT {
@@ -160,7 +162,8 @@ function rowToMessage(row: MessageRow): AIMessageT {
     tokensIn: row.tokens_in,
     tokensOut: row.tokens_out,
     createdAt: row.created_at,
-    segmentsJson: row.segments_json
+    segmentsJson: row.segments_json,
+    attachmentsJson: row.attachments_json
   }
 }
 
@@ -185,15 +188,20 @@ export interface AppendMessageInput {
   model?: string | null
   tokensIn?: number | null
   tokensOut?: number | null
+  attachments?: AIImageAttachmentT[] | null
 }
 
 export function appendMessage(input: AppendMessageInput): AIMessageT {
   const createdAt = Date.now()
+  const attachmentsJson =
+    input.attachments && input.attachments.length > 0
+      ? JSON.stringify(input.attachments)
+      : null
   getDb()
     .prepare(
       `INSERT INTO ai_messages
-         (id, conversation_id, role, content, model, tokens_in, tokens_out, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, conversation_id, role, content, model, tokens_in, tokens_out, created_at, attachments_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.id,
@@ -203,7 +211,8 @@ export function appendMessage(input: AppendMessageInput): AIMessageT {
       input.model ?? null,
       input.tokensIn ?? null,
       input.tokensOut ?? null,
-      createdAt
+      createdAt,
+      attachmentsJson
     )
   // Bump `updated_at` de la conversation → fait remonter la conv dans la
   // liste ordonnée par activité (useful pour un futur panneau "historique").
@@ -218,7 +227,8 @@ export function appendMessage(input: AppendMessageInput): AIMessageT {
     model: input.model ?? null,
     tokensIn: input.tokensIn ?? null,
     tokensOut: input.tokensOut ?? null,
-    createdAt
+    createdAt,
+    attachmentsJson
   }
 }
 

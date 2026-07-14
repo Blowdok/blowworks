@@ -16,6 +16,7 @@ import { useEditorStore } from '../../stores/editor-store.js'
 import { useWikiStore } from '../../stores/wiki-store.js'
 import { linkifyWikiRefs } from '../WikiPageViewer.js'
 import { spawnBrowserShape } from '../canvas/InfiniteCanvas.js'
+import { parseAttachmentsJson } from '@shared/ai-attachments.js'
 
 interface ChatMessageListProps {
   messages: AIMessageT[]
@@ -309,6 +310,7 @@ function MessageBubble({
 }): React.ReactElement {
   const isUser = message.role === 'user'
   const isAssistant = message.role === 'assistant'
+  const userAttachments = isUser ? parseAttachmentsJson(message.attachmentsJson) : []
   const showFileBack = isAssistant && onFileBack && message.content.length > 60
   const useTimeline = isAssistant && segments !== undefined && segments.length > 0
 
@@ -342,11 +344,29 @@ function MessageBubble({
             </ReactMarkdown>
           </div>
         ) : (
-          <div
-            className="whitespace-pre-wrap text-[14px] leading-relaxed"
-            style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
-          >
-            {message.content}
+          <div className="flex flex-col gap-2">
+            {userAttachments.length > 0 && (
+              <div className="flex flex-wrap justify-end gap-2">
+                {userAttachments.map((att, i) => (
+                  <img
+                    key={`${att.name}-${i}`}
+                    src={att.dataUrl}
+                    alt={att.name}
+                    className="max-h-40 max-w-full rounded-[8px] border object-contain"
+                    style={{ borderColor: 'var(--border)' }}
+                    draggable={false}
+                  />
+                ))}
+              </div>
+            )}
+            {message.content.length > 0 && (
+              <div
+                className="whitespace-pre-wrap text-[14px] leading-relaxed"
+                style={{ userSelect: 'text', WebkitUserSelect: 'text' }}
+              >
+                {message.content}
+              </div>
+            )}
           </div>
         )}
         {showFileBack && (

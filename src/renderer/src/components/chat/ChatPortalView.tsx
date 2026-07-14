@@ -10,6 +10,7 @@ import ChatInput from './ChatInput.js'
 import ModelSelector from './ModelSelector.js'
 import ConversationHistoryDropdown from './ConversationHistoryDropdown.js'
 import ToolCallDialog from './ToolCallDialog.js'
+import type { AIImageAttachmentT } from '@shared/ipc-contract.js'
 import {
   useShapeBorderState,
   getShapeBorderStyle
@@ -67,6 +68,7 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
   const refreshModels = useChatStore((s) => s.refreshModels)
 
   const [draft, setDraft] = useState('')
+  const [pendingAttachments, setPendingAttachments] = useState<AIImageAttachmentT[]>([])
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false)
   const [historyDropdownOpen, setHistoryDropdownOpen] = useState(false)
   const [synthState, setSynthState] = useState<
@@ -218,8 +220,10 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
 
   async function handleSubmit(): Promise<void> {
     const content = draft.trim()
-    if (!content || isStreaming || !hasKey) return
+    if ((!content && pendingAttachments.length === 0) || isStreaming || !hasKey) return
+    const attachments = pendingAttachments.length > 0 ? [...pendingAttachments] : undefined
     setDraft('')
+    setPendingAttachments([])
 
     const wikiContext = shape.props.wikiContextEnabled ? await buildWikiContext() : null
 
@@ -227,18 +231,28 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
       model: shape.props.model,
       temperature: defaults.temperature,
       webSearchEnabled: shape.props.webSearchEnabled && apiKeyStatus.tavily,
-      // Tools wiki activés quand le toggle 📚 est on et que le wiki
-      // est configuré. L'IA peut alors faire read_wiki_page/search_wiki/…
-      // en cours de réponse au lieu de recevoir un dump complet.
       wikiToolsEnabled: shape.props.wikiContextEnabled && wikiConfigured,
-      // Reasoning toujours activé : OpenRouter ignore silencieusement le
-      // param `reasoning` pour les modèles non compatibles, donc pas de
-      // régression — et ça évite un toggle UI supplémentaire que la
-      // plupart des utilisateurs laissent sur "on" de toute façon.
       thinkingEnabled: true,
       wikiContext,
-      maxTokens: defaults.maxTokens
+      maxTokens: defaults.maxTokens,
+      attachments
     })
+  }
+
+  async function handleAttach(): Promise<void> {
+    if (pendingAttachments.length >= 4) return
+    try {
+      const result = await window.blow.dialog.pickImage({
+        title: 'Joindre une image au message'
+      })
+      if (!result) return
+      setPendingAttachments((prev) => [
+        ...prev,
+        { name: result.name, dataUrl: result.dataUrl }
+      ])
+    } catch (e) {
+      console.warn('[chat] attach image failed', e)
+    }
   }
 
   async function handleFileBack(messageId: string): Promise<void> {
@@ -587,6 +601,11 @@ export default function ChatPortalView({ shape }: ChatPortalViewProps): React.Re
         disabledReason={disabledReason}
         webSearchEnabled={shape.props.webSearchEnabled}
         onToggleWebSearch={toggleWebSearch}
+        attachments={pendingAttachments}
+        onRemoveAttachment={(index) =>
+          setPendingAttachments((prev) => prev.filter((_, i) => i !== index))
+        }
+        onAttach={() => void handleAttach()}
       />
 
       {/* Toast compact de retour agent — flotte au-dessus de la zone de

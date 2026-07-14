@@ -184,10 +184,10 @@ function addMessageColumnsIfMissing(db: Database.Database): void {
   const has = (n: string): boolean => cols.some((c) => c.name === n)
 
   if (!has('segments_json')) {
-    // Timeline des actions IA (segments texte + tool_calls) sérialisée
-    // en JSON. NULL pour les messages purement textuels (pas de tool_call).
-    // Ajouté au Sprint 5 (refactor timeline entrelacée + persistance).
     db.exec(`ALTER TABLE ai_messages ADD COLUMN segments_json TEXT`)
+  }
+  if (!has('attachments_json')) {
+    db.exec(`ALTER TABLE ai_messages ADD COLUMN attachments_json TEXT`)
   }
 }
 

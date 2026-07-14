@@ -5,7 +5,8 @@ import type {
   AIMessageT,
   AIModelT,
   AIApiKeyStatusT,
-  AIDefaultsT
+  AIDefaultsT,
+  AIImageAttachmentT
 } from '@shared/ipc-contract.js'
 
 // Store Zustand pour les conversations IA côté renderer.
@@ -249,6 +250,7 @@ interface ChatStore {
       systemPrompt?: string | null
       wikiContext?: string | null
       maxTokens?: number
+      attachments?: AIImageAttachmentT[]
     }
   ) => Promise<void>
   cancelStream: (conversationId: string) => Promise<void>
@@ -471,7 +473,11 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         model: null,
         tokensIn: null,
         tokensOut: null,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        attachmentsJson:
+          opts.attachments && opts.attachments.length > 0
+            ? JSON.stringify(opts.attachments)
+            : null
       }
       convs.set(conversationId, {
         ...current,
@@ -490,7 +496,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       webSearchEnabled: opts.webSearchEnabled,
       wikiToolsEnabled: opts.wikiToolsEnabled ?? false,
       thinkingEnabled: opts.thinkingEnabled ?? false,
-      maxTokens: opts.maxTokens
+      maxTokens: opts.maxTokens,
+      attachments: opts.attachments
     })) as { requestId: string }
 
     const streams = new Map(get().activeStreams)
