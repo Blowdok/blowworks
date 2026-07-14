@@ -46,9 +46,9 @@ describe('formatSearchForPrompt', () => {
     expect(out.split('x'.repeat(501)).length).toBe(1)
   })
 
-  it("inclut la consigne d'utilisation des sources", () => {
+  it("inclut les règles d'utilisation des sources", () => {
     const out = formatSearchForPrompt('q', { answer: null, results: [] })
-    expect(out).toContain('Consigne')
+    expect(out).toContain('Règles de réponse')
     expect(out).toContain('[titre](url)')
   })
 
