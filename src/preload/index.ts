@@ -204,6 +204,7 @@ const api = {
       wikiToolsEnabled?: boolean
       thinkingEnabled?: boolean
       maxTokens?: number
+      attachments?: Array<{ name: string; dataUrl: string }>
     }) => ipcRenderer.invoke(IPC_CHANNELS.ai.sendMessage, input),
     cancelStream: (requestId: string) =>
       ipcRenderer.invoke(IPC_CHANNELS.ai.cancelStream, { requestId }),

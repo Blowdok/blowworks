@@ -1,6 +1,8 @@
 import { useRef, useEffect } from 'react'
 import { ArrowUp, Globe, Paperclip, Square, Zap } from 'lucide-react'
 
+import type { AIImageAttachmentT } from '@shared/ipc-contract.js'
+
 interface ChatInputProps {
   value: string
   onChange: (value: string) => void
@@ -11,9 +13,9 @@ interface ChatInputProps {
   disabledReason?: string
   webSearchEnabled: boolean
   onToggleWebSearch: () => void
-  // Rappel pour le bouton trombone (upload fichiers, lot 2). Laissé null ici.
+  attachments?: AIImageAttachmentT[]
+  onRemoveAttachment?: (index: number) => void
   onAttach?: () => void
-  // Rappel pour l'éclair d'optimisation (lot 2). Laissé null ici.
   onOptimize?: () => void
 }
 
@@ -34,6 +36,8 @@ export default function ChatInput({
   disabledReason,
   webSearchEnabled,
   onToggleWebSearch,
+  attachments = [],
+  onRemoveAttachment,
   onAttach,
   onOptimize
 }: ChatInputProps): React.ReactElement {
@@ -68,7 +72,7 @@ export default function ChatInput({
       e.preventDefault()
       if (isStreaming) {
         onCancel()
-      } else if (!disabled && value.trim().length > 0) {
+      } else if (!disabled && (value.trim().length > 0 || attachments.length > 0)) {
         onSubmit()
       }
     }
@@ -80,7 +84,7 @@ export default function ChatInput({
     onTouchStart: (e: React.TouchEvent) => e.stopPropagation()
   }
 
-  const canSubmit = !disabled && value.trim().length > 0
+  const canSubmit = !disabled && (value.trim().length > 0 || attachments.length > 0)
 
   return (
     <div
@@ -127,6 +131,35 @@ export default function ChatInput({
           {...stopInteractive}
         />
 
+        {attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2">
+            {attachments.map((att, index) => (
+              <div
+                key={`${att.name}-${index}`}
+                className="group relative overflow-hidden rounded-[10px] border"
+                style={{ borderColor: 'var(--border)' }}
+              >
+                <img
+                  src={att.dataUrl}
+                  alt={att.name}
+                  className="h-16 w-16 object-cover"
+                  draggable={false}
+                />
+                {onRemoveAttachment && (
+                  <button
+                    type="button"
+                    onClick={() => onRemoveAttachment(index)}
+                    className="absolute right-0.5 top-0.5 rounded bg-black/70 px-1 text-[10px] text-white opacity-0 transition-opacity group-hover:opacity-100"
+                    title="Retirer"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-0.5">
             <IconToggle
@@ -140,9 +173,9 @@ export default function ChatInput({
               Icon={Globe}
             />
             <IconButton
-              disabled
+              disabled={disabled || isStreaming || !onAttach}
               onClick={onAttach}
-              title="Joindre une image ou un fichier (bientôt)"
+              title="Joindre une image (max 4)"
               Icon={Paperclip}
             />
             <IconButton
